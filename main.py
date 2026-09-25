@@ -479,8 +479,11 @@ def cmd_escape(args):
     # Признак ленты берём тот же, что и у сессии: у Shorts и Reels дерево
     # снимается и в ленте, поэтому им нужны маркеры из рецепта.
     markers = cfg.get("feed_markers") or []
+    labels = [sel.get("desc") or sel.get("text") or ""
+              for sel in (cfg.get("feed_tabs") or [])]
     report = escape_mod.escape(
         goal=args.goal, package=cfg["package"], log=log, max_steps=args.steps,
+        feed_labels=[x for x in labels if x] or None,
         done=(lambda: session_mod._ensure_feed(cfg, log)) if markers else None,
         allow_done=bool(markers))
     print(f"\n{'ВЫБРАЛСЯ' if report['ok'] else 'НЕ ВЫБРАЛСЯ'} за "

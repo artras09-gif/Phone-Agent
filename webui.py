@@ -950,6 +950,14 @@ def _cmd_settings(body):
             changes["api_url" if api else "vision_url"] = _clean_url(body["url"])
 
     data = prefs.save(**changes)
+    # `prefs.save` сбросил кэш списка моделей, `refresh_soon` — кэш опроса:
+    # ближайший круг спросит сервис заново, и выпадающий список сам
+    # наполнится моделями нового ключа.
+    #
+    # Спрашивать прямо здесь НЕЛЬЗЯ, хотя соблазн был: обработчик запроса
+    # ушёл бы в сеть на пятнадцать секунд таймаута, окно на это время
+    # замирает, а стенды настроек (`key_only`, `keys_ui`) начинают ломиться
+    # к настоящему сервису — они и поймали это первыми.
     PROBE.refresh_soon()
 
     # Ключ только что вписали — спрашиваем сервис прямо сейчас. Молчание
@@ -958,6 +966,24 @@ def _cmd_settings(body):
     if api and key and key != "-":
         good, said = vision.check_and_remember()
         if not good:
+            # Сервис не принял ключ — но виноват может быть АДРЕС, а не ключ.
+            # Угадка по началу строки врёт: OpenRouter выдаёт и обычные
+            # `sk-…`, такой ключ уходил в DashScope, получал 401, и окно
+            # объявляло рабочий ключ недействительным (поймано на живом
+            # ключе). Поэтому спрашиваем сами сервисы, кто его признаёт.
+            pid, url, visual = vision.detect_service(key)
+            if pid:
+                _, _, default_model = config.API_PRESETS[pid]
+                model = vision.pick_visual(visual, default_model)
+                data = prefs.save(api_url=url, api_model=model)
+                PROBE.refresh_soon()
+                good, said = vision.check_and_remember()
+                if good:
+                    title = config.API_PRESETS[pid][0]
+                    return {"ok": True,
+                            "message": f"ключ оказался от «{title}» — "
+                                       f"переключил адрес, модель {model}, "
+                                       f"видят картинки: {len(visual)}"}
             return {"ok": False, "error": "ключ сохранён, но " + said}
         head = "переключил на «по API», " if switched else ""
         return {"ok": True, "message": head + said}

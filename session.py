@@ -453,8 +453,15 @@ def _escape_now(state, goal, log):
         state["rescues"] += 1
         return _grab(state, 900 + state["rescues"])[1]
 
+    # Подписи вкладок ленты — из рецепта, а не из общего списка: у YouTube
+    # лента это «Shorts», а «Главная» там ведёт на обычную главную.
+    labels = [sel.get("desc") or sel.get("text") or ""
+              for sel in (cfg.get("feed_tabs") or [])]
+    labels = [x for x in labels if x] or None
+
     report = escape.escape(
         goal=goal, package=cfg.get("package"), log=log, grab=shot,
+        feed_labels=labels,
         shrink=state.get("shrink"),
         # У Shorts и Reels дерево снимается и в ленте, поэтому свободу там
         # определяют маркеры из рецепта, а не пустой дамп.

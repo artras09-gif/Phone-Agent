@@ -515,14 +515,18 @@ pre.report{
         <div class="row" style="margin-top:12px">
           <label class="field" style="flex:1;min-width:230px">
             Модель
-            <input id="s-model" list="model-list" autocomplete="off"
-                   spellcheck="false" placeholder="выбрать самой">
-            <datalist id="model-list"></datalist>
+            <select id="s-model"></select>
+          </label>
+          <label class="field" id="f-model-hand" style="flex:1;min-width:230px;display:none">
+            Имя модели
+            <input id="s-model-hand" autocomplete="off" spellcheck="false"
+                   placeholder="как оно называется у сервиса">
           </label>
           <button class="btn accent" id="b-setup" style="align-self:flex-end">Сохранить</button>
         </div>
 
-        <p class="hint" id="model-note" style="margin:12px 0 0"></p>
+        <p class="hint" id="models-note" style="margin:10px 0 0"></p>
+        <p class="hint" id="model-note" style="margin:6px 0 0"></p>
       </div>
 
       <div class="card">
@@ -742,23 +746,54 @@ function renderSetup(s){
     };
   }
 
-  // Список моделей — подсказка, а не клетка: адрес может быть свой, и тогда
-  // имя модели человек знает, а сервер списка не отдаёт. Поэтому обычное
-  // поле с подсказками, а не выпадающий список.
-  const box = $("model-list");
-  const sign = JSON.stringify(s.models);
-  if(box.dataset.sign !== sign){
+  // Выпадающий список, и в нём ТОЛЬКО модели, которые смотрят картинки:
+  // текстовой кадр не отдать, а выбрать её было можно — и зрение молча
+  // падало на каждом ролике.
+  //
+  // Последним пунктом «вписать руками»: у своего сервера список может не
+  // отдаваться вовсе, и запирать человека в пустом списке нельзя. Пока
+  // список был подсказкой к текстовому полю, выбрать неподходящую модель
+  // (или опечататься в имени) ничего не мешало.
+  const box = $("s-model");
+  const hand = $("f-model-hand");
+  const sign = JSON.stringify(s.models) + "|" + s.chosen.model;
+  if(box.dataset.sign !== sign && !typing(box) && !typing($("s-model-hand"))){
     box.dataset.sign = sign;
+    const chosen = s.chosen.model || "";
+    const known = s.models.some(m => m.id === chosen);
     box.innerHTML = "";
+
+    const auto = document.createElement("option");
+    auto.value = "";
+    auto.textContent = s.models.length
+      ? "выбрать самой" : "выбрать самой (список сервис не отдал)";
+    box.append(auto);
+
     for(const m of s.models){
       const o = document.createElement("option");
       o.value = m.id;
-      o.label = m.note ? `${m.name} · ${m.note}`
-                       : `${m.name} · ${m.size} ГБ${m.loaded ? " · в памяти" : ""}`;
+      o.textContent = m.note ? `${m.name} · ${m.note}`
+                             : `${m.name} · ${m.size} ГБ${m.loaded ? " · в памяти" : ""}`;
       box.append(o);
     }
+
+    const other = document.createElement("option");
+    other.value = "__hand__";
+    other.textContent = "вписать руками…";
+    box.append(other);
+
+    if(chosen && !known){
+      box.value = "__hand__";
+      $("s-model-hand").value = chosen;
+    } else {
+      box.value = chosen;
+    }
+    hand.style.display = box.value === "__hand__" ? "" : "none";
   }
-  if(!typing($("s-model"))) $("s-model").value = s.chosen.model || "";
+
+  $("models-note").textContent = s.models.length
+    ? `Видят картинки: ${s.models.length} ${s.models.length === 1 ? "модель" : "модели"}`
+    : "";
 
   $("model-note").textContent = s.vision.ok
     ? "Сейчас работает: " + s.vision.text
@@ -1152,10 +1187,23 @@ $("b-taste").onclick = () =>
 
 $("b-kb").onclick = () => send("keyboard", {});
 
+// Что считать выбранной моделью. Пустое значение = «выбирай сама»,
+// «__hand__» = человек вписал имя руками в соседнее поле.
+function modelChoice(){
+  const v = $("s-model").value;
+  return v === "__hand__" ? $("s-model-hand").value.trim() : v;
+}
+
+$("s-model").addEventListener("change", () => {
+  $("f-model-hand").style.display =
+    $("s-model").value === "__hand__" ? "" : "none";
+  if($("s-model").value === "__hand__") $("s-model-hand").focus();
+});
+
 function setupBody(){
   return {
     vision_provider: $("s-provider").value,
-    vision_model: $("s-model").value.trim(),
+    vision_model: modelChoice(),
     url: $("s-url").value.trim(),
     api_key: $("s-key").value.trim(),
   };

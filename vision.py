@@ -373,7 +373,60 @@ def _timeout(kind=None):
         else config.VISION_TIMEOUT
 
 
-VISION_HINT = re.compile(r"-vl|vision|llava|gemma-3|minicpm-v", re.I)
+# Как понять, что модель СМОТРИТ КАРТИНКИ, а не только читает текст.
+#
+# Спрашивать сам сервис — надёжнее всего, но список моделей у всех разный:
+# OpenRouter рядом с именем отдаёт `architecture.input_modalities`, и тогда
+# гадать не нужно вовсе; DashScope и LM Studio отдают голые имена. Поэтому
+# два слоя: сначала метаданные (`_visual_by_meta`), и только если их нет —
+# имя (`looks_visual`).
+#
+# Прежняя маска была `-vl|vision|llava|gemma-3|minicpm-v`, и мимо неё
+# проходили gpt-4o, Claude, Gemini, Pixtral, InternVL — то есть у
+# OpenRouter выпадающий список оставался почти пустым. Поймано охотой на
+# баги: из 14 настоящих визуальных моделей маска узнавала 7.
+VISION_HINT = re.compile(
+    r"-vl\b|\bvl-|vision|llava|minicpm-v|gemma-3|gpt-4o|gpt-4\.1|gpt-5"
+    r"|claude|gemini|pixtral|internvl|molmo|cogvlm|idefics|fuyu"
+    r"|deepseek-vl|moondream|smolvlm|paligemma|glm-4v|yi-vl|step-1v"
+    r"|ovis|janus|omni|multimodal|maverick|scout|qvq",
+    re.I)
+
+# Имена, которые попадают под маску, но картинок не видят. Проверяется
+# первым: «qwen3-coder» не должен пролезать по слову «coder», а
+# «gemini-embedding» — по слову «gemini».
+NOT_VISION = re.compile(
+    r"embedding|embed\b|whisper|\btts\b|dall-?e|rerank|moderation"
+    r"|audio|realtime|guard|coder|instant|search-preview|image-gen",
+    re.I)
+
+
+def looks_visual(name):
+    """Судим по имени — когда сервис ничего больше не сказал."""
+    name = str(name or "")
+    if NOT_VISION.search(name):
+        return False
+    return bool(VISION_HINT.search(name))
+
+
+def _visual_by_meta(item):
+    """Судим по метаданным. None — сервис о модальностях молчит.
+
+    OpenRouter отдаёт `architecture.input_modalities: ["text","image"]`, в
+    старых ответах — `architecture.modality: "text+image->text"`. Это точный
+    ответ, и он бьёт любую догадку по имени.
+    """
+    arch = item.get("architecture") if isinstance(item, dict) else None
+    if not isinstance(arch, dict):
+        return None
+    mods = arch.get("input_modalities") or arch.get("modalities")
+    if isinstance(mods, (list, tuple)):
+        return "image" in [str(m).lower() for m in mods]
+    modality = arch.get("modality")
+    if isinstance(modality, str):
+        left = modality.split("->")[0].lower()
+        return "image" in left
+    return None
 
 # Имя последней сработавшей модели. LM Studio показывает в /v1/models только
 # то, что сейчас в памяти, а модель он выгружает сам после простоя. Без этой
@@ -383,12 +436,23 @@ _LAST_MODEL_FILE = os.path.join(config.BASE, ".vision_model")
 
 def models(kind=None):
     """Список id моделей у сервера. [] если сервер жив, но пуст."""
+    return [m.get("id", "") for m in models_detailed(kind) if m.get("id")]
+
+
+def models_detailed(kind=None):
+    """То же, но целиком: с метаданными, если сервис их отдаёт.
+
+    Отдельно от `models()`, потому что по одному имени не всегда видно,
+    смотрит ли модель картинки, а `architecture.input_modalities` — видно
+    точно. Звать это чаще, чем при открытии настроек, незачем.
+    """
     kind = kind or provider()
     base, headers = _endpoint(kind)
     req = urllib.request.Request(base + "/models", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
-            return [m["id"] for m in json.loads(r.read().decode("utf-8"))["data"]]
+            data = json.loads(r.read().decode("utf-8"))["data"]
+            return [m for m in data if isinstance(m, dict)]
     except (urllib.error.URLError, TimeoutError, OSError, ValueError,
             KeyError, http.client.HTTPException) as e:
         if kind == API:
@@ -404,16 +468,98 @@ def models(kind=None):
 API_KNOWN = ("qwen-vl-plus", "qwen-vl-max", "qwen3-vl-plus")
 
 
+def pick_visual(names, prefer=""):
+    """Какую модель выбрать из визуальных. Пусто — выбирать не из чего.
+
+    Порядок: та, что уже стоит в настройках сервиса, потом семейство Qwen-VL
+    (промпты проекта мерились именно на нём), потом что-то из знакомых, и
+    только потом первая попавшаяся — у больших сервисов в начале списка
+    лежат экспериментальные модели со странными именами.
+    """
+    if not names:
+        return ""
+    if prefer and prefer in names:
+        return prefer
+    for pattern in (r"qwen.*vl", r"gpt-4o(-mini)?$", r"gemini.*flash",
+                    r"claude.*(haiku|sonnet)", r"-vl", r"vision"):
+        for name in names:
+            if re.search(pattern, name, re.I):
+                return name
+    return names[0]
+
+
+def detect_service(key, timeout=20):
+    """Чей это ключ — спросив сами сервисы, а не угадав по началу строки.
+
+    Нужно потому, что угадка по виду ключа врёт. Поймано на живом ключе:
+    OpenRouter выдаёт не только `sk-or-v1-…`, но и обычные `sk-…` — такой
+    ключ уходил в DashScope, получал оттуда 401, и окно объявляло рабочий
+    ключ недействительным. Человеку при этом чинить нечего: ключ-то хороший.
+
+    Возвращает (id пресета, адрес, список визуальных моделей) или
+    (None, "", []), если ключ не принял никто.
+
+    Порядок обхода — от вероятного к остальным: первым спрашивается сервис,
+    на который указывает сам ключ, и на нём всё обычно и заканчивается.
+    """
+    key = (key or "").strip()
+    if not key:
+        return None, "", []
+
+    order = [config.preset_for_key(key)]
+    order += [p for p in config.API_PRESETS if p and p not in order]
+
+    for pid in order:
+        _, url, _ = config.API_PRESETS.get(pid, ("", "", ""))
+        if not url:
+            continue
+        req = urllib.request.Request(url.rstrip("/") + "/models", headers={
+            "Authorization": "Bearer " + key,
+            "User-Agent": "PhoneAgent",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = json.loads(r.read().decode("utf-8")).get("data") or []
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError,
+                http.client.HTTPException):
+            continue
+        visual = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("id", "")
+            said = _visual_by_meta(item)
+            if name and (said is True or (said is None and looks_visual(name))):
+                visual.append(name)
+        return pid, url, visual
+    return None, "", []
+
+
 def _cloud_models():
-    """Визуальные модели облака: [{id, name, note}]."""
+    """Визуальные модели облака: [{id, name, note}].
+
+    Отбор двухслойный: сервис сказал про модальности — верим ему, молчит —
+    судим по имени. Смешивать нельзя: у OpenRouter половина списка с
+    метаданными, и модель, про которую там честно написано «только текст»,
+    не должна пролезать по похожему имени.
+    """
     ids = []
     try:
-        ids = [m for m in models(API) if VISION_HINT.search(m)]
+        for item in models_detailed(API):
+            name = item.get("id", "")
+            if not name:
+                continue
+            said = _visual_by_meta(item)
+            if said is True or (said is None and looks_visual(name)):
+                ids.append(name)
     except VisionError:
         pass
-    for name in API_KNOWN:
-        if name not in ids:
-            ids.append(name)
+    # Запасные имена — ТОЛЬКО когда сервис не отдал вообще ничего. Иначе
+    # они подмешиваются к чужому списку: у OpenRouter к 289 его моделям
+    # добавлялись три имени DashScope, которых там нет, и выбрать их значило
+    # получить «нет такой модели» уже в ленте.
+    if not ids:
+        ids = [name for name in API_KNOWN]
     current = (config.API_MODEL or "").strip()
     if current and current not in ids:
         ids.insert(0, current)
@@ -421,8 +567,57 @@ def _cloud_models():
             for m in ids]
 
 
-def installed_models():
+def _loaded_visual_models():
+    """Визуальные модели среди тех, что сервер показывает сам.
+
+    Запасной путь для LM Studio без утилиты `lms` и для любого другого
+    OpenAI-совместимого сервера в своей сети: `/v1/models` есть у всех.
+    """
+    try:
+        items = models_detailed(LOCAL)
+    except VisionError:
+        return []
+    out = []
+    for item in items:
+        name = item.get("id", "")
+        said = _visual_by_meta(item)
+        if not name or not (said is True or (said is None and looks_visual(name))):
+            continue
+        out.append({"id": name, "name": name, "size": 0, "loaded": True,
+                    "note": "загружена в память"})
+    return out
+
+
+# Список моделей меняется редко, а стоит дорого: у LM Studio `lms ls` — это
+# секунда на запуск процесса, у сервиса — запрос по сети. Окно же опрашивает
+# состояние раз в 12 секунд, и без кэша каждый такой обход ходил в облако.
+# Сбрасывается при любой правке настроек (`prefs.save` зовёт `forget_models`).
+_MODELS = {"at": 0.0, "where": None, "list": []}
+MODELS_TTL = 300.0
+
+
+def forget_models():
+    """Забыть список моделей: настройки поменялись, спрашивать надо заново."""
+    _MODELS["where"] = None
+
+
+def installed_models(fresh=False):
     """Модели, которые можно выбрать в окне: [{id, name, size, loaded, note}].
+
+    Ответ кэшируется на `MODELS_TTL`; `fresh=True` спрашивает заново — так
+    зовут сразу после того, как человек вставил ключ.
+    """
+    where = (provider(), config.API_URL, config.VISION_URL)
+    if (not fresh and _MODELS["where"] == where
+            and time.time() - _MODELS["at"] < MODELS_TTL):
+        return _MODELS["list"]
+    found = _installed_models_now()
+    _MODELS.update(at=time.time(), where=where, list=found)
+    return found
+
+
+def _installed_models_now():
+    """Спросить по-настоящему, без кэша.
 
     У облака это его собственный список, у LM Studio — всё скачанное.
     `/v1/models` локально показывает только то, что сейчас в памяти, — для
@@ -435,7 +630,10 @@ def installed_models():
 
     exe = lms_cli()
     if not exe:
-        return []
+        # Утилиты `lms` нет — спросим сам сервер. Список выйдет короче (в
+        # памяти обычно одна модель), но пустой выпадающий список выглядит
+        # поломкой, а человек не должен набирать имя модели руками.
+        return _loaded_visual_models()
     import subprocess
 
     try:

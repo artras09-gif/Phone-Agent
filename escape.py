@@ -134,7 +134,18 @@ def _rank(node):
         return 0
     if any(d.lower() in (node.desc or "").lower() for d in ui.CLOSE_DESCS):
         return 1
-    return 2
+    if label in NAV_LABELS:
+        return 2
+    return 3
+
+
+# Нижние вкладки, которыми возвращаются в ленту. Держатся отдельно, потому
+# что переживают запрет «опасного экрана» (см. `_menu`): вкладка навигации
+# ничего не отправляет и никого не оповещает, она просто меняет экран.
+NAV_LABELS = frozenset(x.lower() for x in (
+    "Главная", "Home", "Для вас", "For You", "Рекомендации",
+    "Shorts", "Reels", "Видео Reels", "Лента", "Feed",
+))
 
 
 # Значков без подписи на экране бывает десяток, и все они для модели на
@@ -175,11 +186,38 @@ def _menu(nodes, w, h, limit=12, risky=None):
 
     named.sort(key=lambda n: (_rank(n), n.area))
     if risky:
-        # Ранг 2 — «просто кнопка с подписью». На листе отправки такая может
+        # Ранг 3 — «просто кнопка с подписью». На листе отправки такая может
         # оказаться контактом или жалобой, а закрыть экран ею всё равно нельзя.
-        named = [n for n in named if _rank(n) < 2]
+        #
+        # А вот вкладки навигации (ранг 2) остаются, и это важно: «опасным»
+        # признаётся весь экран, на котором ХОТЬ ЧТО-ТО отправляет, — а у
+        # обычного профиля это всего лишь кнопка «Поделиться профилем».
+        # Пока вкладки резались заодно со всем, модель на профиле получала
+        # три безымянных значка вместо «Главной», то есть теряла
+        # единственный верный выход. Поймано охотой на баги, после того как
+        # список `SENDING_MARKS` разросся.
+        named = [n for n in named if _rank(n) < 3]
     icons.sort(key=lambda n: n.area)
     return (named + icons[:UNNAMED_LIMIT])[:limit]
+
+
+def feed_tab(menu, feed_labels=None):
+    """Вкладка ленты среди предложенных кнопок — или None, если её нет.
+
+    Нужна, чтобы НЕ спрашивать модель там, где ответ известен точно. Замер на
+    сохранённом экране «Входящие» (12 кнопок, 5 попыток): модель пять раз из
+    пяти выбрала «Интересное» вместо «Главной» — то есть ушла бы в поиск
+    вместо ленты. Кнопка с подписью «Главная» при этом стояла первой в списке.
+    Причина понятна: среди имён чатов и «Создать новый чат» слово «интересное»
+    ближе к вопросу «где тут ролики», чем «главная».
+
+    Найденных вкладок должно быть ровно одна: у YouTube на одном экране есть
+    и «Главная», и «Shorts», и какая из них лента — знает рецепт, а не мы.
+    Неоднозначность отдаём модели.
+    """
+    wanted = frozenset(x.lower() for x in (feed_labels or NAV_LABELS))
+    hits = [n for n in menu if _label_of(n).lower() in wanted]
+    return hits[0] if len(hits) == 1 else None
 
 
 def _texts(nodes, limit=6):
@@ -346,7 +384,7 @@ def _run(action, button, direction, menu, w, h):
 
 def escape(goal="лента не листается", package=None, done=None, log=None,
            max_steps=None, grab=None, shrink=None, deadline=None,
-           allow_done=None):
+           allow_done=None, feed_labels=None):
     """Выбраться с незнакомого экрана. Возвращает отчёт-словарь.
 
     `done` — как проверить, что мы уже свободны (у каждой ленты свой признак,
@@ -449,6 +487,25 @@ def escape(goal="лента не листается", package=None, done=None, l
         # Что за экран — берём из дерева, а не у модели: надписи там точные,
         # а лишний вопрос стоит секунду и ещё одну возможность соврать.
         report["экран"] = ", ".join(_texts(nodes, limit=3))[:120]
+
+        # Вкладка ленты на экране — жмём её и не спрашиваем никого. Это тот
+        # же принцип, на котором стоит весь проект: где есть точный признак,
+        # догадка по картинке только вредит (см. `feed_tab`).
+        tab = feed_tab(menu, feed_labels)
+        if tab is not None and ("вкладка", _label_of(tab)) not in tried:
+            tried[("вкладка", _label_of(tab))] = 1
+            say("  выход {}/{}: [{}] -> вкладка ленты {}".format(
+                step, steps, report["экран"][:60], _name_of(tab)))
+            ui.tap_node(tab)
+            human.pause(0.9, 1.7)
+            report["steps"].append("вкладка " + _name_of(tab))
+            if free():
+                report["ok"] = True
+                report["почему"] = "вернулся по вкладке ленты"
+                break
+            history.append("вкладка {} — лента не появилась".format(_name_of(tab)))
+            continue
+
         try:
             hint = _decide(png, menu, history, w, h, shrink, may_finish)
         except vision.VisionError as e:

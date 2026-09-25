@@ -63,6 +63,12 @@ def save(**changes):
     with open(PATH, "w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     apply(data)
+    # Настройки поменялись — прежний список моделей больше не про этот
+    # сервис. Без сброса окно после вставки ключа ещё пять минут показывало
+    # бы модели предыдущего сервера.
+    import vision
+
+    vision.forget_models()
     return data
 
 

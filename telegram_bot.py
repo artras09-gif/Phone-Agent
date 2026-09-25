@@ -89,7 +89,17 @@ def parse_targets(text):
 
     Ничего не нашли — значит во все сети: так просил пользователь.
     """
-    found, cleaned = [], text
+    # Адреса на время разбора прячем. Иначе слова «instagram», «reels»,
+    # «shorts» ловятся ВНУТРИ ссылки и вырезаются из неё: подпись
+    # «взял отсюда: instagram.com/reel/AbC» превращалась в «https:// .com/ /AbC»
+    # и уезжала в описание поста такой. Поймано охотой на баги.
+    stashed = []
+
+    def hide(match):
+        stashed.append(match.group(0))
+        return "\x00{}\x00".format(len(stashed) - 1)
+
+    found, cleaned = [], weblink.RE_BARE.sub(hide, weblink.RE_URL.sub(hide, text))
     for target, words in ALIASES.items():
         for word in words:
             # Хвост в три буквы — это падежи: «в инсту», «в тиктоке». Границы
@@ -102,6 +112,9 @@ def parse_targets(text):
                 cleaned = pattern.sub(" ", cleaned)
 
     targets = found or list(ALIASES)
+    # Адреса возвращаем на место — в описание поста они должны уйти целыми.
+    cleaned = re.sub(r"\x00(\d+)\x00",
+                     lambda m: stashed[int(m.group(1))], cleaned)
     # После вырезанного слова остаются висячие знаки: «шортс: обзор» -> «: обзор».
     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" ,.;:—-")
     return targets, cleaned

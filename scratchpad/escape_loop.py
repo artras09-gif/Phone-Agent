@@ -88,9 +88,10 @@ human.pause = lambda lo, hi: None
 human.scroll_feed = lambda *a, **kw: None
 
 
-def run(goal="лента не листается", steps=5):
+def run(goal="лента не листается", steps=5, feed_labels=None):
     del taps[:], backs[:], fake_ask.prompts[:]
-    return escape.escape(goal=goal, max_steps=steps)
+    return escape.escape(goal=goal, max_steps=steps,
+                         feed_labels=feed_labels)
 
 
 # --- 1. крестик закрывает окно ---------------------------------------
@@ -148,6 +149,26 @@ screens[:] = [POPUP, POPUP]
 answers[:] = ["конечно! вот что я вижу на экране..."]
 rep = run()
 say(not taps and not rep["ok"], "мусорный ответ ничего не нажал")
+
+# --- 6b. вкладка ленты вместо вопроса модели ------------------------
+print("\n--- вкладка ленты жмётся без модели ---")
+TABS = [
+    node(text="Главная", bounds=(20, 2150, 200, 2250)),
+    node(text="Интересное", bounds=(220, 2150, 400, 2250)),
+    node(text="Входящие", bounds=(600, 2150, 800, 2250)),
+]
+say(escape.feed_tab(TABS, ["Главная", "Home"]) is not None,
+    "среди вкладок находится лента")
+say(escape.feed_tab(TABS + [node(text="Shorts", bounds=(820, 2150, 1000, 2250))],
+                    ["Главная", "Shorts"]) is None,
+    "две подходящие вкладки — решает модель, а не мы")
+
+screens[:] = [TABS, []]
+answers[:] = ['{"кнопка": 2}']      # модель бы выбрала «Интересное»
+rep = run(feed_labels=["Главная", "Home"])
+say(rep["ok"] and taps == ["Главная"],
+    f"нажата лента, а не совет модели: {taps} ({rep['почему']})")
+say(not fake_ask.prompts, "модель вообще не спрашивалась")
 
 # --- 7. встроено ли это в сессию ------------------------------------
 # Самый обидный вид поломки — когда модуль работает, а звать его некому.
