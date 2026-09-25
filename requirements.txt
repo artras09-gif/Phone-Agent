@@ -1,0 +1,41 @@
+# PhoneAgent - зависимостей из PyPI НЕТ.
+#
+# Файл лежит здесь специально, чтобы было видно: pip ставить нечего,
+# а не «забыли положить». Проверено разбором импортов всех модулей:
+#
+#   argparse base64 contextlib datetime json os posixpath random re shutil
+#   sqlite3 statistics subprocess sys tempfile threading time tkinter urllib
+#   xml zipfile
+#
+# Всё это стандартная библиотека. `pip install -r requirements.txt`
+# отработает вхолостую и ничего не сломает.
+#
+# ----------------------------------------------------------------- Python
+# Нужен Python 3.10+ (проверялось на 3.14).
+# Внутри должны быть модули, которые в урезанных сборках иногда вырезают:
+#   sqlite3  - очередь задач (jobs.db)
+#   tkinter  - запасной просмотрщик экрана, если нет scrcpy
+# Проверить: python -c "import sqlite3, tkinter"
+# В embeddable-сборке Python с python.org tkinter отсутствует - брать обычный
+# установщик.
+#
+# ------------------------------------------------- НЕ-Python зависимости
+# Их pip не поставит, они лежат в комплекте рядом (папка tools\):
+#
+#   adb (platform-tools)  https://developer.android.com/tools/releases/platform-tools
+#                         обязателен, без него ничего не работает
+#   scrcpy 4.1            https://github.com/Genymobile/scrcpy/releases
+#                         только трансляция экрана, агент работает и без него
+#
+#   LM Studio             https://lmstudio.ai  (ОПЦИОНАЛЬНО, только для зрения)
+#                         + визуальная модель, напр. Qwen2.5-VL-3B-Instruct-GGUF
+#                         (~2 ГБ + mmproj). Нужна для команд vision/analyze/content
+#                         и подсказок на незнакомых экранах. Без неё агент
+#                         работает как раньше, зрение просто выключается.
+#                         Сервер: Developer -> Start Server, порт 1234.
+#
+# На телефоне (ставится один раз, руками):
+#   ADBKeyboard.apk       https://github.com/senzhk/ADBKeyBoard
+#                         нужен для русского текста в описаниях:
+#                         штатный `adb shell input text` умеет только латиницу.
+#                         Установка: python main.py install-keyboard

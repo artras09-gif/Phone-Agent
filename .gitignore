@@ -1,0 +1,61 @@
+# ВНИМАНИЕ: комментарий пишется ТОЛЬКО на отдельной строке.
+# «telegram.json  # токен» — это не правило с пояснением, а правило для файла
+# с таким длинным именем, и настоящий telegram.json спокойно уезжает в коммит.
+# Поймано ровно здесь, на первом же `git add`.
+
+# --- ТАЙНЫ: в репозиторий не должны попасть никогда ---
+# telegram.json — токен бота
+# settings.json — ключ сервиса зрения и серийник телефона
+# pin.txt       — PIN телефона
+# remote.txt    — адрес телефона в туннеле
+telegram.json
+settings.json
+pin.txt
+remote.txt
+*.key
+*.pem
+
+# --- нажитое: база, очередь, кадры, журналы ---
+jobs.db
+jobs.db-wal
+jobs.db-shm
+devices/
+frames/
+logs/
+queue/
+watch/
+topics_cache.json
+.vision_model
+
+# --- служебное состояние процессов ---
+.fleet/
+.gates/
+.uiprofile/
+STOP
+
+# --- питон ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# --- сборка и комплекты для переноса ---
+build/
+dist/
+*.spec
+PhoneAgent-exe/
+PhoneAgent-transfer/
+
+# --- отладочные снимки экрана: на них видны аккаунты и лента ---
+scratchpad/screens/
+*.png
+!bot-avatar.png
+*.jpg
+*.mp4
+*.html.bak
+
+# --- мусор ОС ---
+Thumbs.db
+desktop.ini
+.DS_Store

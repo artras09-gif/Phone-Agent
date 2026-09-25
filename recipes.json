@@ -1,0 +1,834 @@
+{
+  "_readme": [
+    "Маршруты публикации. Это ЕДИНСТВЕННЫЙ файл, который придётся править,",
+    "когда соцсеть обновит интерфейс. Код трогать не нужно.",
+    "",
+    "Селекторы в 'any' проверяются по очереди, срабатывает первый найденный —",
+    "поэтому туда складываем варианты на разных языках и разные resource-id.",
+    "  {'text': 'Далее'}      — точное совпадение текста",
+    "  {'contains': 'Next'}   — подстрока в тексте или content-desc",
+    "  {'rid': 'btn_post'}    — resource-id (можно хвост без имени пакета)",
+    "  {'desc': 'Опубликовать'} — content-desc",
+    "",
+    "Операции: wait, tap, optional_tap, type, publish, sleep, back,",
+    "          hide_keyboard, dismiss",
+    "  optional_tap — не падает, если элемента нет (реклама, туториалы)",
+    "  hide_keyboard — жмёт «назад» ТОЛЬКО если клавиатура видна. После",
+    "                  ввода описания нужен именно он: голое «назад» при",
+    "                  спрятанной клавиатуре уходит с экрана публикации",
+    "                  обратно в редактор",
+    "  publish      — финальный необратимый тап, слушается DRY_RUN",
+    "  $caption     — подставляется описание из задачи",
+    "",
+    "ВАЖНО: resource-id ниже — стартовые догадки, их надо уточнить под свою",
+    "версию приложения. Открой нужный экран на телефоне и выполни:",
+    "    python main.py dump",
+    "Скрипт напечатает все элементы экрана с их настоящими id."
+  ],
+  "tiktok": {
+    "package": "com.zhiliaoapp.musically",
+    "title": "TikTok",
+    "steps": [
+      {
+        "op": "sleep",
+        "min": 2,
+        "max": 4,
+        "desc": "ждём загрузку редактора"
+      },
+      {
+        "op": "optional_tap",
+        "any": [
+          {
+            "text": "Разрешить"
+          },
+          {
+            "text": "Allow"
+          }
+        ],
+        "desc": "запрос доступа к файлам"
+      },
+      {
+        "op": "tap",
+        "timeout": 45,
+        "any": [
+          {
+            "text": "Далее"
+          },
+          {
+            "text": "Next"
+          },
+          {
+            "rid": "btn_next"
+          }
+        ],
+        "desc": "из редактора на экран описания"
+      },
+      {
+        "op": "optional_tap",
+        "any": [
+          {
+            "text": "Далее"
+          },
+          {
+            "text": "Next"
+          }
+        ],
+        "desc": "второй Next, если есть шаг со звуком"
+      },
+      {
+        "op": "wait",
+        "timeout": 30,
+        "any": [
+          {
+            "rid": "caption_edit"
+          },
+          {
+            "contains": "Опишите"
+          },
+          {
+            "contains": "Describe"
+          },
+          {
+            "contains": "Добавьте описание"
+          },
+          {
+            "contains": "Add description"
+          }
+        ],
+        "desc": "экран публикации"
+      },
+      {
+        "op": "tap",
+        "any": [
+          {
+            "rid": "caption_edit"
+          },
+          {
+            "contains": "Опишите"
+          },
+          {
+            "contains": "Describe"
+          },
+          {
+            "contains": "Добавьте описание"
+          },
+          {
+            "contains": "Add description"
+          }
+        ],
+        "desc": "фокус в поле описания"
+      },
+      {
+        "op": "type",
+        "value": "$caption"
+      },
+      {
+        "op": "hide_keyboard",
+        "desc": "убрать клавиатуру"
+      },
+      {
+        "op": "sleep",
+        "min": 1,
+        "max": 2
+      },
+      {
+        "op": "publish",
+        "timeout": 20,
+        "any": [
+          {
+            "text": "Опубликовать"
+          },
+          {
+            "text": "Post"
+          },
+          {
+            "rid": "btn_post"
+          },
+          {
+            "desc": "Опубликовать"
+          },
+          {
+            "desc": "Post"
+          }
+        ],
+        "desc": "ФИНАЛЬНАЯ КНОПКА"
+      }
+    ]
+  },
+  "reels": {
+    "package": "com.instagram.android",
+    "title": "Instagram Reels",
+    "_note": [
+      "Instagram НЕ принимает видео через Intent: проверены content://,",
+      "file://, явная ShareHandlerActivity и пункт «Reels» в окне MIUI —",
+      "во всех случаях открывается главная лента, будто ничего не прислали.",
+      "Поэтому здесь open_uri: заходим в ленту Reels и дальше идём как",
+      "человек — камера, галерея, свежее видео, подпись, «Поделиться».",
+      "Видео к этому моменту уже залито на телефон и лежит в галерее первым."
+    ],
+    "open_uri": "instagram://reels_home",
+    "steps": [
+      {
+        "op": "sleep",
+        "min": 3,
+        "max": 5,
+        "desc": "ждём ленту Reels"
+      },
+      {
+        "op": "tap_xy",
+        "x": 0.061,
+        "y": 0.071,
+        "desc": "камера Reels (в играющей ленте дерево не снимается, только по месту)"
+      },
+      {
+        "op": "sleep",
+        "min": 3,
+        "max": 5
+      },
+      {
+        "op": "optional_tap",
+        "any": [
+          {
+            "text": "Начать новое видео"
+          },
+          {
+            "text": "Start new video"
+          }
+        ],
+        "desc": "черновик с прошлого раза — начинаем новое"
+      },
+      {
+        "op": "tap_xy",
+        "x": 0.09,
+        "y": 0.885,
+        "desc": "миниатюра галереи (у неё нет ни текста, ни id)"
+      },
+      {
+        "op": "wait",
+        "timeout": 30,
+        "any": [
+          {
+            "rid": "gallery_title_text"
+          },
+          {
+            "contains": "Новое видео Reels"
+          }
+        ],
+        "desc": "галерея"
+      },
+      {
+        "op": "tap_first",
+        "timeout": 20,
+        "any": [
+          {
+            "rid": "gallery_grid_item_thumbnail",
+            "contains": "идео"
+          }
+        ],
+        "desc": "свежее видео"
+      },
+      {
+        "op": "tap",
+        "timeout": 30,
+        "any": [
+          {
+            "rid": "clips_right_action_button"
+          },
+          {
+            "text": "Далее"
+          }
+        ],
+        "desc": "из редактора дальше"
+      },
+      {
+        "op": "optional_tap",
+        "any": [
+          {
+            "rid": "clips_right_action_button"
+          }
+        ],
+        "desc": "ещё раз «Далее», если первый тап ушёл в подсказку"
+      },
+      {
+        "op": "wait",
+        "timeout": 30,
+        "any": [
+          {
+            "rid": "caption_input_text_view"
+          },
+          {
+            "contains": "Добавьте подпись"
+          },
+          {
+            "contains": "Напишите подпись"
+          }
+        ],
+        "desc": "экран публикации"
+      },
+      {
+        "op": "tap",
+        "any": [
+          {
+            "rid": "caption_input_text_view"
+          },
+          {
+            "contains": "Добавьте подпись"
+          },
+          {
+            "contains": "Напишите подпись"
+          }
+        ],
+        "desc": "фокус в поле подписи"
+      },
+      {
+        "op": "type",
+        "value": "$caption"
+      },
+      {
+        "op": "hide_keyboard",
+        "desc": "убрать клавиатуру"
+      },
+      {
+        "op": "sleep",
+        "min": 1,
+        "max": 2
+      },
+      {
+        "op": "publish",
+        "timeout": 25,
+        "any": [
+          {
+            "rid": "share_button"
+          },
+          {
+            "text": "Поделиться"
+          },
+          {
+            "text": "Share"
+          }
+        ],
+        "desc": "ФИНАЛЬНАЯ КНОПКА"
+      }
+    ]
+  },
+  "shorts": {
+    "package": "com.google.android.youtube",
+    "title": "YouTube Shorts",
+    "share_uri": "file",
+    "_note": [
+      "share_uri=file обязателен: по content:// YouTube не открывается вообще.",
+      "YouTube по Intent открывает СРАЗУ экран «Добавьте информацию»:",
+      "шага «Далее» здесь нет вообще, он был в стартовых догадках зря.",
+      "Поле названия — большая кликабельная подсказка «Укажите название…»,",
+      "кнопка — «Загрузить» с id upload_bottom_button. Снято с живого экрана."
+    ],
+    "steps": [
+      {
+        "op": "sleep",
+        "min": 3,
+        "max": 5,
+        "desc": "ждём экран загрузки"
+      },
+      {
+        "op": "wait",
+        "timeout": 45,
+        "any": [
+          {
+            "rid": "title_edit_text"
+          },
+          {
+            "contains": "Укажите название"
+          },
+          {
+            "contains": "Добавьте название"
+          },
+          {
+            "contains": "Add a title"
+          }
+        ],
+        "desc": "экран «Добавьте информацию»"
+      },
+      {
+        "op": "tap",
+        "any": [
+          {
+            "rid": "title_edit_text"
+          },
+          {
+            "contains": "Укажите название"
+          },
+          {
+            "contains": "Добавьте название"
+          },
+          {
+            "contains": "Add a title"
+          }
+        ],
+        "desc": "фокус в поле названия"
+      },
+      {
+        "op": "type",
+        "value": "$caption"
+      },
+      {
+        "op": "hide_keyboard",
+        "desc": "убрать клавиатуру"
+      },
+      {
+        "op": "sleep",
+        "min": 1,
+        "max": 2
+      },
+      {
+        "op": "publish",
+        "timeout": 25,
+        "any": [
+          {
+            "rid": "upload_bottom_button"
+          },
+          {
+            "text": "Загрузить"
+          },
+          {
+            "text": "Upload"
+          },
+          {
+            "desc": "Загрузить"
+          }
+        ],
+        "desc": "ФИНАЛЬНАЯ КНОПКА"
+      }
+    ]
+  },
+  "_feed_apps": {
+    "_readme": [
+      "Ленты для живых сессий. Открытое приложение — ещё не лента:",
+      "оно восстанавливает экран, на котором его закрыли.",
+      "",
+      "  open_uri     — прямая ссылка на ленту. Если задана, идём по ней:",
+      "                 это надёжнее охоты за кнопкой. Не сработает —",
+      "                 откроем приложение обычно и поищем вкладки",
+      "  feed_tabs    — кнопка нужной ленты в нижней панели",
+      "  for_you_tabs — вкладка ВНУТРИ ленты (у TikTok «Подписки» пусты,",
+      "                 листать надо «Рекомендации»); пусто — шага нет",
+      "  feed_markers — по чему видно, что лента ОТКРЫЛАСЬ. Задано — проверяем",
+      "                 по ним; пусто — считаем лентой то, где дерево вообще",
+      "                 перестало сниматься (так ведёт себя TikTok)",
+      "",
+      "Селекторы брать с живого экрана: python main.py dump.",
+      "Две ловушки, обе споткнулись живьём:",
+      "  * у вкладки обычно ДВА узла — кнопка с content-desc и текстовая",
+      "    подпись с границами (0,0,0,0); тап по подписи уходит в никуда;",
+      "  * desc сравнивается ПО ВХОЖДЕНИЮ: «Reels» совпал с «контейнер для",
+      "    панели видео Reels» посреди экрана, и агент открыл сторис. Поэтому",
+      "    у кнопок навигации стоит \"clickable\": true — контейнеры не нажимаются."
+    ],
+    "tiktok": {
+      "package": "com.zhiliaoapp.musically",
+      "title": "TikTok",
+      "feed_tabs": [
+        {
+          "desc": "Главная",
+          "clickable": true
+        },
+        {
+          "desc": "Home",
+          "clickable": true
+        }
+      ],
+      "for_you_tabs": [
+        {
+          "desc": "Рекомендации"
+        },
+        {
+          "desc": "Для вас"
+        },
+        {
+          "desc": "For You"
+        }
+      ],
+      "feed_markers": [],
+      "like_selectors": [
+        {
+          "desc": "Нравится"
+        },
+        {
+          "desc": "Like"
+        },
+        {
+          "rid": "cor"
+        }
+      ],
+      "comment_selectors": [
+        {
+          "desc": "Комментарии",
+          "clickable": true
+        },
+        {
+          "desc": "Comments",
+          "clickable": true
+        }
+      ],
+      "_comments_note": "ПРОВЕРЕНО живьём 2026-08-18. Настоящий desc кнопки — «Прочитать или оставить комментарии. Число комментариев: 127»; селектор совпадает по вхождению. Порядок обязателен: пауза одиночным тапом (только тогда снимается дерево) -> найти кнопку -> СНЯТЬ паузу -> тапнуть по кнопке. С паузы тап не срабатывает: первый тап уходит на возобновление.",
+      "like_count_selectors": [
+        {
+          "desc": "Число лайков",
+          "clickable": true
+        },
+        {
+          "desc": "Number of likes",
+          "clickable": true
+        }
+      ],
+      "share_selectors": [
+        {
+          "desc": "Поделиться видео",
+          "clickable": true
+        },
+        {
+          "desc": "Share video",
+          "clickable": true
+        }
+      ],
+      "link_selectors": [
+        {
+          "contains": "Ссылка",
+          "clickable": true
+        },
+        {
+          "contains": "Копировать ссылку",
+          "clickable": true
+        },
+        {
+          "contains": "Copy link",
+          "clickable": true
+        }
+      ],
+      "author_selectors": [
+        {
+          "desc": "Профиль ",
+          "clickable": true
+        },
+        {
+          "desc": "Profile ",
+          "clickable": true
+        }
+      ],
+      "caption_selectors": [
+        {
+          "rid": "desc"
+        }
+      ],
+      "discover_tabs": [
+        {
+          "contains": "Интересное",
+          "clickable": true
+        },
+        {
+          "contains": "Discover",
+          "clickable": true
+        }
+      ],
+      "search_boxes": [
+        {
+          "contains": "Поиск"
+        },
+        {
+          "contains": "Search"
+        }
+      ],
+      "home_tabs": [
+        {
+          "contains": "Главная",
+          "clickable": true
+        },
+        {
+          "contains": "Home",
+          "clickable": true
+        }
+      ],
+      "_link_note": "ПРОВЕРЕНО живьём 2026-08-20. Число лайков лежит в desc кнопки целиком: «Поставить лайк. Число лайков: 1578» — на экране оно же сокращено до «1.5K», поэтому берём desc, а не подпись. Лист «поделиться», в отличие от панели комментариев, деревом СНИМАЕТСЯ (93 узла), пункт называется «Ссылка», и подпись лежит в desc КНОПКИ — у надписи под ней тот же текст, но она не кликабельна, поэтому селектор по `text`+`clickable` не совпадал ни с чем (поймано живьём). Буфер обмена с ПК не прочитать (Android 12, `cmd clipboard` не реализован, рута нет), поэтому ссылку вставляем в поле поиска и читаем из дерева. В самой ленте кнопки поиска в дереве НЕТ — заходим через «Интересное», там строка «Поиск» открывает настоящее поле ввода.",
+      "liked_selectors": [
+        {
+          "desc": "Вам понравилось это видео",
+          "clickable": true
+        },
+        {
+          "desc": "You liked this video",
+          "clickable": true
+        }
+      ],
+      "share_needs_playing": true,
+      "comments_need_playing": true
+    },
+    "shorts": {
+      "package": "com.google.android.youtube",
+      "title": "YouTube Shorts",
+      "open_uri": "https://www.youtube.com/shorts",
+      "feed_tabs": [
+        {
+          "desc": "Shorts",
+          "clickable": true
+        },
+        {
+          "desc": "Шортс",
+          "clickable": true
+        }
+      ],
+      "for_you_tabs": [],
+      "feed_markers": [
+        {
+          "desc": "Приостановить видео"
+        },
+        {
+          "desc": "Следующее видео"
+        },
+        {
+          "desc": "Pause video"
+        },
+        {
+          "desc": "Next video"
+        }
+      ],
+      "like_selectors": [
+        {
+          "desc": "Нравится"
+        },
+        {
+          "desc": "Like"
+        }
+      ],
+      "comment_selectors": [
+        {
+          "desc": "комментари",
+          "clickable": true
+        },
+        {
+          "desc": "comments",
+          "clickable": true
+        }
+      ],
+      "_comments_note": "Заход в комментарии ОТКЛЮЧЁН. YouTube выставляет в дереве только слой доступности (reel_a11y_controls): «Приостановить видео» и «Следующее видео». Правой колонки кнопок там нет вовсе — проверено живьём 2026-08-18, дерево 75 узлов и до, и после паузы. Пустой список = агент даже не пытается.",
+      "share_selectors": [
+        {
+          "desc": "Поделиться видео",
+          "clickable": true
+        },
+        {
+          "desc": "Share video",
+          "clickable": true
+        }
+      ],
+      "_link_note": "Ссылки берутся ПО ТОЧКАМ, а не по дереву: правой колонки кнопок в дереве нет (проверено живьём 2026-08-18), поэтому «поделиться» — координата, а число лайков читает зрение. Точки заданы долями экрана и требуют калибровки на своём телефоне: «python main.py link-probe shorts» рисует крестики на живом снимке, смотреть в frames/probe-shorts.png.",
+      "likes_by_vision": true,
+      "share_point": null,
+      "_share_point_note": "Правая колонка Shorts сверху вниз: лайк 0.55, дизлайк 0.635, комментарии 0.72, «поделиться» 0.805, «ещё» 0.875.",
+      "search_points": [
+        [
+          0.1,
+          0.965
+        ],
+        [
+          0.87,
+          0.05
+        ]
+      ],
+      "_search_points_note": "Строки поиска в самой ленте нет: сначала нижняя вкладка «Главная», потом значок поиска в шапке. На главной дерево снимается, дальше всё идёт селекторами.",
+      "home_point": [
+        0.3,
+        0.965
+      ],
+      "search_boxes": [
+        {
+          "contains": "Поиск"
+        },
+        {
+          "contains": "Search"
+        }
+      ],
+      "link_selectors": [
+        {
+          "contains": "Коп. ссылк",
+          "clickable": true
+        },
+        {
+          "contains": "Копировать ссылк",
+          "clickable": true
+        },
+        {
+          "contains": "Copy link",
+          "clickable": true
+        }
+      ],
+      "like_count_selectors": [
+        {
+          "desc": "видео понравилось",
+          "clickable": true
+        },
+        {
+          "desc": "отмет",
+          "clickable": true
+        },
+        {
+          "desc": "liked this video",
+          "clickable": true
+        },
+        {
+          "desc": "likes",
+          "clickable": true
+        }
+      ],
+      "author_selectors": [
+        {
+          "contains": "Перейти на канал"
+        },
+        {
+          "contains": "Go to channel"
+        }
+      ],
+      "discover_tabs": [
+        {
+          "desc": "Поиск",
+          "clickable": true
+        },
+        {
+          "desc": "Search",
+          "clickable": true
+        }
+      ],
+      "home_tabs": [
+        {
+          "desc": "Shorts",
+          "clickable": true
+        }
+      ],
+      "link_row_fallback": true,
+      "comments_need_playing": false
+    },
+    "reels": {
+      "package": "com.instagram.android",
+      "title": "Instagram Reels",
+      "open_uri": "instagram://reels_home",
+      "feed_tabs": [
+        {
+          "desc": "Reels",
+          "clickable": true
+        },
+        {
+          "desc": "Клипы",
+          "clickable": true
+        }
+      ],
+      "for_you_tabs": [],
+      "_markers_note": "именно «Видео Reels», а не «Reels»: кнопка Reels есть в нижней панели на любом экране приложения",
+      "feed_markers": [
+        {
+          "desc": "Видео Reels"
+        },
+        {
+          "desc": "Reels video"
+        },
+        {
+          "desc": "Reel by"
+        }
+      ],
+      "like_selectors": [
+        {
+          "desc": "Нравится"
+        },
+        {
+          "desc": "Like"
+        }
+      ],
+      "comment_selectors": [
+        {
+          "desc": "Комментарии:",
+          "clickable": true
+        },
+        {
+          "desc": "Comments:",
+          "clickable": true
+        }
+      ],
+      "_comments_note": "Заход в комментарии ОТКЛЮЧЁН. Instagram не выставляет правую колонку кнопок в дереве: проверено живьём 2026-08-18, 56 узлов — только контейнеры, шапка и нижние вкладки. Найти кнопку селектором нечем. Пустой список = агент даже не пытается.",
+      "share_selectors": [
+        {
+          "desc": "Поделиться",
+          "clickable": true
+        },
+        {
+          "desc": "Share",
+          "clickable": true
+        }
+      ],
+      "_link_note": "Ссылки берутся ПО ТОЧКЕ: «поделиться» (самолётик) в дереве нет, число лайков читает зрение. А вот нижние вкладки в дереве ЕСТЬ — те же 56 узлов, — поэтому дорога до поиска и обратно идёт селекторами, координата тут ровно одна. Калибровка: «python main.py link-probe reels», смотреть frames/probe-reels.png.",
+      "likes_by_vision": true,
+      "share_point": null,
+      "_share_point_note": "Правая колонка Reels сверху вниз: сердечко 0.60, комментарии 0.68, самолётик 0.755, «ещё» 0.82.",
+      "discover_tabs": [
+        {
+          "desc": "Поиск",
+          "clickable": true
+        },
+        {
+          "desc": "Search",
+          "clickable": true
+        }
+      ],
+      "home_tabs": [
+        {
+          "desc": "Reels",
+          "clickable": true
+        },
+        {
+          "desc": "Клипы",
+          "clickable": true
+        }
+      ],
+      "search_boxes": [
+        {
+          "text": "Поиск",
+          "cls": "Button"
+        },
+        {
+          "text": "Search",
+          "cls": "Button"
+        }
+      ],
+      "link_selectors": [
+        {
+          "contains": "Ссылка",
+          "clickable": true
+        },
+        {
+          "contains": "Копировать ссылку",
+          "clickable": true
+        },
+        {
+          "contains": "Copy link",
+          "clickable": true
+        }
+      ],
+      "like_count_selectors": [
+        {
+          "desc": "Нравится:",
+          "clickable": true
+        },
+        {
+          "desc": "Likes:",
+          "clickable": true
+        }
+      ],
+      "author_selectors": [
+        {
+          "contains": "Фото профиля"
+        },
+        {
+          "contains": "Profile picture"
+        }
+      ],
+      "search_uri": "instagram://explore",
+      "comments_need_playing": false
+    }
+  }
+}
