@@ -274,5 +274,39 @@ say(vision._visual_by_meta({"id": "x", "architecture": {
     "input_modalities": ["text", "image"]}}) is True,
     "внутри architecture — по-прежнему читаются")
 
+# --- 7. текстовые вопросы на рассуждающей модели --------------------
+# Судья темы просил 4 токена и читал только content. На рассуждающей модели
+# это давало «нет» ВСЕГДА, то есть вкусы молча отсекали вообще всё.
+print("\n--- судья темы, когда модель думает вслух ---")
+запросы = []
+
+
+def fake_completion(model, messages, max_tokens, temperature, timeout, kind=None):
+    запросы.append(max_tokens)
+    if max_tokens < 100:            # первый, тесный запрос — не успел
+        return {"choices": [{"finish_reason": "length", "message": {
+            "content": "", "reasoning_content": "думаю над темой..."}}]}
+    return {"choices": [{"finish_reason": "stop",
+                         "message": {"content": "да"}}]}
+
+
+saved_completion = vision._completion
+saved_available = vision.available
+vision._completion = fake_completion
+vision.available = lambda kind=None: (True, "модель-думалка")
+vision._NEEDS_ROOM.discard("модель-думалка")
+try:
+    say(vision.judge_topic("готовят борщ", "кулинария") is True,
+        f"тесный ответ переспрошен с запасом: {запросы}")
+    say(len(запросы) == 2 and запросы[1] > запросы[0],
+        "второй запрос больше первого")
+    запросы.clear()
+    vision.judge_topic("готовят борщ", "кулинария")
+    say(len(запросы) == 1,
+        f"со второго раза запас сразу большой — лишнего запроса нет: {запросы}")
+finally:
+    vision._completion, vision.available = saved_completion, saved_available
+    vision._NEEDS_ROOM.discard("модель-думалка")
+
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)

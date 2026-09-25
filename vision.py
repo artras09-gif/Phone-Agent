@@ -1845,6 +1845,38 @@ EXPAND_PROMPT = (
 )
 
 
+def ask_text(prompt, max_tokens, temperature, timeout, model=None):
+    """Текстовый вопрос модели — без картинки. Возвращает текст ответа.
+
+    Одно место на все текстовые вопросы (судья темы, разворот темы), и
+    заведено оно ради рассуждающих моделей. У них ответ лежит в
+    `reasoning_content`, а `content` остаётся пустым, если запаса токенов не
+    хватило на размышление. Раньше и `judge_topic`, и `expand_topic` читали
+    только `content` со своим крошечным запасом (4 токена у судьи!) — и на
+    `deepseek-flash` судья отвечал «нет» ВСЕГДА. Молча: вкусы при этом
+    отсекали вообще всё, а по журналу это выглядело как «ничего не подошло».
+    """
+    if model is None:
+        ok, model = available()
+        if not ok:
+            raise VisionError(model)
+
+    # Не просто «вшестеро», а с нижней границей: у судьи темы запас 4
+    # токена, и шестикратный от него — всё равно 24, то есть снова обрыв на
+    # размышлении и снова лишний запрос. Поймано проверкой.
+    room = max(max_tokens * 6, 1200) if model in _NEEDS_ROOM else max_tokens
+    messages = [{"role": "user", "content": prompt}]
+    res = _completion(model, messages, room, temperature, timeout)
+    if _thought_too_long(res):
+        _NEEDS_ROOM.add(model)
+        res = _completion(model, messages, max(room * 6, 1200), temperature,
+                          timeout)
+    try:
+        return _answer_of(res)
+    except VisionError:
+        return ""
+
+
 def expand_topic(topic, timeout=60):
     """Развернуть тему в набор слов: «политика» -> выборы, депутат, партия...
 
@@ -1855,18 +1887,7 @@ def expand_topic(topic, timeout=60):
 
     Запрос текстовый, без картинки, и делается один раз на тему.
     """
-    ok, model = available()
-    if not ok:
-        raise VisionError(model)
-
-    res = _completion(model,
-                      [{"role": "user",
-                        "content": EXPAND_PROMPT.format(topic=topic)}],
-                      120, 0.3, timeout)
-    try:
-        answer = res["choices"][0]["message"]["content"] or ""
-    except (KeyError, IndexError, TypeError):
-        return []
+    answer = ask_text(EXPAND_PROMPT.format(topic=topic), 120, 0.3, timeout)
 
     words = [w.strip(" .\"'\n").lower() for w in re.split(r"[,;\n]", answer)]
     return [w for w in words if 2 < len(w) < 20][:14]
@@ -1896,17 +1917,15 @@ def judge_topic(description, topic, timeout=30):
     if not description or not topic:
         return False
 
-    ok, model = available()
-    if not ok:
-        raise VisionError(model)
-
-    res = _completion(model,
-                      [{"role": "user",
-                        "content": JUDGE_PROMPT.format(text=description[:300],
-                                                       topic=topic)}],
+    answer = ask_text(JUDGE_PROMPT.format(text=description[:300], topic=topic),
                       4, 0.0, timeout)
-    try:
-        answer = res["choices"][0]["message"]["content"] or ""
-    except (KeyError, IndexError, TypeError):
+    # Ищем «да»/«нет» по всему ответу, а не только в его начале: у
+    # рассуждающей модели сюда может прийти размышление, и решающее слово
+    # стоит в нём не первым.
+    low = str(answer).strip().lower().lstrip("«\"' ")
+    if low.startswith("да"):
+        return True
+    if low.startswith("нет"):
         return False
-    return str(answer).strip().lower().lstrip("«\"'").startswith("да")
+    tail = low[-60:]
+    return "да" in tail and "нет" not in tail
