@@ -814,17 +814,23 @@ def warm_up(timeout=120):
     # Именно с картинкой: от текстового запроса просыпается только языковая
     # часть, а картиночная догружается на первом кадре — и он один стоил
     # 8.15 с. Шлём крошечный PNG, чтобы этот счёт оплатить заранее.
+    # Картинка для разогрева — НАСТОЯЩИЙ квадратик, а не пиксель 1x1.
+    # DeepSeek отвечает на пиксель «You have uploaded an unsupported image»,
+    # и разогрев падал, а команда `vision` писала «сервис не ответил» при
+    # полностью рабочем ключе. Свой квадрат 32x32 весит те же полторы сотни
+    # байт и принимается всеми.
+    warm = base64.b64encode(_solid_png((10, 10, 10), 32)).decode("ascii")
     messages = [{"role": "user", "content": [
         {"type": "text", "text": "."},
         {"type": "image_url",
-         "image_url": {"url": "data:image/png;base64," + _TINY_PNG}},
+         "image_url": {"url": "data:image/png;base64," + warm}},
     ]}]
     if kind == API:
         # Заодно расталкиваем ffmpeg: первый его запуск стоил 1.35 с против
         # обычных 0.07 (файл ещё не в кэше, да и антивирус смотрит), и этот
         # счёт иначе оплатил бы первый ролик сессии.
         if config.API_JPEG:
-            to_jpeg(base64.b64decode(_TINY_PNG))
+            to_jpeg(base64.b64decode(warm))
         try:
             _completion(name, messages, 1, 0, min(timeout, config.API_TIMEOUT))
             return True

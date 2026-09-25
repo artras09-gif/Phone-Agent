@@ -4,8 +4,10 @@
 отбор по метаданным, отбор по имени и кэш (без него окно ходило в облако
 раз в 12 секунд).
 """
+import io
 import os
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -107,11 +109,26 @@ say(calls["n"] == first + 1, "fresh=True спрашивает заново")
 
 import prefs  # noqa: E402
 
+# Путь настроек уводим во временную папку. Без этого стенд писал в БОЕВОЙ
+# settings.json и подставлял туда модель по умолчанию — то есть каждый
+# прогон батареи молча сбрасывал выбранную человеком модель. Поймано при
+# перепроверке: после батареи в настройках оказывался «qwen-vl-plus»
+# вместо выбранного. Так же, как в `keys_ui` и `key_only`.
+БОЕВЫЕ = prefs.PATH
+СНИМОК = io.open(БОЕВЫЕ, encoding="utf-8").read() if os.path.exists(БОЕВЫЕ) else None
+prefs.PATH = os.path.join(tempfile.mkdtemp(prefix="pa_models_"), "settings.json")
+assert prefs.PATH != БОЕВЫЕ
+
 vision.installed_models()
 before = calls["n"]
 prefs.save(api_model=config.API_MODEL)
 vision.installed_models()
 say(calls["n"] == before + 1, "правка настроек сбрасывает кэш")
+
+prefs.PATH = БОЕВЫЕ
+if СНИМОК is not None:
+    say(io.open(БОЕВЫЕ, encoding="utf-8").read() == СНИМОК,
+        "боевой settings.json не тронут")
 
 config.VISION_PROVIDER, vision.models_detailed = saved
 vision.forget_models()
@@ -307,6 +324,20 @@ try:
 finally:
     vision._completion, vision.available = saved_completion, saved_available
     vision._NEEDS_ROOM.discard("модель-думалка")
+
+# --- 8. разогрев шлёт настоящую картинку ----------------------------
+# DeepSeek отвечает на пиксель 16x16 «unsupported image», и разогрев падал,
+# а команда `vision` писала «сервис не ответил» при рабочем ключе.
+print("\n--- картинка для разогрева ---")
+import inspect  # noqa: E402
+
+исходник = inspect.getsource(vision.warm_up)
+say("_TINY_PNG" not in исходник,
+    "разогрев больше не шлёт вырожденный пиксель")
+say("_solid_png" in исходник, "шлётся нарисованный квадрат")
+квадрат = vision._solid_png((10, 10, 10), 32)
+say(квадрат[:8] == b"\x89PNG\r\n\x1a\n" and 32 == int.from_bytes(квадрат[16:20], "big"),
+    f"квадрат корректный и 32x32, {len(квадрат)} байт")
 
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)
