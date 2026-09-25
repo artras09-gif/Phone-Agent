@@ -155,23 +155,88 @@ def fake_open(req, timeout=None):
 
 saved_open = _ur.urlopen
 _ur.urlopen = fake_open
+saved_sees = vision.model_sees
+# Картинку «видит» только одна модель — та, что и должна выбраться.
+vision.model_sees = lambda m, url, key, timeout=30: (
+    (m == "qwen/qwen2.5-vl-72b-instruct", "зелёный"))
 try:
-    pid, url, visual = vision.detect_service("sk-обычный-на-вид-ключ")
+    pid, url, visual, model = vision.detect_service("sk-обычный-на-вид-ключ")
 finally:
-    _ur.urlopen = saved_open
+    _ur.urlopen, vision.model_sees = saved_open, saved_sees
 
 say(pid == "openrouter", f"ключ опознан как openrouter: {pid}")
 say(bool(asked) and "dashscope" in asked[0],
     "сначала спрошен тот, на кого указывал вид ключа")
 say(visual == ["qwen/qwen2.5-vl-72b-instruct"],
     f"в список попали только видящие картинки: {visual}")
+say(model == "qwen/qwen2.5-vl-72b-instruct",
+    f"рабочая модель подтверждена запросом: {model}")
+
+print("\n--- списку моделей верить нельзя, запросу — можно ---")
+# Ровно та ловушка, на которой обожглись живьём: /models у OpenRouter
+# ПУБЛИЧНЫЙ и отдаёт сотни моделей даже без ключа.
+_ur.urlopen = fake_open
+vision.model_sees = lambda m, url, key, timeout=30: (False, "отказ 401")
+try:
+    pid2, _, _, model2 = vision.detect_service("sk-мусорный-ключ")
+finally:
+    _ur.urlopen, vision.model_sees = saved_open, saved_sees
+say(pid2 != "openrouter" and not model2,
+    f"публичный список не выдаёт мусорный ключ за рабочий: {pid2}, {model2!r}")
+
+print("\n--- проверка зрения цветным квадратом ---")
+png = vision._solid_png((220, 20, 20))
+say(png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) > 50,
+    f"квадрат рисуется своими руками: {len(png)} байт")
+
+saved_choice = vision.random.choice
+vision.random.choice = lambda seq: "красный"
+answers = {}
+
+
+def fake_ask(req, timeout=None):
+    class R:
+        def read(self):
+            return _json.dumps({"choices": [{"message":
+                               {"content": answers["said"]}}]}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    return R()
+
+
+_ur.urlopen = fake_ask
+try:
+    answers["said"] = "Красный."
+    good, _ = vision.model_sees("m", "http://x/v1", "k")
+    say(good, "верно названный цвет — модель видит картинку")
+    answers["said"] = "Я не могу просматривать изображения."
+    good, _ = vision.model_sees("m", "http://x/v1", "k")
+    say(not good, "отказ смотреть — модель не годится")
+    answers["said"] = "синий"
+    good, _ = vision.model_sees("m", "http://x/v1", "k")
+    say(not good, "цвет назван наугад и мимо — не годится")
+finally:
+    _ur.urlopen, vision.random.choice = saved_open, saved_choice
 
 print("\n--- выбор модели из списка ---")
-names = ["stealth/space-bunny", "openai/gpt-4o", "qwen/qwen3-vl-32b", "x/vision-1"]
-say(vision.pick_visual(names) == "qwen/qwen3-vl-32b",
-    "по умолчанию берётся Qwen-VL — на нём меряли промпты")
-say(vision.pick_visual(names, "openai/gpt-4o") == "openai/gpt-4o",
-    "уже выбранная модель важнее предпочтения")
+names = ["a/first", "b/second", "c/third"]
+vision.model_sees = lambda m, url, key, timeout=30: (m == "b/second", "")
+try:
+    say(vision.pick_visual(names, "", "http://x/v1", "k") == "b/second",
+        "берётся та, что прошла проверку, а не первая по списку")
+    say(vision.pick_visual(names, "c/third", "http://x/v1", "k") == "b/second",
+        "не прошедшая проверку не берётся, даже если выбрана заранее")
+    vision.model_sees = lambda m, url, key, timeout=30: (False, "")
+    say(vision.pick_visual(names, "", "http://x/v1", "k") == "",
+        "никто не прошёл — выбирать нечего")
+finally:
+    vision.model_sees = saved_sees
+say(vision.pick_visual(names) == "a/first",
+    "без адреса и ключа проверять нечем — отдаём первого")
 say(vision.pick_visual([]) == "", "пустой список не ломает выбор")
 
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")

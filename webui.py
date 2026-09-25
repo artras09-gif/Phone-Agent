@@ -971,19 +971,28 @@ def _cmd_settings(body):
             # `sk-…`, такой ключ уходил в DashScope, получал 401, и окно
             # объявляло рабочий ключ недействительным (поймано на живом
             # ключе). Поэтому спрашиваем сами сервисы, кто его признаёт.
-            pid, url, visual = vision.detect_service(key)
-            if pid:
-                _, _, default_model = config.API_PRESETS[pid]
-                model = vision.pick_visual(visual, default_model)
-                data = prefs.save(api_url=url, api_model=model)
+            pid, url, visual, model = vision.detect_service(key)
+            title = config.API_PRESETS[pid][0] if pid else ""
+            if pid and model:
+                prefs.save(api_url=url, api_model=model)
                 PROBE.refresh_soon()
                 good, said = vision.check_and_remember()
                 if good:
-                    title = config.API_PRESETS[pid][0]
                     return {"ok": True,
                             "message": f"ключ оказался от «{title}» — "
-                                       f"переключил адрес, модель {model}, "
-                                       f"видят картинки: {len(visual)}"}
+                                       f"переключил адрес, выбрал модель "
+                                       f"{model} (проверил: картинку видит), "
+                                       f"всего визуальных: {len(visual)}"}
+            if pid:
+                # Сервис ключ признал, а смотреть кадры ему нечем. Так
+                # устроен DeepSeek: ключ рабочий, моделей две, и обе только
+                # с текстом. Сказать про это прямо важнее, чем отделаться
+                # словом «недействителен»: чинить человеку надо не ключ.
+                return {"ok": False,
+                        "error": f"ключ принят сервисом «{title}», но моделей, "
+                                 "которые видят картинки, у него нет — зрение "
+                                 "на нём не заработает. Нужен ключ сервиса с "
+                                 "визуальными моделями либо LM Studio в своей сети."}
             return {"ok": False, "error": "ключ сохранён, но " + said}
         head = "переключил на «по API», " if switched else ""
         return {"ok": True, "message": head + said}

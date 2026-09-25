@@ -22,6 +22,7 @@ import hashlib
 import http.client
 import json
 import os
+import random
 import re
 import threading
 import time
@@ -468,71 +469,187 @@ def models_detailed(kind=None):
 API_KNOWN = ("qwen-vl-plus", "qwen-vl-max", "qwen3-vl-plus")
 
 
-def pick_visual(names, prefer=""):
-    """Какую модель выбрать из визуальных. Пусто — выбирать не из чего.
+# Цвета для проверки зрения. Берётся случайный: будь квадрат всегда красным,
+# модель, отвечающая «красный» наугад, проходила бы проверку вечно.
+PROBE_COLORS = {
+    "красный": ((220, 20, 20), ("красн", "red", "алый")),
+    "зелёный": ((20, 170, 60), ("зелён", "зелен", "green")),
+    "синий": ((30, 60, 220), ("син", "голуб", "blue")),
+    "жёлтый": ((240, 210, 30), ("жёлт", "желт", "yellow")),
+}
 
-    Порядок: та, что уже стоит в настройках сервиса, потом семейство Qwen-VL
-    (промпты проекта мерились именно на нём), потом что-то из знакомых, и
-    только потом первая попавшаяся — у больших сервисов в начале списка
-    лежат экспериментальные модели со странными именами.
+
+def _solid_png(rgb, size=64):
+    """Одноцветный квадрат PNG. Своими руками, потому что рисовать нечем:
+    проект держится на одной стандартной библиотеке."""
+    import struct
+    import zlib
+
+    def chunk(tag, data):
+        body = tag + data
+        return (struct.pack(">I", len(data)) + body
+                + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
+
+    row = b"\x00" + bytes(rgb) * size          # 0 = строка без фильтра
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(row * size, 6))
+            + chunk(b"IEND", b""))
+
+
+def model_sees(model, url, key, timeout=30):
+    """Смотрит ли модель картинки НА ДЕЛЕ. Возвращает (да/нет, что ответила).
+
+    Проверка, а не догадка по имени: показываем цветной квадрат и спрашиваем
+    цвет. Текстовая модель либо откажется принимать картинку, либо назовёт
+    цвет наугад — а угадать один из четырёх вслепую шансов мало.
+
+    Зачем: имя не гарантирует ничего. У больших сервисов сотни моделей с
+    произвольными именами («stealth/space-bunny-alpha»), а выбранная по
+    ошибке текстовая роняет зрение уже в ленте — на каждом кадре и молча.
+    """
+    word = random.choice(list(PROBE_COLORS))
+    rgb, answers = PROBE_COLORS[word]
+    image = "data:image/png;base64," + base64.b64encode(
+        _solid_png(rgb)).decode("ascii")
+
+    payload = json.dumps({
+        "model": model,
+        "max_tokens": 16,
+        "temperature": 0,
+        "messages": [{"role": "user", "content": [
+            {"type": "text",
+             "text": "Какого цвета этот квадрат? Ответь ОДНИМ словом."},
+            {"type": "image_url", "image_url": {"url": image}},
+        ]}],
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        url.rstrip("/") + "/chat/completions", data=payload, headers={
+            "Authorization": "Bearer " + key,
+            "Content-Type": "application/json",
+            "User-Agent": "PhoneAgent",
+        })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            said = _answer_of(json.loads(r.read().decode("utf-8")))
+    except urllib.error.HTTPError as e:
+        # 400 тут — обычное дело: «эта модель не принимает изображения».
+        return False, f"отказ {e.code}"
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError,
+            KeyError, http.client.HTTPException) as e:
+        return False, str(e)[:60]
+
+    low = (said or "").lower()
+    return any(a in low for a in answers), (said or "").strip()[:40]
+
+
+def pick_visual(names, prefer="", url="", key="", tries=6, deadline=None,
+                say=None):
+    """Выбрать модель, которая ТОЧНО видит картинки. "" — не нашлось.
+
+    Имена ни при чём: кандидаты проверяются живым запросом с цветным
+    квадратом, и первый, кто назвал цвет верно, становится рабочим. Раньше
+    здесь стояло предпочтение семейству Qwen-VL — от него отказались
+    сознательно: сервисов много, имена у всех свои, и знакомое имя ничего
+    не обещает.
+
+    Уже выбранная модель проверяется первой: менять то, что работает,
+    незачем. Без адреса и ключа проверять нечем — тогда отдаём первого
+    кандидата как есть (так зовут стенды).
     """
     if not names:
         return ""
-    if prefer and prefer in names:
-        return prefer
-    for pattern in (r"qwen.*vl", r"gpt-4o(-mini)?$", r"gemini.*flash",
-                    r"claude.*(haiku|sonnet)", r"-vl", r"vision"):
-        for name in names:
-            if re.search(pattern, name, re.I):
-                return name
-    return names[0]
+    order = ([prefer] if prefer and prefer in names else []) + \
+            [n for n in names if n != prefer]
+    if not url or not key:
+        return order[0]
+
+    for name in order[:max(1, tries)]:
+        if deadline and time.time() > deadline:
+            break
+        good, said = model_sees(name, url, key)
+        if say:
+            say(f"{name}: {'видит картинку' if good else 'не видит'} ({said})")
+        if good:
+            return name
+    return ""
 
 
-def detect_service(key, timeout=20):
-    """Чей это ключ — спросив сами сервисы, а не угадав по началу строки.
+def _list_at(url, key, timeout=20):
+    """Список моделей по адресу. None — сервис не ответил или не принял ключ."""
+    headers = {"User-Agent": "PhoneAgent"}
+    if key:
+        headers["Authorization"] = "Bearer " + key
+    req = urllib.request.Request(url.rstrip("/") + "/models", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8")).get("data") or []
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError,
+            http.client.HTTPException):
+        return None
+    return [m for m in data if isinstance(m, dict)]
 
-    Нужно потому, что угадка по виду ключа врёт. Поймано на живом ключе:
-    OpenRouter выдаёт не только `sk-or-v1-…`, но и обычные `sk-…` — такой
-    ключ уходил в DashScope, получал оттуда 401, и окно объявляло рабочий
-    ключ недействительным. Человеку при этом чинить нечего: ключ-то хороший.
 
-    Возвращает (id пресета, адрес, список визуальных моделей) или
-    (None, "", []), если ключ не принял никто.
+def visual_of(items):
+    """Из ответа сервиса — имена моделей, которые смотрят картинки."""
+    out = []
+    for item in items or []:
+        name = item.get("id", "")
+        said = _visual_by_meta(item)
+        if name and (said is True or (said is None and looks_visual(name))):
+            out.append(name)
+    return out
 
-    Порядок обхода — от вероятного к остальным: первым спрашивается сервис,
-    на который указывает сам ключ, и на нём всё обычно и заканчивается.
+
+def detect_service(key, timeout=20, tries=4, deadline=None, say=None):
+    """Чей это ключ и какая модель у него видит картинки.
+
+    Возвращает (id пресета, адрес, визуальные модели, рабочая модель).
+    Рабочая модель пустая — значит ключ сервисом принят, а смотреть картинки
+    у него нечем.
+
+    ДОКАЗАТЕЛЬСТВОМ СЛУЖИТ ЗАПРОС, А НЕ СПИСОК. Первая версия верила списку
+    моделей — и ошиблась на живом ключе: `/models` у OpenRouter **публичный**,
+    он отдаёт 460 моделей вообще без ключа. То есть любой мусор «опознавался»
+    как рабочий ключ OpenRouter, а настоящая проверка падала уже в ленте.
+
+    Отсюда две опоры:
+      * список, который БЕЗ ключа не отдаётся, сам по себе подтверждает ключ
+        (так устроены DashScope и DeepSeek);
+      * если список публичный, верить можно только удавшемуся запросу к
+        модели — им же заодно проверяется и зрение (`model_sees`).
     """
     key = (key or "").strip()
     if not key:
-        return None, "", []
+        return None, "", [], ""
 
     order = [config.preset_for_key(key)]
     order += [p for p in config.API_PRESETS if p and p not in order]
 
+    fallback = (None, "", [], "")
     for pid in order:
         _, url, _ = config.API_PRESETS.get(pid, ("", "", ""))
         if not url:
             continue
-        req = urllib.request.Request(url.rstrip("/") + "/models", headers={
-            "Authorization": "Bearer " + key,
-            "User-Agent": "PhoneAgent",
-        })
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                data = json.loads(r.read().decode("utf-8")).get("data") or []
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError,
-                http.client.HTTPException):
-            continue
-        visual = []
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            name = item.get("id", "")
-            said = _visual_by_meta(item)
-            if name and (said is True or (said is None and looks_visual(name))):
-                visual.append(name)
-        return pid, url, visual
-    return None, "", []
+        items = _list_at(url, key, timeout)
+        if items is None:
+            continue                      # сервис не ответил или отверг ключ
+
+        # Список отдают и без ключа? Тогда он ничего не доказывает.
+        public = _list_at(url, "", timeout) is not None
+        visual = visual_of(items)
+
+        model = pick_visual(visual, "", url, key, tries, deadline, say)
+        if model:
+            return pid, url, visual, model
+        if not public:
+            # Ключ этот сервис принял (без него списка не дают), но зрения
+            # у него не нашлось. Запоминаем и пробуем остальные — вдруг
+            # ключ подойдёт кому-то ещё.
+            if fallback[0] is None:
+                fallback = (pid, url, visual, "")
+    return fallback
 
 
 def _cloud_models():
