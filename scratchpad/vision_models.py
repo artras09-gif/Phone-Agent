@@ -239,5 +239,40 @@ say(vision.pick_visual(names) == "a/first",
     "без адреса и ключа проверять нечем — отдаём первого")
 say(vision.pick_visual([]) == "", "пустой список не ломает выбор")
 
+# --- 6. рассуждающие модели -----------------------------------------
+# Живой случай: deepseek-flash видит картинку, но весь запас токенов тратит
+# на размышление, а `content` остаётся пустым. Пока это не учитывалось,
+# модель выглядела слепой, а в базу ложился мусор вместо разбора.
+print("\n--- модель, которая долго думает ---")
+DUMA = {"choices": [{"finish_reason": "length", "message": {
+    "content": "", "reasoning_content": "Мы видим изображение. Похоже на..."}}]}
+ГОТОВО = {"choices": [{"finish_reason": "stop", "message": {
+    "content": '{"тема": "котик"}', "reasoning_content": "думал-думал"}}]}
+
+say(vision._thought_too_long(DUMA),
+    "оборванное на размышлении узнаётся")
+say(not vision._thought_too_long(ГОТОВО),
+    "законченный ответ переспрашивать не нужно")
+say(not vision._thought_too_long({"choices": [{"finish_reason": "length",
+    "message": {"content": "хвост"}}]}),
+    "обрыв обычной модели — это не про рассуждение")
+say(vision._answer_of(DUMA).startswith("Мы видим"),
+    "пустой content не выдаётся за пустой ответ: берём рассуждение")
+say(vision._answer_of(ГОТОВО) == '{"тема": "котик"}',
+    "когда ответ есть, рассуждение не мешает")
+
+print("\n--- модальности в корне описания модели ---")
+# DeepSeek кладёт input_modalities без обёртки architecture. Пока смотрели
+# только внутрь неё, deepseek-flash считался текстовым.
+say(vision._visual_by_meta(
+    {"id": "deepseek-flash", "input_modalities": ["text", "image"]}) is True,
+    "модальности в корне читаются")
+say(vision._visual_by_meta(
+    {"id": "deepseek-v4-pro", "input_modalities": ["text"]}) is False,
+    "текстовая по корневым модальностям отсеивается")
+say(vision._visual_by_meta({"id": "x", "architecture": {
+    "input_modalities": ["text", "image"]}}) is True,
+    "внутри architecture — по-прежнему читаются")
+
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)

@@ -416,17 +416,26 @@ def _visual_by_meta(item):
     OpenRouter отдаёт `architecture.input_modalities: ["text","image"]`, в
     старых ответах — `architecture.modality: "text+image->text"`. Это точный
     ответ, и он бьёт любую догадку по имени.
+
+    Смотреть надо В ДВУХ МЕСТАХ. DeepSeek кладёт `input_modalities` прямо в
+    корень описания модели, без обёртки `architecture`, — и пока проверка
+    заглядывала только внутрь неё, `deepseek-flash` со своим
+    `["text","image"]` считался текстовым. Из-за этого я объявил, что у
+    ключа нет зрения вовсе, хотя оно есть.
     """
-    arch = item.get("architecture") if isinstance(item, dict) else None
-    if not isinstance(arch, dict):
+    if not isinstance(item, dict):
         return None
-    mods = arch.get("input_modalities") or arch.get("modalities")
-    if isinstance(mods, (list, tuple)):
-        return "image" in [str(m).lower() for m in mods]
-    modality = arch.get("modality")
-    if isinstance(modality, str):
-        left = modality.split("->")[0].lower()
-        return "image" in left
+    arch = item.get("architecture")
+    places = [arch] if isinstance(arch, dict) else []
+    places.append(item)
+
+    for place in places:
+        mods = place.get("input_modalities") or place.get("modalities")
+        if isinstance(mods, (list, tuple)):
+            return "image" in [str(m).lower() for m in mods]
+        modality = place.get("modality")
+        if isinstance(modality, str):
+            return "image" in modality.split("->")[0].lower()
     return None
 
 # Имя последней сработавшей модели. LM Studio показывает в /v1/models только
@@ -515,7 +524,11 @@ def model_sees(model, url, key, timeout=30):
 
     payload = json.dumps({
         "model": model,
-        "max_tokens": 16,
+        # Запас большой НАРОЧНО: рассуждающие модели тратят токены на
+        # размышление, и при 16 (а то и 300) ответ обрывался на полуслове —
+        # content приходил пустым, и модель выглядела слепой. Проверено на
+        # deepseek-flash: 300 токенов уходили в рассуждение целиком.
+        "max_tokens": 1500,
         "temperature": 0,
         "messages": [{"role": "user", "content": [
             {"type": "text",
@@ -893,10 +906,11 @@ def verify(kind=None):
     kind = kind or provider()
     if kind != API:
         try:
-            loaded = models(LOCAL)
+            items = models_detailed(LOCAL)
         except VisionError as e:
             return False, str(e)
-        vis = [m for m in loaded if VISION_HINT.search(m)]
+        loaded = [m.get("id", "") for m in items]
+        vis = visual_of(items)
         if vis:
             return True, f"сервер отвечает, визуальная модель: {vis[0]}"
         return True, f"сервер отвечает, моделей загружено: {len(loaded)}"
@@ -918,7 +932,15 @@ def verify(kind=None):
                            "оплату и права ключа")
         return False, text
 
-    vis = [m for m in loaded if VISION_HINT.search(m)]
+    # Отбор — общим правилом (метаданные, потом имя), а не маской по имени.
+    # Пока здесь стоял только `VISION_HINT`, `deepseek-flash` со своим
+    # честным `input_modalities: [text, image]` объявлялся невизуальным, и
+    # окно писало «визуальных моделей у сервиса нет» — при выбранной и
+    # работающей модели.
+    try:
+        vis = visual_of(models_detailed(API))
+    except VisionError:
+        vis = [m for m in loaded if looks_visual(m)]
     model = (config.API_MODEL or "").strip()
     if model and model not in loaded:
         got = ", ".join(vis[:3]) or "ни одной визуальной"
@@ -1320,11 +1342,47 @@ def _local_fallback():
     return None
 
 
-def _answer_of(res):
+# Модели, которым не хватило запаса токенов на рассуждение. Со второго
+# запроса такой модели запас сразу увеличивается, чтобы не платить за
+# повторный запрос на каждом кадре.
+_NEEDS_ROOM = set()
+
+
+def _thought_too_long(res):
+    """Рассуждение съело весь запас, а ответ не начался."""
     try:
-        return res["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, AttributeError) as e:
+        choice = res["choices"][0]
+        message = choice["message"]
+    except (KeyError, IndexError, TypeError):
+        return False
+    if (message.get("content") or "").strip():
+        return False
+    thinking = (message.get("reasoning_content")
+                or message.get("reasoning") or "").strip()
+    return bool(thinking) and choice.get("finish_reason") == "length"
+
+
+def _answer_of(res):
+    """Текст ответа. У рассуждающих моделей он лежит не только в `content`.
+
+    Поймано на `deepseek-flash`: это рассуждающая модель, и весь отведённый
+    запас токенов уходит в `reasoning_content`, а `content` остаётся ПУСТЫМ
+    (`finish_reason: length`). Пока мы читали только `content`, такая модель
+    выглядела сломанной: ответ есть, а у нас пусто — и зрение молча падало
+    бы на каждом кадре.
+    """
+    try:
+        message = res["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError) as e:
         raise VisionError(f"неожиданный ответ модели: {str(res)[:200]}") from e
+
+    said = (message.get("content") or "").strip()
+    if said:
+        return said
+    # Рассуждение — не полноценный ответ, но лучше пустоты: по нему видно и
+    # что модель поняла, и что кадр до неё дошёл.
+    return (message.get("reasoning_content")
+            or message.get("reasoning") or "").strip()
 
 
 def ask(png_bytes, prompt, system=None, max_tokens=400, temperature=0.2,
@@ -1346,6 +1404,8 @@ def ask(png_bytes, prompt, system=None, max_tokens=400, temperature=0.2,
         ]})
         return messages
 
+    if model in _NEEDS_ROOM:
+        max_tokens *= 6
     wait = timeout or _timeout(kind)
     try:
         res = _completion(model, build(kind), max_tokens, temperature, wait, kind)
@@ -1367,6 +1427,17 @@ def ask(png_bytes, prompt, system=None, max_tokens=400, temperature=0.2,
         if "No models loaded" not in str(e) or not load_model(model):
             raise
         res = _completion(model, build(kind), max_tokens, temperature, wait, kind)
+
+    # Рассуждающая модель не уложилась в запас токенов: всё ушло в
+    # размышление, а сам ответ не начался. Спрашиваем ещё раз, дав вшестеро
+    # больше, и запоминаем эту модель — со второго кадра запас сразу большой.
+    #
+    # Поймано на `deepseek-flash`: кадр он разбирает верно («это страница
+    # профиля, а не лента»), но JSON не успевает, и в базу ложился мусор.
+    if _thought_too_long(res):
+        _NEEDS_ROOM.add(model)
+        res = _completion(model, build(kind), max_tokens * 6, temperature,
+                          wait, kind)
 
     answer = _answer_of(res)
 
