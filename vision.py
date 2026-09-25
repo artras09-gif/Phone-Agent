@@ -913,7 +913,15 @@ def verify(kind=None):
         vis = visual_of(items)
         if vis:
             return True, f"сервер отвечает, визуальная модель: {vis[0]}"
-        return True, f"сервер отвечает, моделей загружено: {len(loaded)}"
+        # В памяти пусто — это НОРМА: LM Studio выгружает модель по простою
+        # и поднимает её на первом же кадре. Голое «моделей загружено: 0»
+        # читается как «сервер пустой», поэтому говорим, что скачано.
+        ready = [m["id"] for m in installed_models()]
+        if ready:
+            return True, ("сервер отвечает, модель поднимется на первом кадре: "
+                          + ready[0])
+        return False, ("сервер отвечает, но визуальных моделей нет — "
+                       "скачай в LM Studio любую с пометкой vision")
 
     if not (config.API_KEY or "").strip():
         return False, "ключ не вписан"
