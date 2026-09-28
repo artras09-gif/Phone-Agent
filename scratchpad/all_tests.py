@@ -42,6 +42,7 @@ TESTS = [
     ("scratchpad/comments_daypart.py", "заход в комментарии и время суток"),
     ("scratchpad/links_incoming.py", "приём ссылок в чате: сеть, чистка, повторы"),
     ("scratchpad/vision_models.py", "список моделей: только те, что видят картинки"),
+    ("scratchpad/post_safety.py", "публикация не оставляет открытый экран"),
     ("scratchpad/escape_loop.py", "выход из тупика: выбор кнопки и запреты"),
     ("scratchpad/gate_test.py", "замки между процессами"),
     ("scratchpad/fleet_isolation.py", "разделение телефонов по пространствам"),

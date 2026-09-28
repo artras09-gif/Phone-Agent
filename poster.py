@@ -207,6 +207,8 @@ def post(video_path, caption, target, recipes=None):
         report.append("режим: СУХОЙ ПРОГОН (финальная кнопка не нажимается)")
 
     remote = None
+    published = False
+    opened = False
     try:
         if not device.unlock():
             report.append("не смог разблокировать телефон")
@@ -235,6 +237,7 @@ def post(video_path, caption, target, recipes=None):
                 component=recipe.get("share_component"),
                 use_content=recipe.get("share_uri", "content") != "file")
 
+        opened = True
         if not device.wait_for_app(package, timeout=30):
             raise StepFailed(f"{package} не открылся")
         report.append("приложение открыто на экране публикации")
@@ -244,6 +247,7 @@ def post(video_path, caption, target, recipes=None):
             line = run_step(step, ctx, log_path, i)
             report.append(f"  {i:2d}. {line}")
 
+        published = not config.DRY_RUN
         report.append("готово")
         return True, report.text()
 
@@ -252,6 +256,22 @@ def post(video_path, caption, target, recipes=None):
         return False, report.text()
 
     finally:
+        # Кнопку «Опубликовать» не нажали — сухой прогон или сбой посреди
+        # маршрута — значит приложение стоит на экране публикации с набранной
+        # подписью и ЖИВОЙ кнопкой. Поймано 2026-09-29: после сухого прогона
+        # личный Instagram так и висел на «Новое видео Reels» с кнопкой
+        # «Поделиться», телефон не заблокирован. Одно случайное касание —
+        # и ролик в личном аккаунте. Закрываем процесс целиком: это не
+        # нажимает в приложении ничего (в отличие от «назад», за которым у
+        # Instagram идёт окно «Сохранить черновик / Удалить»), а
+        # недоделанный ролик при этом не сохраняется.
+        if opened and not published:
+            try:
+                device.stop_app(package)
+                report.append("приложение закрыто: экран публикации не оставлен")
+            except adb.AdbError:
+                report.append("[!] не смог закрыть приложение — "
+                              "экран публикации мог остаться открытым")
         device.keep_awake(False)
         if remote:
             device.remove_remote(remote)
