@@ -339,5 +339,24 @@ say("_solid_png" in исходник, "шлётся нарисованный к�
 say(квадрат[:8] == b"\x89PNG\r\n\x1a\n" and 32 == int.from_bytes(квадрат[16:20], "big"),
     f"квадрат корректный и 32x32, {len(квадрат)} байт")
 
+# --- 9. без ключа облако не «готово» ---------------------------------
+# Поймано на собранном exe: переключили на API, ключ не вставили — а doctor
+# писал «OK зрение».
+print("\n--- облако без ключа ---")
+saved_cfg = (config.VISION_PROVIDER, config.API_URL, config.API_MODEL, config.API_KEY)
+config.VISION_PROVIDER = vision.API
+config.API_MODEL = "qwen-vl-plus"
+try:
+    config.API_URL, config.API_KEY = config.API_PRESETS["qwen"][1], ""
+    ok_, why = vision.available()
+    say(not ok_ and "ключ" in why, f"сервис из списка без ключа — не готов: {why}")
+
+    config.API_URL, config.API_KEY = "http://192.168.0.50:1234/v1", ""
+    ok_, why = vision.available()
+    say(ok_, "свой сервер в сети без ключа — готов (ключ ему не нужен)")
+finally:
+    (config.VISION_PROVIDER, config.API_URL,
+     config.API_MODEL, config.API_KEY) = saved_cfg
+
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)
