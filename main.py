@@ -114,7 +114,7 @@ def cmd_doctor(args):
     print(f"{'OK ' if vis_ok else '[i]'} зрение ({vision.where()}): {vis_info}")
     if vis_ok:
         print(f"    разбор в ленте: {'на лету' if config.VISION_REALTIME else 'пакетный (analyze)'}"
-              f", тапы по подсказке: {'РАЗРЕШЕНЫ' if config.VISION_MAY_TAP else 'запрещены'}")
+              f", выход из тупика: {'включён' if config.ESCAPE_ENABLED else 'выключен'}")
 
     print(f"    сухой прогон: {'ДА' if config.DRY_RUN else 'НЕТ — публикует по-настоящему'}")
     print(f"    стоп-кран: {'ВЗВЕДЁН' if config.stop_requested() else 'снят'}")

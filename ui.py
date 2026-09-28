@@ -152,7 +152,7 @@ def feed_caption(nodes, screen=None, package=None):
     package обязателен на практике: в дамп попадают и чужие окна — шторка
     уведомлений, статус VPN, всплывашки других приложений. Один раз так
     в «описание ролика» уехало уведомление ВКонтакте вместе со строкой
-    «Connected to: 88c5b1f3...» от ZeroTier.
+    «Connected to: <сеть>» от ZeroTier.
     """
     if not nodes:
         return "", "", ""

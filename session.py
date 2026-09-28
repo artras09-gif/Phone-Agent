@@ -1632,42 +1632,6 @@ def _analyzer(state, app, log):
                    f"{str(data.get('тема', ''))[:60]}")
 
 
-def _rescue(state, goal, w, h, log):
-    """Незнакомый экран: спросить модель. Тапаем только если разрешено."""
-    if not config.VISION_ENABLED or state["blind"]:
-        return False
-
-    # Кадры спасателя нумеруются с 900, чтобы не смешиваться с роликами.
-    path, png = _grab(state, 900 + state["rescues"])
-    if path is None:
-        return False
-    state["rescues"] += 1
-
-    try:
-        hint = vision.rescue(png, goal=goal, screen_size=(w, h))
-    except vision.VisionError as e:
-        state["blind"] = True
-        log.append(f"  спасатель недоступен: {str(e)[:80]}")
-        return False
-
-    log.append(f"  спасатель: {hint.get('экран', '?')} -> {hint['действие']}"
-               f" ({hint.get('почему', '')})")
-
-    if not config.VISION_MAY_TAP:
-        return False
-    if hint["действие"] == "tap":
-        adb.tap(hint["x"], hint["y"])
-        human.pause(0.8, 1.6)
-        return True
-    if hint["действие"] == "back":
-        device.back()
-        return True
-    if hint["действие"] == "home":
-        device.go_home()
-        return True
-    return False
-
-
 def like_current(cfg, w, h):
     """Лайк двойным тапом по середине кадра.
 

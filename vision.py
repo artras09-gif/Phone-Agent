@@ -9,9 +9,10 @@
 имя модели; всё остальное в этом файле общее. Кто отвечает — решает
 `provider()`, а куда идти — `config.VISION_URL` / `config.API_URL`.
 
-Модель НЕ управляет телефоном по умолчанию: она только смотрит и говорит.
-Тапать по её подсказке разрешает config.VISION_MAY_TAP, и в маршруте
-публикации это игнорируется всегда — цена ошибки там слишком высокая.
+Модель НЕ управляет телефоном напрямую: она только смотрит и говорит.
+Жать по её выбору умеет один выход из тупика (escape.py) — и только кнопки
+из заранее отфильтрованного списка. В маршруте публикации модель не жмёт
+ничего никогда — цена ошибки там слишком высокая.
 
 Только стандартная библиотека: HTTP руками через urllib, уменьшение картинки
 через tkinter (в Tk 8.6 есть и чтение, и запись PNG).
@@ -175,22 +176,8 @@ class _Pool(threading.local):
             except Exception:
                 pass
 
-    def close_all(self):
-        for key in list(self.conns):
-            conn = self.conns.pop(key)
-            try:
-                conn.close()
-            except Exception:
-                pass
-
 
 _POOL = _Pool()
-
-
-def close_connections():
-    """Отпустить соединения этого потока. Звать не обязательно: простаивающее
-    соединение закрывает сам сервер, а пул это переживает."""
-    _POOL.close_all()
 
 
 def _send(url, path, data, headers, timeout):
@@ -862,12 +849,6 @@ def warm_up(timeout=120):
         pass
     return True
 
-
-# Серый квадратик 16x16 — только чтобы разбудить картиночную часть модели.
-_TINY_PNG = (
-    "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAHElEQVR42mNkYPhfz0"
-    "AEYBxVSF+FjIONjIyMAAsvBAV/nRWJAAAAAElFTkSuQmCC"
-)
 
 
 def _remember(model):
