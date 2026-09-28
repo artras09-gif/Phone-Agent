@@ -777,10 +777,15 @@ def cmd_bench(args):
         measure("кадр в JPEG", lambda: vision.to_jpeg(small))
         jpg = vision.to_jpeg(small)
         print(f"  (в JPEG {len(jpg) // 1024 if jpg else '—'} КБ)")
-    measure("ответ модели", lambda: vision.ask(small, "Опиши кадр одним словом.",
-                                               max_tokens=16), runs=3)
-    measure("сверка темы", lambda: vision.judge_topic("женщина готовит суши",
-                                                      "кулинария"), runs=3)
+    # Модель может быть недоступна (LM Studio выключен, ключ не вписан) —
+    # это не повод ронять весь замер: ужатие и съёмка меряются и без неё.
+    try:
+        measure("ответ модели", lambda: vision.ask(
+            small, "Опиши кадр одним словом.", max_tokens=16), runs=3)
+        measure("сверка темы", lambda: vision.judge_topic(
+            "женщина готовит суши", "кулинария"), runs=3)
+    except vision.VisionError as e:
+        print(f"  модель недоступна — её не меряю: {str(e)[:90]}")
 
     if not adb.connected():
         print("  (телефон не подключён — съёмку кадра не мерю)")
@@ -1332,7 +1337,45 @@ def build_parser():
     return p
 
 
+def _console_for_exe():
+    """Куда печатать собранному exe без консоли.
+
+    Сборка оконная: двойной щелчок не должен открывать чёрное окно рядом с
+    программой. Но тогда у процесса нет консоли вовсе (`sys.stdout is None`),
+    и `PhoneAgent.exe doctor`, набранный в cmd, молчал бы.
+
+    Поэтому: запустили из cmd — подключаемся к ЕГО консоли и печатаем туда;
+    двойным щелчком — пишем в `logs/app.log`, иначе падение осталось бы
+    невидимым и разбирать было бы нечего.
+    """
+    if not getattr(sys, "frozen", False) or sys.stdout is not None:
+        return
+    try:
+        import ctypes
+
+        kernel = ctypes.windll.kernel32
+        if kernel.AttachConsole(-1):          # -1 = консоль родителя
+            enc = f"cp{kernel.GetConsoleOutputCP() or 866}"
+            sys.stdout = open("CONOUT$", "w", encoding=enc, errors="replace",
+                              buffering=1)
+            sys.stderr = sys.stdout
+            sys.stdin = open("CONIN$", "r", encoding=enc, errors="replace")
+            print()                           # cmd уже напечатал приглашение
+            return
+    except (OSError, AttributeError, ValueError):
+        pass
+    try:
+        os.makedirs(config.LOG_DIR, exist_ok=True)
+        sys.stdout = open(os.path.join(config.LOG_DIR, "app.log"), "a",
+                          encoding="utf-8", buffering=1)
+        sys.stderr = sys.stdout
+        print(f"\n===== запуск {time.strftime('%Y-%m-%d %H:%M:%S')} =====")
+    except OSError:
+        pass
+
+
 def main():
+    _console_for_exe()
     argv = sys.argv[1:]
     # Собранное приложение запускают двойным щелчком, без аргументов. Печатать
     # ему справку по командам бессмысленно — человек ждёт окна.
@@ -1381,5 +1424,38 @@ def main():
         return 1
 
 
+def _run_exe():
+    """Точка входа собранного exe: падение — в журнал, человеку — по-человечески.
+
+    Без этого PyInstaller на любое необработанное исключение показывает окно
+    «Unhandled exception in script» с трассировкой на пол-экрана — так и
+    было при первой проверке сборки (бенч уронило недоступное зрение).
+    Запущено из cmd — трассировка печатается туда же, окна нет.
+    """
+    try:
+        return main()
+    except SystemExit:
+        raise
+    except BaseException as e:                       # noqa: BLE001
+        import traceback
+
+        traceback.print_exc()                        # в консоль или в app.log
+        if sys.stdout is not None and not getattr(sys.stdout, "name", "").endswith(
+                "app.log"):
+            return 1                                 # из cmd — окна не нужно
+        try:
+            import ctypes
+
+            log = os.path.join(config.LOG_DIR, "app.log")
+            ctypes.windll.user32.MessageBoxW(
+                None,
+                f"PhoneAgent остановился из-за ошибки:\n\n{str(e)[:300]}\n\n"
+                f"Подробности записаны в журнал:\n{log}",
+                "PhoneAgent", 0x10)                   # значок «ошибка»
+        except (OSError, AttributeError):
+            pass
+        return 1
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(_run_exe() if getattr(sys, "frozen", False) else main())

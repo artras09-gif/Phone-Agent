@@ -6,9 +6,26 @@ import sys
 #
 # В собранном exe считать его от __file__ нельзя: PyInstaller распаковывает код
 # во временную папку, которая стирается при выходе — база и очередь пропадали бы
-# после каждого закрытия. У собранного приложения дом — рядом с самим exe.
+# после каждого закрытия.
+#
+# Дом собранного приложения — %LOCALAPPDATA%\PhoneAgent, как у обычных программ.
+# Раньше он был рядом с exe, и после первого же запуска вокруг «одного файла»
+# вырастали jobs.db, logs, devices, frames — exe переставал быть одним файлом.
+# Переносной режим оставлен: если рядом с exe уже есть нажитое (старый комплект)
+# или файл portable.txt — работаем там же, чтобы не потерять очередь и настройки.
 if getattr(sys, "frozen", False):
-    BASE = os.path.dirname(os.path.abspath(sys.executable))
+    _EXE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+    if any(os.path.exists(os.path.join(_EXE_DIR, name))
+           for name in ("jobs.db", "portable.txt")):
+        BASE = _EXE_DIR
+    else:
+        BASE = os.path.join(os.environ.get("LOCALAPPDATA")
+                            or os.path.expanduser("~"), "PhoneAgent")
+    # adb, scrcpy и настройки по умолчанию лежат ВНУТРИ exe. Раскладываем их
+    # до поиска adb ниже — иначе он ищет в пустой папке.
+    import bundled
+
+    bundled.unpack(BASE)
 else:
     BASE = os.path.dirname(os.path.abspath(__file__))
 

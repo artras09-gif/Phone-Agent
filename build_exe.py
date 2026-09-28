@@ -1,86 +1,112 @@
-r"""Сборка PhoneAgent в .exe для передачи на другой компьютер.
+r"""Сборка PhoneAgent в ОДИН exe-файл — как у нормальных программ.
 
-Отличие от `build_transfer.py`: там едут исходники и на том конце нужен
-Python, здесь — готовое приложение, которому не нужно ничего.
+    python build_exe.py
 
-Запуск:  python build_exe.py
-На выходе: Desktop\PhoneAgent-exe\ и одноимённый .zip.
+На выходе: Desktop\PhoneAgent.exe. Больше ничего: ни папки tools рядом, ни
+файлов настроек, ни Python на той машине. Двойной щелчок — открывается окно.
 
-Что важно знать про сборку:
+Что лежит внутри и куда девается при запуске:
 
-* `webui.html` уезжает ВНУТРЬ exe — это часть программы, а не настройка.
-  Код ищет его через `sys._MEIPASS` (см. `webui._base_dir`).
-* `recipes.json` наоборот кладётся РЯДОМ: маршруты публикации правятся
-  руками, когда соцсеть меняет интерфейс, а внутрь exe не залезешь.
-* `adb.exe` остаётся отдельным файлом в `tools\` — это чужая программа,
-  запаковывать её в свой exe незачем.
-* Нажитое (`jobs.db`, очередь, логи, `pin.txt`) не переносится: на новом
-  компьютере всё начинается с чистого листа.
+* `webui.html` — часть программы, читается прямо из распаковки
+  (`webui._base_dir`, он же `sys._MEIPASS`).
+* adb и scrcpy — внутри exe, при первом запуске `bundled.unpack` кладёт их в
+  `%LOCALAPPDATA%\PhoneAgent\tools`. Прямо из временной распаковки adb
+  запускать нельзя: его сервер переживает программу и держит папку.
+* `recipes.json`, `interests.json`, `plan.json`, `ADBKeyboard.apk` — там же,
+  и только если их ещё нет: правку человека новая версия не затирает.
+* Нажитое (`jobs.db`, логи, кадры, настройки с ключом) — тоже в
+  `%LOCALAPPDATA%\PhoneAgent`. Рядом с exe не появляется ничего.
+
+Окно консоли не показывается (`--windowed`). Команды из cmd при этом
+работают — `PhoneAgent.exe doctor` печатает в тот же cmd (`main._console_for_exe`).
+Закрыл окно — программа завершается, идущую сессию перед этим останавливает.
+
+Нужен PyInstaller — единственная зависимость проекта, и та только для сборки.
 """
 import os
 import shutil
 import subprocess
 import sys
-import zipfile
+import time
 
 SRC = os.path.dirname(os.path.abspath(__file__))
-TOOLS = os.path.join(os.path.expanduser("~"), "tools")
 DESKTOP = os.path.join(os.path.expanduser("~"), "Desktop")
-OUT = os.path.join(DESKTOP, "PhoneAgent-exe")
-ZIP = OUT + ".zip"
+OUT = os.path.join(DESKTOP, "PhoneAgent.exe")
 WORK = os.path.join(os.environ.get("TEMP", SRC), "phoneagent-build")
 
-# Рядом с exe. Настройки — да, состояние — нет.
-# `telegram.json` сюда НЕ попадает: в нём токен бота, а комплект уезжает
-# к другому человеку.
-BESIDE = ("recipes.json", "interests.json", "plan.json", "ADBKeyboard.apk",
-          "ИНСТРУКЦИЯ.html", "bot-avatar.png")
+# Где брать adb и scrcpy для вшивания: своя среда проекта, потом ~/tools.
+TOOL_ROOTS = (os.path.join(SRC, "env", "tools"),
+              os.path.join(os.path.expanduser("~"), "tools"))
 
-READ_ME = """PhoneAgent
-==========
+# Настройки по умолчанию. telegram.json и settings.json сюда НЕ попадают:
+# в них токен бота и ключ сервиса, а exe уезжает к другому человеку.
+DEFAULTS = ("recipes.json", "interests.json", "plan.json", "ADBKeyboard.apk",
+            "ИНСТРУКЦИЯ.html")
 
-Двойной щелчок по PhoneAgent.exe — откроется окно приложения.
-Python и что-либо ещё ставить не нужно.
+# Из platform-tools adb нужны только эти. Остальное (fastboot, sqlite3,
+# mke2fs...) — ещё 10 МБ, которые распаковывались бы на каждом запуске.
+ADB_FILES = ("adb.exe", "AdbWinApi.dll", "AdbWinUsbApi.dll",
+             "libwinpthread-1.dll")
 
-Что нужно один раз сделать на телефоне
---------------------------------------
-1. Настройки -> О телефоне -> семь раз нажать «Версия MIUI»
-   (так включается режим разработчика).
-2. Настройки -> Расширенные -> Для разработчиков -> включить
-   «Отладка по USB».
-3. Воткнуть кабель и подтвердить отпечаток на экране телефона.
 
-Аватарка для Телеграм-бота
---------------------------
-Файл bot-avatar.png. Отправьте его @BotFather командой /setuserpic
-и выберите своего бота.
+def find_tool(name):
+    for root in TOOL_ROOTS:
+        if not os.path.isdir(root):
+            continue
+        if name == "adb":
+            path = os.path.join(root, "platform-tools")
+            if os.path.exists(os.path.join(path, "adb.exe")):
+                return path
+        else:
+            for entry in sorted(os.listdir(root), reverse=True):
+                path = os.path.join(root, entry)
+                if os.path.exists(os.path.join(path, "scrcpy.exe")):
+                    return path
+    return None
 
-Русские описания к видео
-------------------------
-Нужна клавиатура ADBKeyboard — она лежит рядом (ADBKeyboard.apk).
-Скопируй файл на телефон и установи его ТАМ: с компьютера MIUI
-установку запрещает. Потом в приложении на вкладке «Вкусы» нажми
-«Проверить и включить».
 
-Подробная инструкция — файл ИНСТРУКЦИЯ.html, открывается браузером.
+def data(src, dest):
+    # Абсолютный путь обязателен: относительный PyInstaller считает от папки
+    # со spec-файлом, а она у нас во временной.
+    return [(os.path.abspath(src), dest)]
 
-Что лежит в этой папке
-----------------------
-PhoneAgent.exe    само приложение
-ИНСТРУКЦИЯ.html   как всем этим пользоваться
-recipes.json      маршруты публикации; правится, когда соцсеть
-                  поменяет интерфейс и кнопка перестанет находиться
-interests.json    тема и язык: что смотреть в ленте
-plan.json         расписание сессий
-tools\\            adb (обязателен) и scrcpy (трансляция экрана)
 
-Появятся сами при работе: jobs.db (очередь), watch, queue, logs, frames.
+# Что выкинуть из Tcl/Tk. Замер 2026-09-29: exe распаковывает при КАЖДОМ
+# запуске все свои файлы во временную папку, и их было 985 — из них 928 от
+# Tcl/Tk. Антивирус проверяет каждый, и пустой `--help` стартовал 28.8 с
+# против 1.3 с из исходников. Сама программа берёт от Tk только PhotoImage
+# (ужать снимок экрана) — часовые пояса, переводы календаря и картинки
+# диалогов ей не нужны. ttk НЕ трогаем: tk.tcl подгружает его при старте.
+TCL_DROP = ("_tcl_data/tzdata/", "_tcl_data/msgs/", "_tk_data/msgs/",
+            "_tk_data/images/", "_tcl_data/encoding/")
+# Из кодировок оставляем только те, что бывают системными на русской Windows:
+# без своей кодировки Tcl не падает, но выдаёт предупреждения в журнал.
+TCL_KEEP_ENC = ("cp1251.enc", "cp1252.enc", "cp866.enc", "cp437.enc")
 
-Предохранитель
---------------
-В собранной версии публикация включена по-настоящему. Кнопка
-«Опубликовать» выкладывает видео в аккаунт, отменить это нельзя.
-"""
+SPEC = r'''# сгенерировано build_exe.py — не править руками
+import os
+
+TCL_DROP = {drop!r}
+TCL_KEEP_ENC = {keep!r}
+
+
+def keep(dest):
+    dest = dest.replace(os.sep, "/")
+    if dest.startswith("_tcl_data/encoding/"):
+        return os.path.basename(dest) in TCL_KEEP_ENC
+    return not any(dest.startswith(p) for p in TCL_DROP)
+
+
+a = Analysis([{main!r}], pathex=[{src!r}], datas={datas!r},
+             hiddenimports=["bundled"], excludes=[], noarchive=False)
+dropped = [d for d in a.datas if not keep(d[0])]
+a.datas = [d for d in a.datas if keep(d[0])]
+print(f"[build_exe] из Tcl/Tk выкинуто файлов: {{len(dropped)}}")
+pyz = PYZ(a.pure)
+exe = EXE(pyz, a.scripts, a.binaries, a.datas, [],
+          name="PhoneAgent", console=False, icon={icon!r},
+          upx=False, runtime_tmpdir=None)
+'''
 
 
 def run_pyinstaller():
@@ -94,18 +120,47 @@ def run_pyinstaller():
         subprocess.run([sys.executable, os.path.join(SRC, "make_icon.py")],
                        cwd=SRC, capture_output=True)
 
+    # Отметка сборки: по ней распаковщик понимает, что инструменты в рабочей
+    # папке от прежней версии и их пора обновить.
+    stamp = os.path.join(WORK, "build.txt")
+    with open(stamp, "w", encoding="utf-8") as f:
+        f.write(time.strftime("%Y%m%d-%H%M%S"))
+
+    extra = data(os.path.join(SRC, "webui.html"), ".") + data(stamp, ".")
+    for name in DEFAULTS:
+        path = os.path.join(SRC, name)
+        if os.path.exists(path):
+            extra += data(path, "defaults")
+        else:
+            print(f"  [i] нет {name}, пропускаю")
+
+    adb = find_tool("adb")
+    if not adb:
+        raise SystemExit("нет adb (platform-tools) — без него собирать нечего.\n"
+                         "Положи в ~/tools или запусти: python env.py")
+    for name in ADB_FILES:
+        path = os.path.join(adb, name)
+        if os.path.exists(path):
+            extra += data(path, "tools/platform-tools")
+
+    scrcpy = find_tool("scrcpy")
+    if scrcpy:
+        extra += data(scrcpy, f"tools/{os.path.basename(scrcpy)}")
+    else:
+        print("  [!] нет scrcpy — в сборке не будет трансляции экрана")
+
+    spec = os.path.join(WORK, "PhoneAgent.spec")
+    with open(spec, "w", encoding="utf-8") as f:
+        f.write(SPEC.format(drop=TCL_DROP, keep=TCL_KEEP_ENC,
+                            main=os.path.join(SRC, "main.py"), src=SRC,
+                            datas=extra,
+                            icon=icon if os.path.exists(icon) else None))
+
     cmd = [
-        sys.executable, "-m", "PyInstaller", "--noconfirm", "--onefile",
-        "--name", "PhoneAgent",
-        *(["--icon", icon] if os.path.exists(icon) else []),
-        # Абсолютный путь обязателен: относительный PyInstaller считает от
-        # папки со spec-файлом, а она у нас во временной.
-        "--add-data", f"{os.path.join(SRC, 'webui.html')};.",
-        "--paths", SRC,
+        sys.executable, "-m", "PyInstaller", "--noconfirm",
         "--distpath", os.path.join(WORK, "dist"),
         "--workpath", os.path.join(WORK, "build"),
-        "--specpath", WORK,
-        os.path.join(SRC, "main.py"),
+        spec,
     ]
     print("собираю exe...")
     result = subprocess.run(cmd, capture_output=True, text=True,
@@ -114,6 +169,9 @@ def run_pyinstaller():
         print(result.stdout[-3000:])
         print(result.stderr[-3000:])
         raise SystemExit("PyInstaller не справился")
+    for line in (result.stdout + result.stderr).splitlines():
+        if "[build_exe]" in line:
+            print("  " + line.split("[build_exe]", 1)[1].strip())
 
     exe = os.path.join(WORK, "dist", "PhoneAgent.exe")
     if not os.path.exists(exe):
@@ -121,56 +179,7 @@ def run_pyinstaller():
     return exe
 
 
-def assemble(exe):
-    if os.path.exists(OUT):
-        shutil.rmtree(OUT)
-    os.makedirs(OUT)
-
-    shutil.copy2(exe, os.path.join(OUT, "PhoneAgent.exe"))
-    for name in BESIDE:
-        path = os.path.join(SRC, name)
-        if os.path.exists(path):
-            shutil.copy2(path, os.path.join(OUT, name))
-        else:
-            print(f"  [i] нет {name}, пропускаю")
-
-    tools_out = os.path.join(OUT, "tools")
-    for tool in ("platform-tools", "scrcpy-win64-v4.1"):
-        src = os.path.join(TOOLS, tool)
-        if os.path.isdir(src):
-            shutil.copytree(src, os.path.join(tools_out, tool))
-        else:
-            print(f"  [!] нет {src} — без него "
-                  f"{'ничего не заработает' if 'platform' in tool else 'не будет трансляции экрана'}")
-
-    with open(os.path.join(OUT, "ЧИТАЙ МЕНЯ.txt"), "w",
-              encoding="utf-8-sig", newline="\r\n") as f:
-        f.write(READ_ME)
-
-
-def pack():
-    if os.path.exists(ZIP):
-        os.remove(ZIP)
-    with zipfile.ZipFile(ZIP, "w", zipfile.ZIP_DEFLATED) as z:
-        for root, _, files in os.walk(OUT):
-            for name in files:
-                full = os.path.join(root, name)
-                z.write(full, os.path.join("PhoneAgent-exe",
-                                           os.path.relpath(full, OUT)))
-
-
-def size_mb(path):
-    if os.path.isfile(path):
-        return os.path.getsize(path) / 1024 / 1024
-    total = sum(os.path.getsize(os.path.join(r, n))
-                for r, _, fs in os.walk(path) for n in fs)
-    return total / 1024 / 1024
-
-
 if __name__ == "__main__":
-    exe = run_pyinstaller()
-    assemble(exe)
-    pack()
-    print(f"\nготово")
-    print(f"  папка: {OUT}  ({size_mb(OUT):.0f} МБ)")
-    print(f"  архив: {ZIP}  ({size_mb(ZIP):.0f} МБ)")
+    built = run_pyinstaller()
+    shutil.copy2(built, OUT)
+    print(f"\nготово: {OUT}  ({os.path.getsize(OUT) / 1024 / 1024:.0f} МБ)")

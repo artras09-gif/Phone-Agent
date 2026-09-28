@@ -30,6 +30,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 import webbrowser
 
 import adb
@@ -1120,6 +1121,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send(200, page, "text/html; charset=utf-8")
 
         if parsed.path == "/api/state":
+            global LAST_SEEN
+            LAST_SEEN = time.time()        # страница жива — окно открыто
             since = int((query.get("since") or ["0"])[0])
             return self._json(200, state(since))
 
@@ -1206,28 +1209,109 @@ CHROME_PATHS = [
 def open_window(url):
     """Открыть страницу отдельным окном, без вкладок и адресной строки.
 
+    Возвращает (чем открыли, процесс окна или None).
+
     `--app` понимают Chrome и Edge, а они на Windows есть почти всегда. Если
     не нашлись — обычная вкладка в браузере по умолчанию: выглядит хуже,
-    работает так же.
+    работает так же, но закрытие такого окна программа заметить не может.
     """
     profile = os.path.join(config.BASE, ".uiprofile")
     for exe in CHROME_PATHS:
         if not os.path.exists(exe):
             continue
         try:
-            subprocess.Popen([exe, f"--app={url}",
-                              f"--user-data-dir={profile}",
-                              "--window-size=1180,860"],
-                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            return os.path.basename(exe)
+            proc = subprocess.Popen(
+                [exe, f"--app={url}", f"--user-data-dir={profile}",
+                 "--window-size=1180,860"],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            return os.path.basename(exe), proc
         except OSError:
             continue
 
     webbrowser.open(url)
-    return "браузер по умолчанию"
+    return "браузер по умолчанию", None
+
+
+def _already_running(url):
+    """Отвечает ли на этом адресе уже работающий PhoneAgent.
+
+    Проверять надо ДО того, как занимать порт: у сервера стоит
+    `allow_reuse_address`, а на Windows это разрешает второму процессу молча
+    сесть на тот же порт. Второй двойной щелчок по exe поднимал бы второй
+    сервер, и запросы окна уходили бы то в один, то в другой.
+    """
+    try:
+        with urllib.request.urlopen(url + "api/state?since=0", timeout=2) as r:
+            return "chosen" in json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return False
+
+
+# Окно, закрытое раньше этого срока, считаем не закрытым, а «передавшим дела».
+# Chrome с тем же профилем, если он уже запущен, отдаёт окно своему процессу,
+# а новый завершается сразу — выход по такому сигналу погасил бы программу
+# в момент её запуска.
+WINDOW_HANDOFF_SEC = 5.0
+
+# Сколько ждать, пока идущее действие закончится после закрытия окна. Сессия
+# в своём `finally` блокирует телефон — обрывать её на полуслове нельзя.
+CLOSE_GRACE_SEC = 45.0
+
+# Запасной признак закрытого окна: страница не спрашивала состояние столько
+# секунд. Не меньше трёх минут НАРОЧНО: свёрнутое окно Chrome душит таймеры
+# страницы до раза в минуту, и короткий срок гасил бы программу посреди
+# сессии только за то, что окно свернули.
+SILENT_PAGE_SEC = 180.0
+
+LAST_SEEN = 0.0            # когда страница последний раз спрашивала состояние
+
+
+def _quit_when_window_closes(proc, httpd):
+    """Закрыли окно — остановить действие и выйти. Только для собранного exe.
+
+    У exe нет консоли, и Ctrl+C нажать негде: без этого после закрытия окна
+    оставался бы невидимый процесс, державший порт и телефон.
+
+    Главный признак — завершился процесс окна. Но Chrome, у которого уже
+    открыт браузер с тем же профилем, отдаёт окно ему и выходит сразу — и
+    тогда закрытие ЭТОГО окна мы не увидим никогда. Поймано на проверке
+    сборки: такой экземпляр жил вечно. Для этого случая — запасной признак:
+    страница перестала спрашивать состояние.
+    """
+    def finish(why):
+        print(f"{why} — завершаюсь")
+        if RUNNER.cancel():
+            deadline = time.time() + CLOSE_GRACE_SEC
+            while RUNNER.busy() and time.time() < deadline:
+                time.sleep(0.5)
+        httpd.shutdown()
+
+    def watch():
+        started = time.time()
+        proc.wait()
+        if time.time() - started >= WINDOW_HANDOFF_SEC:
+            finish("окно закрыто")
+            return
+        # Окно ушло в чужой процесс браузера — следим за самой страницей.
+        while True:
+            time.sleep(5)
+            seen = LAST_SEEN or started
+            if time.time() - seen > SILENT_PAGE_SEC:
+                finish("страница молчит три минуты, окно закрыто")
+                return
+
+    threading.Thread(target=watch, daemon=True).start()
 
 
 def run(port=PORT, open_browser=True):
+    url = f"http://{HOST}:{port}/"
+    if _already_running(url):
+        # Второй двойной щелчок: программа уже работает — просто показать окно.
+        print(f"PhoneAgent уже запущен: {url}")
+        if open_browser:
+            open_window(url)
+        return 0
+
     prefs.apply()         # выбранные мышкой зрение и телефон
     # Открываем пространство телефона: очередь, расписание и вкусы у каждого
     # свои. Не выбран — берём первый живой, а нет и его — общее пространство,
@@ -1246,11 +1330,13 @@ def run(port=PORT, open_browser=True):
     _start_bot()          # токен не задан — поднимать нечего, выйдет сразу
 
     httpd = Server((HOST, port), Handler)
-    url = f"http://{HOST}:{port}/"
 
     print(f"PhoneAgent: {url}")
     if open_browser:
-        print(f"окно: {open_window(url)}")
+        how, proc = open_window(url)
+        print(f"окно: {how}")
+        if proc is not None and getattr(sys, "frozen", False):
+            _quit_when_window_closes(proc, httpd)
     print("Закрой окно и нажми Ctrl+C здесь, чтобы остановить.")
 
     try:
