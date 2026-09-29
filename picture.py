@@ -15,6 +15,7 @@ GDI+ есть в любой Windows и зовётся через ctypes прям
 При любой осечке функции возвращают None: вызывающий идёт запасным путём.
 """
 import ctypes
+import struct
 import threading
 import uuid
 from ctypes import POINTER, byref, c_int, c_int64, c_uint, c_uint32, c_uint64, c_ulong, c_void_p
@@ -78,6 +79,12 @@ def _gdi():
                 ("GdipSetPixelOffsetMode", [vp, c_int]),
                 ("GdipSetCompositingMode", [vp, c_int]),
                 ("GdipDrawImageRectI", [vp, vp, c_int, c_int, c_int, c_int]),
+                ("GdipDrawImageRectRectI", [vp, vp, c_int, c_int, c_int, c_int,
+                                            c_int, c_int, c_int, c_int, c_int, vp, vp, vp]),
+                ("GdipCreatePen1", [c_uint32, ctypes.c_float, c_int, POINTER(vp)]),
+                ("GdipDrawEllipseI", [vp, vp, c_int, c_int, c_int, c_int]),
+                ("GdipDrawLineI", [vp, vp, c_int, c_int, c_int, c_int]),
+                ("GdipDeletePen", [vp]),
                 ("GdipDeleteGraphics", [vp]),
                 ("GdipSaveImageToStream", [vp, vp, POINTER(GUID), vp]),
                 ("GdipGetImageWidth", [vp, POINTER(c_uint)]),
@@ -208,6 +215,24 @@ def scaled_png(pixels, width, height, factor, order="rgba"):
             del scan0
 
 
+def from_screencap(raw, factor=1):
+    """Ответ `adb exec-out screencap` (без -p) -> PNG, ужатый в factor раз.
+
+    Заголовок: ширина, высота, формат и — с Android 9 — ещё и цветовое
+    пространство; какой именно, видно по остатку (пиксели — ровно
+    ширина*высота*4). Форматы 1, 2 — RGBA/RGBX_8888, 5 — BGRA_8888.
+    None — не разобрал.
+    """
+    if not raw or len(raw) < 16:
+        return None
+    w, h, fmt = struct.unpack("<III", bytes(raw[:12]))
+    head = 16 if len(raw) - 16 == w * h * 4 else 12
+    order = {1: "rgba", 2: "rgba", 5: "bgra"}.get(fmt)
+    if not order or len(raw) - head != w * h * 4:
+        return None
+    return scaled_png(memoryview(raw)[head:], w, h, factor, order)
+
+
 def to_jpeg(png, quality=None):
     """PNG -> JPEG для облака. None — не вышло (тогда уходит PNG)."""
     with _LOCK:
@@ -230,6 +255,83 @@ def to_jpeg(png, quality=None):
             if image:
                 gdi.GdipDisposeImage(image)
             _release(stream)
+
+
+RING_COLOR = 0xFFFF1E1E      # ARGB, красный
+UNIT_PIXEL = 2
+
+
+def crop_png(png, box, ring=None):
+    """Вырезать из картинки прямоугольник `box` (x0, y0, x1, y1) в пикселях.
+
+    `ring` — точка ВНУТРИ вырезки, вокруг которой рисуется красное кольцо:
+    так модели показывают, куда собираются нажать, и спрашивают второй раз,
+    уже вблизи (`escape._confirm`). Масштаб 1:1 — вблизи модель должна видеть
+    мелкий крестик таким, какой он есть.
+
+    Только кольцо, БЕЗ перекрестья: перекрестье внутри кольца модель читала
+    как кнопку «+» — «создание публикации, опасно» — и запрещала почти любое
+    нажатие (замер 2026-09-30: 11 отказов из 18, в 9 из них — «кнопка +»).
+    """
+    x0, y0, x1, y1 = (int(v) for v in box)
+    cw, ch = x1 - x0, y1 - y0
+    if cw <= 0 or ch <= 0:
+        return None
+    with _LOCK:
+        lib = _gdi()
+        if not lib or not png:
+            return None
+        gdi, shl = lib
+        data = ctypes.create_string_buffer(bytes(png), len(png))
+        stream = shl.SHCreateMemStream(data, len(png))
+        if not stream:
+            return None
+        src, dst, graphics, pen = c_void_p(), c_void_p(), c_void_p(), c_void_p()
+        try:
+            if gdi.GdipCreateBitmapFromStream(stream, byref(src)) != 0:
+                return None
+            if gdi.GdipCreateBitmapFromScan0(cw, ch, 0, PIXEL_24RGB, None, byref(dst)) != 0:
+                return None
+            if gdi.GdipGetImageGraphicsContext(dst, byref(graphics)) != 0:
+                return None
+            gdi.GdipSetCompositingMode(graphics, COMPOSITE_COPY)
+            if gdi.GdipDrawImageRectRectI(graphics, src, 0, 0, cw, ch, x0, y0, cw, ch,
+                                          UNIT_PIXEL, None, None, None) != 0:
+                return None
+            if ring is not None:
+                rx, ry = (int(v) for v in ring)
+                if gdi.GdipCreatePen1(RING_COLOR, 3.0, UNIT_PIXEL, byref(pen)) == 0:
+                    gdi.GdipDrawEllipseI(graphics, pen, rx - 34, ry - 34, 68, 68)
+            gdi.GdipDeleteGraphics(graphics)
+            graphics = c_void_p()
+            return _save(gdi, shl, dst, PNG_CODEC)
+        except OSError:
+            return None
+        finally:
+            if pen:
+                gdi.GdipDeletePen(pen)
+            if graphics:
+                gdi.GdipDeleteGraphics(graphics)
+            for image in (dst, src):
+                if image:
+                    gdi.GdipDisposeImage(image)
+            _release(stream)
+
+
+def dots_png(width, height, spots, radius=30):
+    """Белая картинка с красными кругами в точках `spots`.
+
+    Проверочная: по ней узнают, в какой системе координат модель называет
+    точки и насколько точно (`escape.hands_ready`).
+    """
+    px = bytearray(b"\xff" * (width * height * 4))
+    for cx, cy in spots:
+        for y in range(max(0, cy - radius), min(height, cy + radius + 1)):
+            half = int((radius * radius - (y - cy) ** 2) ** 0.5)
+            left, right = max(0, cx - half), min(width - 1, cx + half)
+            row = (y * width + left) * 4
+            px[row:row + (right - left + 1) * 4] = b"\xff\x20\x20\xff" * (right - left + 1)
+    return scaled_png(bytes(px), width, height, 1)
 
 
 def size_of(data):

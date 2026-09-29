@@ -48,6 +48,7 @@ TESTS = [
     ("scratchpad/frame_no_ffmpeg.py", "кадр без ffmpeg: ужатие и JPEG средствами Windows"),
     ("scratchpad/quiet_children.py", "дочерние программы без окон и без наших DLL"),
     ("scratchpad/escape_loop.py", "выход из тупика: выбор кнопки и запреты"),
+    ("scratchpad/escape_hands.py", "руки: нажатие точки, меткость, предохранители"),
     ("scratchpad/gate_test.py", "замки между процессами"),
     ("scratchpad/fleet_isolation.py", "разделение телефонов по пространствам"),
 ]

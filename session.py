@@ -449,13 +449,15 @@ def _looks_stuck(state, theme, window=3, overlap=0.5):
     return similar >= window - 1
 
 
-def _escape_now(state, goal, log):
+def _escape_now(state, goal, log, stuck=False):
     """Пустить модель выбираться с незнакомого экрана самой (escape.py).
 
-    Возвращает True, если помеха ушла. Отличие от `_rescue`: тот спрашивал
-    один совет по координатам и требовал `VISION_MAY_TAP`, а здесь модель
-    выбирает элемент из дерева и видит, чем кончилась прошлая попытка.
-    Промахнуться мимо кнопки нельзя, поэтому отдельного разрешения нет.
+    Возвращает True, если помеха ушла. Модель выбирает элемент из дерева и
+    видит, чем кончилась прошлая попытка; где список бессилен — нажимает
+    точку на полном снимке («руки», см. escape.py).
+
+    `stuck` — зовём, потому что лента встала. Только тогда пустое дерево
+    значит «окно поверх видео», а не «это лента».
     """
     if not config.ESCAPE_ENABLED or state["blind"]:
         return False
@@ -487,6 +489,7 @@ def _escape_now(state, goal, log):
         # определяют маркеры из рецепта, а не пустой дамп.
         done=(lambda: _ensure_feed(cfg, log)) if markers else None,
         allow_done=bool(markers),
+        stuck=stuck, feed=cfg.get("title"),
         deadline=time.time() + config.ESCAPE_MAX_SECONDS)
 
     if str(report["почему"]).startswith("модель недоступна"):
@@ -534,7 +537,7 @@ def _unstick(state, package, log):
     if ui.dismiss_popup(here):
         _ensure_feed(cfg, log)
         return "закрыл по кнопке"
-    if _escape_now(state, "лента не листается, поверх неё окно", log):
+    if _escape_now(state, "лента не листается, поверх неё окно", log, stuck=True):
         _ensure_feed(cfg, log)
         return "выбрался сам"
 
