@@ -224,10 +224,11 @@ class Keeper:
                     scheduler.scan_watch_dir(), scheduler.run_post_job(_tell)))
             else:
                 app, seconds = arg
+                keep = scheduler.chained(self.schedule, i, now)
                 self.runner.start(
                     f"сессия {app}",
-                    lambda a=app, sec=seconds: scheduler.run_session(
-                        a, sec, notify=_tell))
+                    lambda a=app, sec=seconds, k=keep: scheduler.run_session(
+                        a, sec, notify=_tell, keep_open=k))
             return                      # одно действие за раз, остальное подождёт
 
 

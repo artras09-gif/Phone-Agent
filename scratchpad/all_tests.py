@@ -49,6 +49,9 @@ TESTS = [
     ("scratchpad/quiet_children.py", "дочерние программы без окон и без наших DLL"),
     ("scratchpad/escape_loop.py", "выход из тупика: выбор кнопки и запреты"),
     ("scratchpad/escape_hands.py", "руки: нажатие точки, меткость, предохранители"),
+    ("scratchpad/ig_feed.py", "Instagram: «Главная» против Reels, новые ключи рецепта"),
+    ("scratchpad/alerts.py", "тревога в Telegram, когда помеха держится долго"),
+    ("scratchpad/plan_mix.py", "расписание: разные ленты в одном окне вперемешку"),
     ("scratchpad/gate_test.py", "замки между процессами"),
     ("scratchpad/fleet_isolation.py", "разделение телефонов по пространствам"),
 ]

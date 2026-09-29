@@ -66,13 +66,43 @@ def _pick(nodes, selectors):
     return None
 
 
+def _selected_tab(nodes):
+    """Подпись выбранной нижней вкладки («Дом», «Профиль») — или пусто."""
+    h = max((n.bounds[3] for n in nodes), default=0)
+    for n in nodes:
+        if n.selected and n.clickable and n.desc and n.bounds[1] > h * 0.8:
+            return n.desc
+    return ""
+
+
+def _off_feed(cfg):
+    """Где мы, если НЕ в ленте: подпись выбранной вкладки или «другой экран».
+    Пусто — в ленте (или не понять, и тогда верим, что в ленте).
+
+    Нужна для Instagram: на «Главной» лента тоже листается, кадры меняются,
+    и датчик залипания не срабатывает никогда — агент так и листал бы её
+    вместо Reels. Дерево на «Главной» снимается (3-4 с), в Reels — нет.
+    """
+    nodes = ui.dump(retries=1, tolerant=True, timeout=4)
+    if not nodes:
+        return ""                   # дерево не снялось — играет видео, это лента
+    if _pick(nodes, cfg.get("feed_selected") or []) is not None:
+        return ""
+    markers = cfg.get("feed_markers") or []
+    if markers and _pick(nodes, markers) is not None:
+        return ""
+    return _selected_tab(nodes) or "другой экран"
+
+
 def _open_feed(cfg, log):
     """Открыть именно ЛЕНТУ, а не просто приложение.
 
     Прямая ссылка (`open_uri`) — основной путь: `instagram://reels_home` и
     `youtube.com/shorts` попадают в ленту сразу, мимо любых вкладок. У
-    Instagram это единственный надёжный способ: его главная показывает те же
-    ролики, и по дереву «Дом» от «Reels» не отличить.
+    Instagram главная показывает те же ролики; отличить «Дом» от «Reels»
+    можно по дереву (живой замер 2026-09-30): в Reels оно не снимается
+    вовсе, на «Главной» снимается, и «Дом» там selected=true — см.
+    `feed_no_tree` / `feed_selected` в рецепте и `_off_feed`.
 
     Запасной путь — открыть приложение обычно и поискать вкладки.
     """
@@ -139,23 +169,31 @@ def _ensure_feed(cfg, log, timeout=4):
     feed_tabs = cfg.get("feed_tabs") or []
     for_you_tabs = cfg.get("for_you_tabs") or []
     markers = cfg.get("feed_markers") or []
+    selected = cfg.get("feed_selected") or []
+    # Пустое дерево = лента: у TikTok всегда, у Instagram — с тех пор, как его
+    # лента Reels перестала отдавать дерево (живой замер 2026-09-30). Раньше
+    # Instagram ждал отметок «Видео Reels» в дереве, которого в ленте нет, —
+    # и, нажав с «Главной» вкладку Reels, считал, что туда не попал.
+    no_tree = cfg.get("feed_no_tree", not markers)
 
     def in_feed(wait=0.0):
         """Мы в ленте? Способ зависит от приложения.
 
-        У TikTok признак — дерево вообще перестало сниматься: uiautomator
-        ждёт покоя, а там играет видео. У Shorts и Reels дерево снимается и
-        во время проигрывания, поэтому им заданы `feed_markers` — кнопки
-        плеера. Лента грузится не мгновенно (у Shorts бывает секунд восемь),
+        У TikTok и Instagram признак — дерево вообще перестало сниматься:
+        uiautomator ждёт покоя, а там играет видео. У Shorts дерево
+        снимается и во время проигрывания, поэтому ему заданы `feed_markers`
+        — кнопки плеера. Выбранная вкладка ленты (`feed_selected`) — тоже
+        признак. Лента грузится не мгновенно (у Shorts бывает секунд восемь),
         поэтому признак ждём, а не проверяем однократно.
         """
         deadline = time.time() + wait
         while True:
             tree = ui.dump(retries=1, tolerant=True, timeout=timeout)
-            if not markers:
-                if not tree:
+            if not tree:
+                if no_tree:
                     return True
-            elif tree and _pick(tree, markers) is not None:
+            elif _pick(tree, selected) is not None or \
+                    (markers and _pick(tree, markers) is not None):
                 return True
             if time.time() >= deadline:
                 return False
@@ -164,8 +202,13 @@ def _ensure_feed(cfg, log, timeout=4):
     nodes = ui.dump(retries=1, tolerant=True, timeout=timeout)
     if not nodes:
         return True
+    if _pick(nodes, selected) is not None:
+        return True
     if markers and _pick(nodes, markers) is not None:
         return True
+    here = _selected_tab(nodes)
+    if here:
+        log.append(f"на вкладке «{here}» — это не лента, перехожу")
 
     moved = []
 
@@ -193,6 +236,15 @@ def _ensure_feed(cfg, log, timeout=4):
 
     # Верим не тапу, а результату.
     if not in_feed(wait=6.0):
+        # Прямая ссылка ведёт в ленту мимо вкладок — у Instagram проверено
+        # живьём: `instagram://reels_home` с «Главной» открывает именно Reels.
+        uri = cfg.get("open_uri")
+        if uri:
+            device.open_uri(uri, cfg.get("package"))
+            human.pause(2.0, 3.5)
+            if in_feed(wait=6.0):
+                log.append("вернулся в ленту по прямой ссылке")
+                return True
         log.append("в ленту попасть не удалось — работаю как есть")
         return False
 
@@ -447,6 +499,61 @@ def _looks_stuck(state, theme, window=3, overlap=0.5):
     recent.append(words)
     del recent[:-window]
     return similar >= window - 1
+
+
+# ------------------------------------------------------ тревога в Telegram
+
+def _alert_shot():
+    """Снимок экрана для уведомления: вдвое меньше, JPEG. None — не снялся."""
+    import picture
+    try:
+        png = picture.from_screencap(adb.exec_out("screencap", timeout=20), 2)
+    except adb.AdbError:
+        return None
+    return (picture.to_jpeg(png) or png) if png else None
+
+
+def _alert(text, log=None, shot=True):
+    """Написать владельцу в привязанный бот. Молча — если бот не настроен."""
+    import telegram_bot
+    try:
+        sent = telegram_bot.alert(text, _alert_shot() if shot else None)
+    except Exception:
+        sent = False
+    if log is not None and telegram_bot.load_settings()["token"]:
+        log.append("  написал в Telegram" if sent else "  в Telegram не ушло — нет связи?")
+    return sent
+
+
+def _trouble(state, what, log=None):
+    """Помеха не снята. Держится дольше `ALERT_AFTER_MIN` — написать в бот.
+
+    Просьба пользователя 2026-09-30: если проблема скрипту неподвластна
+    долгое время — прислать уведомление. Не на первую же помеху: большую
+    часть агент снимает сам за минуту-две, и бот, пищащий на каждое окно,
+    быстро перестают читать. Повтор — не чаще `ALERT_REPEAT_MIN`.
+    """
+    now = time.time()
+    state.setdefault("trouble_since", now)
+    state["trouble_what"] = what
+    lasted = now - state["trouble_since"]
+    if lasted < config.ALERT_AFTER_MIN * 60:
+        return
+    if state.get("alerted_at") and now - state["alerted_at"] < config.ALERT_REPEAT_MIN * 60:
+        return
+    state["alerted_at"] = now
+    title = (state.get("cfg") or {}).get("title") or state.get("package", "")
+    _alert(f"⚠️ PhoneAgent, {title}: {what} — не выходит уже {lasted / 60:.0f} мин. "
+           "Пробую дальше сам; экран сейчас — на снимке.", log)
+
+
+def _trouble_over(state, log=None):
+    """Помеха ушла. Если о ней уже писали — сказать, что наладилось."""
+    if state.get("alerted_at"):
+        title = (state.get("cfg") or {}).get("title") or ""
+        _alert(f"✅ PhoneAgent, {title}: выбрался, работаю дальше.", log, shot=False)
+    for key in ("trouble_since", "trouble_what", "alerted_at"):
+        state.pop(key, None)
 
 
 def _escape_now(state, goal, log, stuck=False):
@@ -1680,8 +1787,13 @@ def like_current(cfg, w, h):
     return "лайк двойным тапом"
 
 
-def browse(app="tiktok", duration=None):
-    """Одна сессия просмотра ленты. Возвращает текстовый отчёт."""
+def browse(app="tiktok", duration=None, keep_open=False):
+    """Одна сессия просмотра ленты. Возвращает текстовый отчёт.
+
+    `keep_open` — следом сразу идёт кусок другой ленты того же блока
+    (`plan._mix`): телефон не блокируем, человек просто переключает
+    приложение. Не пришёл следующий кусок — экран погаснет по таймауту сам.
+    """
     cfg = _feed_config(app)
     package = cfg["package"]
 
@@ -1695,8 +1807,13 @@ def browse(app="tiktok", duration=None):
     if freed >= 1:
         log.append(f"убрал старые кадры и логи: {freed:.0f} МБ")
 
+    title = cfg.get("title") or app
     if not device.unlock():
         log.append("не смог разблокировать телефон")
+        # Без снимка: на экране блокировки видно уведомления, а толку от
+        # картинки тут нет — чинится PIN-ом в «Настройках» или руками.
+        _alert(f"⛔ PhoneAgent, {title}: сессия не началась — не смог "
+               "разблокировать телефон. Проверь PIN в «Настройках».", log, shot=False)
         return log.text()
 
     device.keep_awake(True)
@@ -1708,10 +1825,14 @@ def browse(app="tiktok", duration=None):
         # Проверяем экран снимком, а не опросом: unlock() выше мог отчитаться
         # об успехе при погашенном экране — так уже случалось.
         if not device.ensure_awake():
+            _alert(f"⛔ PhoneAgent, {title}: сессия не началась — экран телефона "
+                   "не включился.", log, shot=False)
             return "экран не включился — сессия отменена"
 
         w, h = adb.screen_size()
         if not _open_feed(cfg, log):
+            _alert(f"⛔ PhoneAgent, {title}: сессия не началась — приложение не "
+                   "открылось. Экран — на снимке.", log)
             return "приложение не открылось"
 
         # Стартовые окна: обновления, «оцените нас», разрешения.
@@ -1846,6 +1967,10 @@ def browse(app="tiktok", duration=None):
                             log.append("  лента пуста, приложение не помогло: "
                                        "похоже, нет связи или сеть недоступна "
                                        "— заканчиваю сессию")
+                            _alert("⛔ PhoneAgent, %s: сессия прервана — лента не "
+                                   "грузится даже после перезапуска приложения. "
+                                   "Похоже, на телефоне нет интернета."
+                                   % (cfg.get("title") or app), log)
                             break
                         state["blank_streak"] = 0
                         _forget_frames(state)
@@ -1862,10 +1987,12 @@ def browse(app="tiktok", duration=None):
                                "поверх ленты" % state["last_diff"]) \
                             if state.get("same_frames") else \
                             "описание повторяется от кадра к кадру"
-                        log.append("  лента не двигается [%s]: %s"
-                                   % (why, _unstick(state, package, log)))
+                        did = _unstick(state, package, log)
+                        log.append("  лента не двигается [%s]: %s" % (why, did))
                         _forget_frames(state)
                         state["shown_at"] = time.time()
+                        _trouble(state, "лента не двигается, поверх неё что-то "
+                                        "висит (последнее: %s)" % did, log)
                         # Счётчик считает помехи ПОДРЯД, а не за всю сессию:
                         # обойдённая помеха обнуляет его (см. ниже, в обычном
                         # пути). Иначе четыре РАЗНЫХ окна за час работы
@@ -1873,6 +2000,10 @@ def browse(app="tiktok", duration=None):
                         if state["popups"] >= config.STUCK_GIVE_UP:
                             log.append("  не помогает %d раз подряд — выхожу "
                                        "из сессии" % state["popups"])
+                            _alert("⛔ PhoneAgent, %s: сессия прервана — помеха не "
+                                   "снимается %d раз подряд. Нужна помощь руками; "
+                                   "экран — на снимке." % (cfg.get("title") or app,
+                                                           state["popups"]), log)
                             break
                         continue
 
@@ -1881,6 +2012,7 @@ def browse(app="tiktok", duration=None):
                     # считать неудачи ПОДРЯД, иначе сессия копит их за весь
                     # прогон и заканчивается на ровном месте.
                     state["popups"] = 0
+                    _trouble_over(state, log)
 
                     # Залипание: раз в 8-10 роликов человек не листает дальше,
                     # а досматривает один до конца. Без этого вся сессия
@@ -2015,6 +2147,22 @@ def browse(app="tiktok", duration=None):
                     state["shown_at"] = time.time()
                     log.append("  вернулся на видео назад")
 
+                # Не ушли ли с ленты внутри приложения. У Instagram «Главная»
+                # листается так же, как Reels, и залипания там не видно —
+                # проверяем по счёту роликов (`feed_check_every` в рецепте).
+                every = cfg.get("feed_check_every")
+                if every and watched and watched % every == 0:
+                    where = _off_feed(cfg)
+                    if where:
+                        log.append(f"  оказался не в ленте («{where}») — возвращаюсь")
+                        if not _ensure_feed(cfg, log):
+                            _open_feed(cfg, log)
+                        still = _off_feed(cfg)
+                        if still:
+                            _trouble(state, f"не могу вернуться в ленту из «{still}»", log)
+                        _forget_frames(state)
+                        state["shown_at"] = time.time()
+
                 # Не улетели ли мы случайно в другое приложение.
                 pkg, _ = adb.current_app()
                 if pkg and pkg != package:
@@ -2062,6 +2210,7 @@ def browse(app="tiktok", duration=None):
         if feed is not None:
             feed.stop()
         device.keep_awake(False)
-        device.go_home()
-        human.pause(1, 2)
-        device.lock()
+        if not keep_open:
+            device.go_home()
+            human.pause(1, 2)
+            device.lock()

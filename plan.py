@@ -193,16 +193,10 @@ def enable(index, on=True):
 
 # ------------------------------------------------------------ план дня
 
-def for_date(day=None, rules=None):
-    """Сессии на дату: список (когда, приложение, секунд), по времени.
-
-    Время начала разыгрывается заново на каждый день — в этом весь смысл
-    окна. Окно через полночь укладывается в те же сутки: сессия встанет
-    либо поздним вечером, либо ночью того же календарного дня.
-    """
-    day = day or dt.date.today()
+def _today_rules(day, rules):
+    """Правила, работающие в этот день: (начало, длина окна, мин, макс, лента)."""
     out = []
-    for rule in (rules if rules is not None else load()):
+    for rule in rules:
         if not rule.get("вкл", True):
             continue
         try:
@@ -213,12 +207,107 @@ def for_date(day=None, rules=None):
             continue                     # кривое правило просто не срабатывает
         if day.weekday() not in days:
             continue
-
         span = (end - start) % (24 * 60)
-        at = (start + random.uniform(0, span)) % (24 * 60)
-        when = dt.datetime.combine(day, dt.time()) + dt.timedelta(minutes=at)
-        seconds = random.uniform(low, high) * 60
-        out.append((when, rule.get("что") or config.FEED_APPS[0], seconds))
+        out.append((start, span, low, high, rule.get("что") or config.FEED_APPS[0]))
+    return out
+
+
+def _overlapping(entries):
+    """Правила с пересекающимися окнами — в одну кучку (по времени начала)."""
+    groups = []
+    for entry in sorted(entries, key=lambda e: e[0]):
+        start, span = entry[0], entry[1]
+        if groups and start <= groups[-1][1]:
+            groups[-1][0].append(entry)
+            groups[-1][1] = max(groups[-1][1], start + span)
+        else:
+            groups.append([[entry], start + span])
+    return [g[0] for g in groups]
+
+
+def _pieces(seconds):
+    """Разрезать время одной ленты на 1-3 куска не короче PLAN_MIX_MIN_CHUNK."""
+    least = config.PLAN_MIX_MIN_CHUNK_MIN * 60
+    most = max(1, min(config.PLAN_MIX_MAX_CHUNKS, int(seconds // least)))
+    n = random.randint(1, most)
+    weights = [random.random() + 0.3 for _ in range(n)]
+    rest = seconds - n * least
+    return [least + rest * wt / sum(weights) for wt in weights]
+
+
+def _interleave(parts):
+    """Куски разных лент вперемешку, одна лента дважды подряд — только если
+    других уже не осталось. Соседние куски одной ленты склеиваются."""
+    pools = {}
+    for app, seconds in parts:
+        pools.setdefault(app, []).append(seconds)
+    order, last = [], None
+    while any(pools.values()):
+        left = [a for a, p in pools.items() if p]
+        pick = [a for a in left if a != last] or left
+        app = random.choices(pick, weights=[len(pools[a]) for a in pick])[0]
+        seconds = pools[app].pop(random.randrange(len(pools[app])))
+        if order and order[-1][0] == app:
+            order[-1] = (app, order[-1][1] + seconds)
+        else:
+            order.append((app, seconds))
+        last = app
+    return order
+
+
+def _mix(day, group):
+    """Окна разных лент пересекаются — один блок, ленты вперемешку.
+
+    Просьба пользователя 2026-09-30: если в одном диапазоне стоят сессии в
+    разных соцсетях, комбинировать их случайно. Каждая лента получает своё
+    время из своего правила, режется на куски, и куски идут вперемешку, с
+    короткой паузой на «переключился в другое приложение». Начало блока —
+    случайное внутри общего окна, как у одиночного правила.
+    """
+    parts = []
+    for _start, _span, low, high, app in group:
+        parts += [(app, s) for s in _pieces(random.uniform(low, high) * 60)]
+    order = _interleave(parts)
+
+    gap_lo, gap_hi = config.PLAN_MIX_GAP_SEC
+    total_min = (sum(s for _, s in order) + gap_hi * (len(order) - 1)) / 60
+    first = min(e[0] for e in group)
+    last_end = max(e[0] + e[1] for e in group)
+    room = max(0.0, (last_end - first) - total_min)
+    # Блок длиннее окна — начало всё равно не ровно в начале окна.
+    at = first + (random.uniform(0, room) if room > 0
+                  else random.uniform(0, min(10, last_end - first)))
+    when = dt.datetime.combine(day, dt.time()) + dt.timedelta(minutes=at % (24 * 60))
+    out = []
+    for app, seconds in order:
+        out.append((when, app, seconds))
+        when += dt.timedelta(seconds=seconds + random.uniform(gap_lo, gap_hi))
+    return out
+
+
+def for_date(day=None, rules=None):
+    """Сессии на дату: список (когда, приложение, секунд), по времени.
+
+    Время начала разыгрывается заново на каждый день — в этом весь смысл
+    окна. Окно через полночь укладывается в те же сутки: сессия встанет
+    либо поздним вечером, либо ночью того же календарного дня.
+
+    Правила РАЗНЫХ лент с пересекающимися окнами смешиваются в один блок
+    (`_mix`, выключатель `PLAN_MIX`): «TikTok 21-23 на 40 минут» и «Reels
+    21-23 на 30 минут» дают, например, Reels 12 мин -> TikTok 25 -> Reels 18
+    -> TikTok 15, каждый день в новом порядке.
+    """
+    day = day or dt.date.today()
+    entries = _today_rules(day, rules if rules is not None else load())
+    out = []
+    for group in _overlapping(entries):
+        if config.PLAN_MIX and len({e[4] for e in group}) > 1:
+            out += _mix(day, group)
+            continue
+        for start, span, low, high, app in group:
+            at = (start + random.uniform(0, span)) % (24 * 60)
+            when = dt.datetime.combine(day, dt.time()) + dt.timedelta(minutes=at)
+            out.append((when, app, random.uniform(low, high) * 60))
 
     out.sort(key=lambda x: x[0])
     return out

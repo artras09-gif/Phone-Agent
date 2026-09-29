@@ -212,7 +212,21 @@ def run_post_job(notify=None, job_id=None):
     return "\n\n".join(results)
 
 
-def run_session(app, seconds=None, notify=None, manual=False):
+def chained(items, i, now=None):
+    """Сразу за пунктом i идёт сессия (кусок того же блока `plan._mix`)?
+
+    Тогда телефон после сессии не блокируем. «Сразу» — начало следующей не
+    позже чем через 3 минуты после планового конца этой.
+    """
+    when, kind, arg = items[i]
+    if kind != "session" or not arg or not arg[1]:
+        return False
+    end = max(when, now or when) + dt.timedelta(seconds=arg[1] + 180)
+    return any(k == "session" and w <= end
+               for w, k, _ in items[i + 1:i + 2])
+
+
+def run_session(app, seconds=None, notify=None, manual=False, keep_open=False):
     """Одна сессия. `seconds` задан — значит её поставил человек в plan.json.
 
     Дневной лимит на такие не распространяется: он стоит против разгона
@@ -223,7 +237,7 @@ def run_session(app, seconds=None, notify=None, manual=False):
     if not manual and seconds is None \
             and jobs.sessions_today() >= config.MAX_SESSIONS_PER_DAY:
         return "дневной лимит сессий исчерпан"
-    report = session.browse(app, seconds)
+    report = session.browse(app, seconds, keep_open=keep_open)
     jobs.log_event("session", report)
     if notify:
         notify(report)
@@ -312,7 +326,8 @@ def serve(notify=None, watch=False, record=False, should_stop=None):
                         scan_watch_dir()
                         run_post_job(notify)
                     else:
-                        run_session(app, seconds, notify)
+                        run_session(app, seconds, notify,
+                                    keep_open=chained(schedule, i, now))
             except Exception as e:                     # служба не должна падать
                 msg = f"сбой {kind}: {type(e).__name__}: {e}"
                 jobs.log_event("error", msg)

@@ -28,6 +28,45 @@ DEFAULTS = ("recipes.json", "interests.json", "plan.json", "ADBKeyboard.apk")
 # после обновления exe окно открывало бы инструкцию от прошлой версии.
 FOLLOW_BUILD = ("ИНСТРУКЦИЯ.html",)
 
+# Рецепты — и настройка человека, и часть программы: новая версия приносит в
+# них новые ключи (2026-09-30 — признаки ленты Instagram). Затирать файл
+# нельзя, а класть «только если нет» — значит, исправление до старого ПК не
+# доедет никогда. Поэтому новые ключи ДОПИСЫВАЮТСЯ, существующие не трогаются.
+MERGE_NEW_KEYS = ("recipes.json",)
+
+
+def _add_missing(mine, packed):
+    """Дописать в словарь `mine` ключи из `packed`, которых в нём нет. Вглубь
+    только по словарям: списки (шаги маршрута) — целиком чьи-то, их не сливают."""
+    added = 0
+    for key, value in packed.items():
+        if key not in mine:
+            mine[key] = value
+            added += 1
+        elif isinstance(mine[key], dict) and isinstance(value, dict):
+            added += _add_missing(mine[key], value)
+    return added
+
+
+def merge_new_keys(packed_path, target_path):
+    """Новые ключи встроенного JSON — в файл человека. Сколько дописано."""
+    import json
+
+    try:
+        with open(packed_path, encoding="utf-8") as f:
+            packed = json.load(f)
+        with open(target_path, encoding="utf-8") as f:
+            mine = json.load(f)
+    except (OSError, ValueError):
+        return 0                    # битый файл человека не чиним молча
+    if not isinstance(mine, dict) or not isinstance(packed, dict):
+        return 0
+    added = _add_missing(mine, packed)
+    if added:
+        with open(target_path, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(mine, f, ensure_ascii=False, indent=2)
+    return added
+
 
 def _inside():
     return getattr(sys, "_MEIPASS", "")
@@ -255,6 +294,8 @@ def unpack(base):
                 shutil.copy2(packed, target)
             except OSError:
                 pass
+        elif name in MERGE_NEW_KEYS and os.path.exists(packed):
+            merge_new_keys(packed, target)
     for name in FOLLOW_BUILD:
         packed = os.path.join(src, "defaults", name)
         target = os.path.join(base, name)

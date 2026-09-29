@@ -16,7 +16,8 @@ _REMOTE = "/sdcard/pa_dump.xml"
 
 
 class Node:
-    __slots__ = ("text", "rid", "desc", "cls", "pkg", "clickable", "enabled", "bounds")
+    __slots__ = ("text", "rid", "desc", "cls", "pkg", "clickable", "enabled",
+                 "selected", "bounds")
 
     def __init__(self, a):
         self.text = (a.get("text") or "").strip()
@@ -26,6 +27,10 @@ class Node:
         self.pkg = a.get("package") or ""
         self.clickable = a.get("clickable") == "true"
         self.enabled = a.get("enabled") == "true"
+        # Выбранная нижняя вкладка. Проверено живьём 2026-09-30: у Instagram на
+        # «Главной» «Дом» selected=true, «Reels» — false. Только так её и
+        # отличить от ленты Reels: сами ролики есть и там, и там.
+        self.selected = a.get("selected") == "true"
         m = _BOUNDS.match(a.get("bounds") or "")
         self.bounds = tuple(int(g) for g in m.groups()) if m else (0, 0, 0, 0)
 
@@ -75,7 +80,9 @@ def dump(retries=3, tolerant=False, timeout=30):
 
 
 def _matches(node, text=None, contains=None, rid=None, desc=None,
-             cls=None, clickable=None):
+             cls=None, clickable=None, selected=None):
+    if selected is not None and node.selected != selected:
+        return False
     if text is not None and node.text.lower() != text.lower():
         return False
     if contains is not None and contains.lower() not in node.text.lower() \

@@ -389,6 +389,9 @@ pre.report{
               <option value="20-40" selected>20-40 минут</option>
               <option value="40-60">40-60 минут</option>
               <option value="60-90">1-1,5 часа</option>
+              <option value="90-120">1,5-2 часа</option>
+              <option value="120-180">2-3 часа</option>
+              <option value="180-240">3-4 часа</option>
             </select>
           </label>
           <label class="field" style="min-width:130px">Лента<select id="r-app"></select></label>
@@ -947,6 +950,20 @@ function renderQueue(items){
   }
 }
 
+// «120-180» -> «2–3 часа», «20-40» -> «20–40 минут»: правила на часы
+// читать в минутах неудобно.
+function lengthText(minutes){
+  const parts = String(minutes).split("-").map(Number);
+  if(parts.some(isNaN)) return minutes + " минут";
+  if(parts.every(m => m >= 60 && m % 30 === 0)){
+    const h = parts.map(m => String(m / 60).replace(".", ","));
+    const last = parts[parts.length - 1] / 60;
+    return h.join("–") + (last === 1 ? " час"
+      : last >= 5 && Number.isInteger(last) ? " часов" : " часа");
+  }
+  return parts.join("–") + " минут";
+}
+
 function renderPlan(p){
   const box = $("rules");
   const sign = JSON.stringify(p);
@@ -965,7 +982,7 @@ function renderPlan(p){
     row.querySelector("b").textContent =
       r.days + " · " + r.window.replace("-", "–");
     row.querySelector("span").textContent =
-      r.minutes.replace("-", "–") + " минут · " + (appTitles[r.app] || r.app);
+      lengthText(r.minutes) + " · " + (appTitles[r.app] || r.app);
 
     const sw = document.createElement("div");
     sw.className = "switch" + (r.on ? " on" : "");

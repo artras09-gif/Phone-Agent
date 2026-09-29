@@ -720,7 +720,20 @@
         }
       ],
       "for_you_tabs": [],
-      "_markers_note": "именно «Видео Reels», а не «Reels»: кнопка Reels есть в нижней панели на любом экране приложения",
+      "_feed_check_note": "Проверено живьём 2026-09-30: в ленте Reels дерево НЕ снимается (uiautomator 12.7 с и «could not get idle state» — играет видео), а на «Главной» снимается за 3-4 с, и там у вкладки «Дом» selected=true. Поэтому: пустое дерево = лента (feed_no_tree), выбранная вкладка Reels = лента (feed_selected), а раз в feed_check_every роликов — проверка, не ушли ли на «Главную»: там лента тоже листается, и датчик залипания этого не замечает.",
+      "feed_no_tree": true,
+      "feed_selected": [
+        {
+          "desc": "Reels",
+          "selected": true
+        },
+        {
+          "desc": "Клипы",
+          "selected": true
+        }
+      ],
+      "feed_check_every": 6,
+      "_markers_note": "именно «Видео Reels», а не «Reels»: кнопка Reels есть в нижней панели на любом экране приложения. Сейчас эти отметки не видны вовсе — дерево в ленте не снимается (см. _feed_check_note), — но и не мешают.",
       "feed_markers": [
         {
           "desc": "Видео Reels"

@@ -218,6 +218,53 @@ def send(text, preview=True, chat_id=None, keyboard=False):
     return ok
 
 
+def send_photo(image, caption="", chat_id=None):
+    """Картинка (JPEG или PNG) с подписью. True — Telegram принял.
+
+    multipart вручную: сторонних библиотек в проекте нет, а urllib умеет
+    только формы из пар «ключ=значение».
+    """
+    import secrets
+
+    cfg = load_settings()
+    target = chat_id or current_chat() or cfg["owner"]
+    if not cfg["token"] or not target or not image:
+        return False
+    kind = "png" if image[:4] == b"\x89PNG" else "jpeg"
+    boundary = "----pa" + secrets.token_hex(12)
+    head = "".join(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'
+        for k, v in (("chat_id", target), ("caption", caption[:1000])))
+    body = (head.encode("utf-8")
+            + (f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; '
+               f'filename="screen.{kind}"\r\nContent-Type: image/{kind}\r\n\r\n').encode()
+            + bytes(image) + f"\r\n--{boundary}--\r\n".encode())
+    req = urllib.request.Request(
+        f"{API}/bot{cfg['token']}/sendPhoto", data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    try:
+        with urllib.request.urlopen(req, timeout=40) as r:
+            return bool(json.loads(r.read().decode("utf-8")).get("ok"))
+    except Exception:
+        return False
+
+
+def alert(text, image=None):
+    """Неспрошенное сообщение ВЛАДЕЛЬЦУ — о беде, которую агент не снял сам.
+
+    Всегда владельцу, а не «тому, кто сейчас пишет»: бот открыт всем
+    (`config.BOT_OPEN`), а снимок экрана личного телефона — только хозяину.
+    Снимок не ушёл (нет связи, слишком большой) — хотя бы текстом.
+    """
+    cfg = load_settings()
+    owner = cfg["owner"]
+    if not cfg["token"] or not owner:
+        return False
+    if image and send_photo(image, text, chat_id=owner):
+        return True
+    return send(text, chat_id=owner)
+
+
 # ------------------------------------------------- подборка понравившегося
 
 def _plural(n, one, few, many):
