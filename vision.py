@@ -1734,6 +1734,24 @@ def save_frame(png_bytes, session_id, index):
     return path
 
 
+def drop_frame(path):
+    """Убрать разобранный кадр с диска — если так велит KEEP_ANALYZED_FRAMES.
+
+    Опустевшую папку сессии убираем тоже: иначе после каждой сессии
+    оставалась бы пустая папка, и за месяц их набирались бы сотни.
+    """
+    if not path or getattr(config, "KEEP_ANALYZED_FRAMES", False):
+        return
+    try:
+        os.remove(path)
+    except OSError:
+        return
+    try:
+        os.rmdir(os.path.dirname(path))        # удалится, только если пустая
+    except OSError:
+        pass
+
+
 def new_session_id():
     return time.strftime("%Y%m%d-%H%M%S")
 
@@ -1760,6 +1778,30 @@ def tidy_up():
         places.append((legacy, config.KEEP_FRAMES_DAYS))
 
     freed = 0
+
+    # Разобранные кадры, оставшиеся с тех времён, когда их хранили: всё из них
+    # уже в базе. Без этого старый запас лежал бы до конца своего срока.
+    if not getattr(config, "KEEP_ANALYZED_FRAMES", False):
+        try:
+            import jobs
+
+            done = jobs.analyzed_frames()
+        except Exception:
+            done = set()
+        for folder, _ in places:
+            if folder == config.LOG_DIR or not os.path.isdir(folder):
+                continue
+            for root, _, files in os.walk(folder):
+                for name in files:
+                    path = os.path.join(root, name)
+                    if path in done:
+                        try:
+                            size = os.path.getsize(path)
+                            drop_frame(path)
+                            freed += size
+                        except OSError:
+                            pass
+
     for folder, days in places:
         if not days or not os.path.isdir(folder):
             continue

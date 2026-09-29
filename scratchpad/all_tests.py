@@ -43,6 +43,8 @@ TESTS = [
     ("scratchpad/links_incoming.py", "приём ссылок в чате: сеть, чистка, повторы"),
     ("scratchpad/vision_models.py", "список моделей: только те, что видят картинки"),
     ("scratchpad/post_safety.py", "публикация не оставляет открытый экран"),
+    ("scratchpad/frames_cleanup.py", "снимки не копятся: кадр уходит после разбора"),
+    ("scratchpad/stale_unpack.py", "чистка распаковок не трогает живую программу"),
     ("scratchpad/escape_loop.py", "выход из тупика: выбор кнопки и запреты"),
     ("scratchpad/gate_test.py", "замки между процессами"),
     ("scratchpad/fleet_isolation.py", "разделение телефонов по пространствам"),

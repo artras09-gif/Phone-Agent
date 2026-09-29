@@ -3,6 +3,7 @@
 Зачем БД, а не список в памяти: ПК перезагрузится, служба упадёт —
 задачи останутся. Плюс видно историю и можно повторить упавшее.
 """
+import os
 import sqlite3
 import time
 
@@ -62,7 +63,11 @@ CREATE TABLE IF NOT EXISTS content (
 MIGRATIONS = {
     "content": [("verdict", "TEXT DEFAULT ''"), ("skipped", "INTEGER DEFAULT 0"),
                 ("caption", "TEXT DEFAULT ''"), ("author", "TEXT DEFAULT ''"),
-                ("rules", "TEXT DEFAULT ''"), ("device", "TEXT DEFAULT ''")],
+                ("rules", "TEXT DEFAULT ''"), ("device", "TEXT DEFAULT ''"),
+                # Размер кадра в КБ — пишется при разборе, потому что сам кадр
+                # после разбора удаляется, а по размеру `stats` узнаёт пустые
+                # (погашенный экран) кадры.
+                ("frame_kb", "INTEGER DEFAULT 0")],
     "jobs": [("device", "TEXT DEFAULT ''")],
     "events": [("device", "TEXT DEFAULT ''")],
     "links": [("sent", "REAL DEFAULT 0")],
@@ -206,12 +211,16 @@ def log_event(kind, payload=""):
 
 def add_content(session, app, frame, data):
     """Записать разбор кадра. Повторный разбор того же кадра игнорируется."""
+    try:
+        frame_kb = os.path.getsize(frame) // 1024
+    except (OSError, TypeError):
+        frame_kb = 0
     with connect() as con:
         con.execute(
             "INSERT OR IGNORE INTO content "
             "(session,app,frame,tema,category,screen_text,ad,lang,people,raw,at,"
-            " caption,author,device) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " caption,author,device,frame_kb) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (session, app, frame,
              str(data.get("тема", ""))[:500],
              str(data.get("категория", "другое"))[:60],
@@ -223,7 +232,8 @@ def add_content(session, app, frame, data):
              time.time(),
              str(data.get("описание", ""))[:500],
              str(data.get("автор", ""))[:80],
-             DEVICE),
+             DEVICE,
+             frame_kb),
         )
 
 

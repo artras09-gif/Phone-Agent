@@ -72,9 +72,9 @@ def main():
     verdict = [True, "ключ рабочий, модель qwen-vl-plus"]
     vision.verify = lambda kind=None: tuple(verdict)
 
-    port = 8793
     from http.server import ThreadingHTTPServer
-    server = ThreadingHTTPServer(("127.0.0.1", port), webui.Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), webui.Handler)   # порт выдаёт система
+    port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     time.sleep(0.6)
 

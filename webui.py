@@ -1206,6 +1206,23 @@ CHROME_PATHS = [
 ]
 
 
+# Чтобы профиль окна не пух. Замер 2026-09-29: за несколько запусков он вырос
+# до 103 МБ, и почти всё это Chrome докачал сам, в фоне: модели подсказок и
+# «оптимизации» (51 МБ), встроенные расширения (18 МБ), метрики (16 МБ).
+# Окну с одной локальной страницей ничего из этого не нужно.
+LEAN_FLAGS = (
+    "--no-first-run", "--no-default-browser-check",
+    "--disable-component-update",           # модели и расширения-компоненты
+    "--disable-background-networking",      # фоновые докачки и проверки
+    "--disable-sync", "--disable-extensions",
+    "--disable-features=OptimizationHints,OptimizationGuideModelDownloading,"
+    "OptimizationHintsFetching,OptimizationTargetPrediction,"
+    "MediaRouter,Translate",
+    "--metrics-recording-only",             # метрики не копятся и не уходят
+    "--disk-cache-size=5242880",            # кэш страниц — не больше 5 МБ
+)
+
+
 def open_window(url):
     """Открыть страницу отдельным окном, без вкладок и адресной строки.
 
@@ -1222,7 +1239,7 @@ def open_window(url):
         try:
             proc = subprocess.Popen(
                 [exe, f"--app={url}", f"--user-data-dir={profile}",
-                 "--window-size=1180,860"],
+                 "--window-size=1180,860", *LEAN_FLAGS],
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             return os.path.basename(exe), proc
         except OSError:
@@ -1230,6 +1247,15 @@ def open_window(url):
 
     webbrowser.open(url)
     return "браузер по умолчанию", None
+
+
+def _tidy_quietly():
+    try:
+        freed = vision.tidy_up()
+        if freed >= 1:
+            print(f"убрал старые кадры и журналы: {freed:.0f} МБ")
+    except Exception:
+        pass
 
 
 def _already_running(url):
@@ -1251,7 +1277,12 @@ def _already_running(url):
 # Chrome с тем же профилем, если он уже запущен, отдаёт окно своему процессу,
 # а новый завершается сразу — выход по такому сигналу погасил бы программу
 # в момент её запуска.
-WINDOW_HANDOFF_SEC = 5.0
+#
+# Было 5 с — и это оказалось много: передача дел занимает доли секунды, а
+# окно, закрытое человеком через 4 с после открытия (или удалением программы
+# сразу после запуска — так и поймано), принималось за передачу. Программа
+# тогда ждала запасного признака три минуты, невидимо держа порт и телефон.
+WINDOW_HANDOFF_SEC = 2.0
 
 # Сколько ждать, пока идущее действие закончится после закрытия окна. Сессия
 # в своём `finally` блокирует телефон — обрывать её на полуслове нельзя.
@@ -1321,6 +1352,10 @@ def run(port=PORT, open_browser=True):
         live = [s for s, state in adb.devices() if state == "device"]
         chosen = live[0] if live else ""
     devices.use(chosen)
+    # Уборка кадров и журналов — при каждом открытии окна, а не только в
+    # начале сессии: иначе у того, кто окно открывает, а сессий не гоняет,
+    # старое не убиралось бы никогда. В фоне — окно не должно ждать.
+    threading.Thread(target=_tidy_quietly, daemon=True).start()
     # Стоп-крана в окне больше нет, а файл от прошлых версий мог остаться и
     # молча блокировал бы службу. Снимаем на старте.
     config.set_stop(False)

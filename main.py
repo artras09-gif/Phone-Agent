@@ -748,13 +748,19 @@ def cmd_bench(args):
 
     import vision
 
+    # Разобранные кадры теперь удаляются, так что сохранённого может и не
+    # быть — тогда меряем на живом снимке экрана.
     frames = sorted(glob.glob(os.path.join(config.FRAMES_DIR, "*", "*.png")))
-    if not frames:
-        print("нет сохранённых кадров — сначала прогони сессию")
+    if frames:
+        with open(frames[-1], "rb") as f:
+            png = f.read()
+        print(f"кадр: {os.path.basename(frames[-1])}, {len(png) // 1024} КБ")
+    elif adb.connected():
+        png = adb.exec_out("screencap -p", timeout=25)
+        print(f"кадр: живой снимок экрана, {len(png) // 1024} КБ")
+    else:
+        print("нет ни сохранённых кадров, ни телефона — мерить не на чем")
         return 1
-    with open(frames[-1], "rb") as f:
-        png = f.read()
-    print(f"кадр: {os.path.basename(frames[-1])}, {len(png) // 1024} КБ")
     print(f"режим: {'СБОРКА exe' if getattr(sys, 'frozen', False) else 'исходники'}")
 
     def measure(name, fn, runs=5):
@@ -1042,6 +1048,7 @@ def cmd_analyze(args):
             continue
         failed = 0
         jobs.add_content(session_id, args.app, path, data)
+        vision.drop_frame(path)          # разобрано — снимок больше не нужен
         print(f"  {i:3d}/{len(todo)}  {data.get('категория', '?'):12s} "
               f"{str(data.get('тема', ''))[:60]}")
 
@@ -1183,6 +1190,10 @@ def build_parser():
     es.set_defaults(fn=cmd_escape)
 
     sub.add_parser("bot", help="только приёмник Telegram: ссылки и видео").set_defaults(fn=cmd_bot)
+
+    un = sub.add_parser("uninstall",
+                        help="удалить программу со всеми данными (только exe)")
+    un.add_argument("--yes", action="store_true", help="не спрашивать подтверждения")
 
     sub.add_parser("unlock").set_defaults(fn=cmd_unlock)
     sub.add_parser("lock").set_defaults(fn=cmd_lock)
@@ -1383,6 +1394,22 @@ def main():
         argv = ["ui"]
 
     args = build_parser().parse_args(argv)
+
+    import install
+
+    # Удаление — раньше всего остального: ему не нужны ни настройки, ни
+    # телефон, а запущенный лишний раз adb потом держал бы свою папку.
+    if args.cmd == "uninstall":
+        return install.uninstall(config.BASE, ask=not args.yes)
+
+    # Собранный exe каждый раз отмечается в «Установленных приложениях»:
+    # отсюда его можно удалить начисто, как нормальную программу, а если exe
+    # переложили в другую папку — запись догонит его сама.
+    if getattr(sys, "frozen", False):
+        try:
+            install.register(config.BASE)
+        except Exception as e:                       # noqa: BLE001
+            print(f"[i] не смог записаться в «Приложения»: {e}")
 
     # То, что выбрано мышкой в окне (модель, ключ от облака, телефон), должно
     # действовать и в командах: иначе `doctor` показывает одно, а окно

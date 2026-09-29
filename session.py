@@ -450,8 +450,13 @@ def _escape_now(state, goal, log):
 
     def shot():
         # Кадры спасателя нумеруются с 900, чтобы не смешиваться с роликами.
+        # На диске они не нужны: модель смотрит байты, а в базу эти кадры не
+        # идут. Раньше они лежали до конца срока и копились от каждой помехи.
         state["rescues"] += 1
-        return _grab(state, 900 + state["rescues"])[1]
+        path, png = _grab(state, 900 + state["rescues"])
+        if path and not getattr(config, "KEEP_ANALYZED_FRAMES", False):
+            vision.drop_frame(path)
+        return png
 
     # Подписи вкладок ленты — из рецепта, а не из общего списка: у YouTube
     # лента это «Shorts», а «Главная» там ведёт на обычную главную.
@@ -626,11 +631,15 @@ def _look_and_decide(state, app, index, taste, log):
     # на друзей», комментарии, запрос разрешения). Свайпы в нём листают его
     # список, а не ленту, и агент способен разбирать одно и то же бесконечно.
     if _looks_stuck(state, str(data.get("тема", ""))):
+        # Кадр разобран, просто это не ролик, а окно поверх ленты. Хранить
+        # его незачем, а оставленный он бы потом ещё раз ушёл в `analyze`.
+        vision.drop_frame(path)
         return "застряли", None, None
 
     phases["модель"] = time.time() - mark_at
     mark_at = time.time()
     jobs.add_content(state["id"], app, path, data)
+    vision.drop_frame(path)          # всё нужное из кадра уже в базе
     phases["база"] = time.time() - mark_at
     mark_at = time.time()
     skip, verdict, why, matched = interests.decide(
@@ -1628,6 +1637,7 @@ def _analyzer(state, app, log):
             log.append(f"  разбор на лету отключён: {str(e)[:80]}")
             return
         jobs.add_content(state["id"], app, path, data)
+        vision.drop_frame(path)          # всё нужное из кадра уже в базе
         log.append(f"  вижу: {data.get('категория', '?')} — "
                    f"{str(data.get('тема', ''))[:60]}")
 

@@ -68,11 +68,11 @@ def main():
     prefs.PATH = os.path.join(tmp, "settings.json")
     assert prefs.PATH != os.path.join(LIVE_BASE, "settings.json")
 
-    port = 8791
-    server = webui.build_server(port) if hasattr(webui, "build_server") else None
-    if server is None:
-        from http.server import ThreadingHTTPServer
-        server = ThreadingHTTPServer(("127.0.0.1", port), webui.Handler)
+    # Порт выдаёт система: на фиксированном 8791 стенд однажды поймал сброс
+    # соединения — HTTPServer на Windows пускает на занятый порт второго.
+    from http.server import ThreadingHTTPServer
+    server = ThreadingHTTPServer(("127.0.0.1", 0), webui.Handler)
+    port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     time.sleep(0.6)

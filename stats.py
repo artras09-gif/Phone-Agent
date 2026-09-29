@@ -23,7 +23,7 @@ def _rows(days):
     with jobs.connect() as con:
         return con.execute(
             "SELECT session, app, frame, tema, category, screen_text, ad, lang, "
-            "       people, raw, at, verdict, skipped, caption, rules "
+            "       people, raw, at, verdict, skipped, caption, rules, frame_kb "
             "FROM content WHERE at >= ?" + mine + " ORDER BY at",
             (since,) + dev
         ).fetchall()
@@ -165,13 +165,18 @@ def report(days=7):
     # --------------------------------------------------- пустые кадры
     import os
 
+    # Размер берём из базы: сам кадр после разбора удаляется. Для старых строк,
+    # записанных до колонки frame_kb, — по файлу, если он ещё лежит.
     blank = 0
     for r in rows:
-        try:
-            if os.path.getsize(r["frame"]) < config.BLANK_FRAME_KB * 1024:
-                blank += 1
-        except OSError:
-            pass
+        kb = r["frame_kb"] or 0
+        if not kb:
+            try:
+                kb = os.path.getsize(r["frame"]) // 1024
+            except OSError:
+                continue
+        if kb < config.BLANK_FRAME_KB:
+            blank += 1
     if blank:
         lines += ["", "ПУСТЫЕ КАДРЫ (погашенный экран):",
                   f"  {blank} ({blank / total:.0%}) — решения по ним недостоверны"]

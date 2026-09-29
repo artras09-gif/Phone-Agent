@@ -65,6 +65,20 @@ def _snap(log_path, index, name):
         pass
 
 
+def _drop_snaps(log_path):
+    """Убрать снимки шагов удачного маршрута, оставив текстовый отчёт."""
+    try:
+        names = os.listdir(log_path)
+    except OSError:
+        return
+    for name in names:
+        if name.lower().endswith(".png"):
+            try:
+                os.remove(os.path.join(log_path, name))
+            except OSError:
+                pass
+
+
 
 
 def _vision_note(log_path, index, label):
@@ -249,6 +263,10 @@ def post(video_path, caption, target, recipes=None):
 
         published = not config.DRY_RUN
         report.append("готово")
+        # Маршрут прошёл — снимки шагов больше не нужны: они для разбора
+        # СБОЯ, а сбоя не было. Остаётся текстовый отчёт. Иначе каждая
+        # публикация оставляла по десятку снимков экрана на неделю.
+        _drop_snaps(log_path)
         return True, report.text()
 
     except (StepFailed, adb.AdbError, RuntimeError) as e:
