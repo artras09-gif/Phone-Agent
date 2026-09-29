@@ -438,6 +438,7 @@ def _chosen():
     api = vision.provider() == vision.API
     data["has_key"] = bool(data["api_key"] or config.API_KEY.strip())
     data["api_key"] = ""
+    data["has_pin"] = bool(device.read_pin())
     data["vision_provider"] = vision.provider()
     # Списков на странице по одному — того, кто сейчас отвечает. Показываем
     # то, что реально в силе: не выбрали своё — значит работает то, что
@@ -1029,6 +1030,29 @@ def _clean_url(value):
     return url.rstrip("/")
 
 
+@command("pin")
+def _cmd_pin(body):
+    """PIN экрана телефона — в `pin.txt` рабочей папки.
+
+    У exe рабочая папка — `%LOCALAPPDATA%\\PhoneAgent`, и «положить pin.txt
+    рядом с программой», как раньше говорила инструкция, человек не сможет:
+    рядом с exe эту папку не видно. Поэтому PIN вписывается в окне. Наружу,
+    как и ключ, не отдаётся — страница знает только, что он есть.
+    """
+    pin = str(body.get("pin", "")).strip()
+    if pin == "-":
+        try:
+            os.remove(config.PIN_FILE)
+        except FileNotFoundError:
+            pass
+        return {"ok": True, "message": "PIN стёрт — считаю, что блокировки нет"}
+    if not pin.isdigit() or not 4 <= len(pin) <= 16:
+        return {"ok": False, "error": "PIN — только цифры, от 4 до 16"}
+    with open(config.PIN_FILE, "w", encoding="utf-8") as f:
+        f.write(pin)
+    return {"ok": True, "message": "PIN сохранён — телефон разблокирую сам"}
+
+
 @command("keyboard")
 def _cmd_keyboard(body):
     import setup as setup_mod
@@ -1036,8 +1060,14 @@ def _cmd_keyboard(body):
     setup_mod.assume_yes()
     ok = setup_mod.step_keyboard(adb.connected())
     PROBE.refresh_soon()
-    return {"ok": ok, "message": "клавиатура включена" if ok
-            else "не вышло — поставь apk на телефоне, см. README"}
+    if ok:
+        return {"ok": True, "message": "клавиатура включена"}
+    # Для exe README рядом нет — говорим, что делать, прямо тут. С ПК MIUI
+    # ставить не даёт, но `step_keyboard` уже положил apk на сам телефон.
+    return {"ok": False,
+            "error": "не вышло. Если телефон запретил установку с компьютера, "
+                     "apk уже лежит на нём: Проводник → Download → "
+                     "ADBKeyboard.apk → Установить, потом нажми кнопку ещё раз"}
 
 
 @command("telegram")
@@ -1119,6 +1149,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                   "text/plain; charset=utf-8")
             page = page.replace("{{TOKEN}}", TOKEN)
             return self._send(200, page, "text/html; charset=utf-8")
+
+        if parsed.path == "/help":
+            # Инструкция лежит в рабочей папке, а у exe это скрытая
+            # %LOCALAPPDATA%\PhoneAgent — самому её там не найти.
+            try:
+                with open(os.path.join(config.BASE, "ИНСТРУКЦИЯ.html"),
+                          encoding="utf-8") as f:
+                    return self._send(200, f.read(), "text/html; charset=utf-8")
+            except OSError:
+                return self._send(404, "инструкции нет", "text/plain; charset=utf-8")
 
         if parsed.path == "/api/state":
             global LAST_SEEN

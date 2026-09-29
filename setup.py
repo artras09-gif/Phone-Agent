@@ -227,7 +227,8 @@ def step_keyboard(phone_ready):
             print("    Поставь его НА ТЕЛЕФОНЕ, с ПК это запрещено оболочкой:")
             print("      Проводник (Файлы) -> Download -> ADBKeyboard.apk -> Установить")
             print("      Разреши установку из этого источника, если спросит.")
-            print("    Потом здесь: python main.py install-keyboard")
+            print("    Потом — кнопка «Проверить и включить» в окне")
+            print("    (или команда install-keyboard)")
             print("    Через «Установка через USB» в настройках разработчика")
             print("    тоже можно, но на Xiaomi для неё нужны Mi-аккаунт и SIM.")
         else:

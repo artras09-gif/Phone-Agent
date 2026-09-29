@@ -73,6 +73,11 @@ nav button{
 }
 nav button:hover{color:var(--text);background:rgba(255,255,255,.03)}
 nav button.on{color:var(--text);border-bottom-color:var(--accent)}
+nav .help{
+  margin-left:auto;align-self:center;padding:6px 12px;border-radius:8px;
+  color:var(--muted);font-size:13px;text-decoration:none;
+}
+nav .help:hover{color:var(--text);background:rgba(255,255,255,.03)}
 nav .count{
   margin-left:7px;padding:1px 7px;border-radius:999px;font-size:11px;
   background:var(--panel-2);color:var(--muted);
@@ -260,6 +265,7 @@ pre.report{
     <button data-tab="bot">Бот</button>
     <button data-tab="setup">Настройки</button>
     <button data-tab="stats">Сводка</button>
+    <a class="help" href="/help" target="_blank">Инструкция</a>
   </nav>
 
   <main>
@@ -538,6 +544,21 @@ pre.report{
       </div>
 
       <div class="card">
+        <h2>Блокировка экрана</h2>
+        <p class="hint">Если на телефоне стоит PIN — впиши его, программа будет
+          разблокировать телефон сама. Хранится только на этом компьютере, в
+          журналы и кадры не попадает. Прочерк «-» — стереть.</p>
+        <div class="row">
+          <label class="field" style="min-width:220px">
+            PIN
+            <input id="s-pin" type="password" inputmode="numeric"
+                   autocomplete="off" placeholder="только цифры">
+          </label>
+          <button class="btn accent" id="b-pin" style="align-self:flex-end">Сохранить PIN</button>
+        </div>
+      </div>
+
+      <div class="card">
         <h2>Клавиатура для русских описаний</h2>
         <p class="hint">Штатный ввод adb умеет только латиницу. Если клавиатура
           установлена, но выключена — кнопка включит её.</p>
@@ -733,6 +754,8 @@ function renderSetup(s){
     ? "https://…/v1" : "http://127.0.0.1:1234/v1";
   $("s-key").placeholder = s.chosen.has_key
     ? "ключ сохранён — впиши новый, чтобы сменить" : "sk-…";
+  $("s-pin").placeholder = s.chosen.has_pin
+    ? "PIN сохранён" : "только цифры";
 
   // Готовые адреса: набирать их руками незачем, а ошибиться в одной букве
   // легко — и получишь «сервис не отвечает» вместо понятной причины.
@@ -1186,6 +1209,16 @@ $("b-taste").onclick = () =>
   send("taste", {topic: $("t-topic").value, lang: $("t-lang").value});
 
 $("b-kb").onclick = () => send("keyboard", {});
+
+$("b-pin").onclick = () => {
+  const pin = $("s-pin").value.trim();
+  if(!pin){ toast("впиши PIN в поле", "bad"); return; }
+  send("pin", {pin});
+  $("s-pin").value = "";   // PIN в поле не держим
+};
+$("s-pin").addEventListener("keydown", e => {
+  if(e.key === "Enter"){ e.preventDefault(); $("b-pin").click(); }
+});
 
 // Что считать выбранной моделью. Пустое значение = «выбирай сама»,
 // «__hand__» = человек вписал имя руками в соседнее поле.

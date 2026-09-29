@@ -22,8 +22,11 @@ import sys
 
 # Настройки, которые человек может править. Кладутся, только если их ещё
 # нет: правку человека новая версия программы затирать не должна.
-DEFAULTS = ("recipes.json", "interests.json", "plan.json",
-            "ADBKeyboard.apk", "ИНСТРУКЦИЯ.html")
+DEFAULTS = ("recipes.json", "interests.json", "plan.json", "ADBKeyboard.apk")
+
+# А это часть программы, не настройка: должно совпадать со сборкой. Иначе
+# после обновления exe окно открывало бы инструкцию от прошлой версии.
+FOLLOW_BUILD = ("ИНСТРУКЦИЯ.html",)
 
 
 def _inside():
@@ -194,6 +197,21 @@ def unpack(base):
                 shutil.copy2(packed, target)
             except OSError:
                 pass
+    for name in FOLLOW_BUILD:
+        packed = os.path.join(src, "defaults", name)
+        target = os.path.join(base, name)
+        try:
+            with open(packed, "rb") as f:
+                fresh = f.read()
+            old = b""
+            if os.path.exists(target):
+                with open(target, "rb") as f:
+                    old = f.read()
+            if old != fresh:
+                with open(target, "wb") as f:
+                    f.write(fresh)
+        except OSError:
+            pass
 
     packed_tools = os.path.join(src, "tools")
     if not os.path.isdir(packed_tools):

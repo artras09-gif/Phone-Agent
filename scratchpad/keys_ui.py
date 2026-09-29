@@ -46,10 +46,13 @@ def main():
 
     tmp = tempfile.mkdtemp(prefix="keys_ui_")
     # Страница и рецепты читаются с диска — кладём их рядом.
-    for name in ("webui.html", "recipes.json"):
+    for name in ("webui.html", "recipes.json", "ИНСТРУКЦИЯ.html"):
         shutil.copy(os.path.join(LIVE_BASE, name), os.path.join(tmp, name))
     config.BASE = tmp
     config.DB_PATH = os.path.join(tmp, "jobs.db")
+    live_pin = config.PIN_FILE
+    pin_before = digest(live_pin)
+    config.PIN_FILE = os.path.join(tmp, "pin.txt")
     for attr in ("INTERESTS", "WATCH_DIR", "QUEUE_DIR", "FRAMES_DIR",
                  "LOGS_DIR", "RECIPES"):
         if hasattr(config, attr):
@@ -128,6 +131,35 @@ def main():
           saved.get("vision_url", "").startswith("http://192.168.0.50:1234"))
     check("имя локальной модели сохранено",
           saved.get("vision_model") == "qwen2.5-vl-7b")
+
+    print("\n== PIN экрана вписывается в окне ==")
+    state = lambda: call("/api/state?since=0")["chosen"]   # noqa: E731
+    check("сначала PIN нет", state().get("has_pin") is False)
+    for bad in ("12a4", "12", "1" * 17, "12 34"):
+        res = call("/api/pin", {"pin": bad})
+        check(f"кривой PIN «{bad}» не принят", res.get("ok") is False
+              and not os.path.exists(config.PIN_FILE), res.get("error", ""))
+    res = call("/api/pin", {"pin": " 4821 "})
+    check("PIN принят", res.get("ok") is True, res.get("message", ""))
+    check("лёг в pin.txt рабочей папки цифрами",
+          open(config.PIN_FILE, encoding="utf-8").read() == "4821")
+    import device
+    check("разблокировка его видит", device.read_pin() == "4821")
+    got = state()
+    check("окно знает, что PIN есть", got.get("has_pin") is True)
+    check("но самого PIN в ответе нет", "4821" not in json.dumps(got))
+    res = call("/api/pin", {"pin": "-"})
+    check("прочерк стирает", res.get("ok") and not os.path.exists(config.PIN_FILE))
+    check("и окно это видит", state().get("has_pin") is False)
+    check("боевой pin.txt не тронут", digest(live_pin) == pin_before)
+
+    print("\n== инструкция открывается из окна ==")
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/help", timeout=10) as r:
+        text = r.read().decode("utf-8")
+    check("по /help отдаётся инструкция", "Перенос и удаление" in text
+          and "Блокировка экрана" in text)
+    page = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10).read().decode("utf-8")
+    check("в окне есть ссылка на неё", 'href="/help"' in page)
 
     print("\n== чужой запрос не проходит ==")
     try:
