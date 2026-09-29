@@ -32,10 +32,18 @@ def _base():
 MULTIPLE = "more than one device"
 
 
+# Без окна консоли: из программы без консоли (exe, pythonw) Windows иначе
+# открывает на каждый вызов adb новое окно поверх всех — а вызовов десятки
+# в минуту. Для exe то же делает `bundled.quiet_children` на всех, здесь —
+# явно, потому что adb главный источник.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def raw(*args, timeout=60, check=True, binary=False, _healed=False):
     """Выполнить adb-команду. binary=True — вернуть байты (для screencap)."""
     try:
-        p = subprocess.run(_base() + list(args), capture_output=True, timeout=timeout)
+        p = subprocess.run(_base() + list(args), capture_output=True, timeout=timeout,
+                           creationflags=NO_WINDOW)
     except subprocess.TimeoutExpired as e:
         raise AdbError(f"таймаут adb {' '.join(args)}") from e
     except FileNotFoundError as e:

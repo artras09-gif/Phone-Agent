@@ -202,20 +202,27 @@ def _ensure_feed(cfg, log, timeout=4):
 
 
 def _raw_scaled(state):
-    """Сырой кадр экрана, ужатый на ПК через ffmpeg. None — не вышло.
+    """Сырой кадр экрана, ужатый на ПК. None — не вышло.
 
     Заголовок `screencap`: ширина, высота, формат и — с Android 9 — ещё и
     цветовое пространство. Какой именно, определяем по остатку: пиксели это
     ровно ширина*высота*4 байта.
+
+    Ужимает GDI+ самой Windows (`picture`), ffmpeg — только запасной путь.
+    Раньше было наоборот, и без ffmpeg кадр молча уходил в `screencap -p`:
+    PNG полного размера кодирует телефон, 3-5 с на кадр (чужой ПК, 2026-09-29).
     """
     import struct
     import subprocess
+
+    import picture
     try:
         import stream as stream_mod
         exe = stream_mod.ffmpeg_exe()
     except Exception:
-        return None
-    if not exe:
+        exe = None
+    gdi = picture.available()
+    if not gdi and not exe:
         return None
     try:
         raw = adb.exec_out("screencap", timeout=20)
@@ -223,11 +230,19 @@ def _raw_scaled(state):
         return None
     if not raw or len(raw) < 16:
         return None
-    w, h, _fmt = struct.unpack("<III", raw[:12])
+    w, h, fmt = struct.unpack("<III", raw[:12])
     head = 16 if len(raw) - 16 == w * h * 4 else 12
     if len(raw) - head != w * h * 4:
         return None
     factor = config.VISION_SHRINK or 1
+    # 1, 2 — RGBA/RGBX_8888, 5 — BGRA_8888. Другое не встречалось.
+    order = {1: "rgba", 2: "rgba", 5: "bgra"}.get(fmt)
+    if gdi and order:
+        png = picture.scaled_png(memoryview(raw)[head:], w, h, factor, order)
+        if png:
+            return png
+    if not exe:
+        return None
     try:
         done = subprocess.run(
             [exe, "-loglevel", "error",

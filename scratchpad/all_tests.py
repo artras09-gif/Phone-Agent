@@ -45,6 +45,8 @@ TESTS = [
     ("scratchpad/post_safety.py", "публикация не оставляет открытый экран"),
     ("scratchpad/frames_cleanup.py", "снимки не копятся: кадр уходит после разбора"),
     ("scratchpad/stale_unpack.py", "чистка распаковок не трогает живую программу"),
+    ("scratchpad/frame_no_ffmpeg.py", "кадр без ffmpeg: ужатие и JPEG средствами Windows"),
+    ("scratchpad/quiet_children.py", "дочерние программы без окон и без наших DLL"),
     ("scratchpad/escape_loop.py", "выход из тупика: выбор кнопки и запреты"),
     ("scratchpad/gate_test.py", "замки между процессами"),
     ("scratchpad/fleet_isolation.py", "разделение телефонов по пространствам"),

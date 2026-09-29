@@ -180,11 +180,69 @@ def sweep_stale(keep=""):
         shutil.rmtree(doomed, ignore_errors=True)
 
 
+# Модули на своих DLL из распаковки. Грузятся ДО сброса пути поиска DLL
+# (`quiet_children`): так им гарантированно найдётся всё своё.
+NATIVE = ("_ctypes", "_socket", "select", "_ssl", "_hashlib", "_sqlite3",
+          "_tkinter", "_lzma", "_bz2", "pyexpat", "_decimal", "_queue",
+          "_overlapped", "_asyncio", "unicodedata", "_elementtree")
+
+
+def quiet_children():
+    """Дочерние программы exe — без окон и без НАШИХ DLL.
+
+    1. Окна. У exe нет консоли (`--windowed`), и Windows на КАЖДЫЙ запуск
+       консольной программы — adb, lms, ffmpeg, tasklist — открывает новое
+       окно консоли поверх всех. adb зовётся десятки раз в минуту, и работать
+       за компьютером становится невозможно (жалоба с чужого ПК 2026-09-29:
+       «похоже на вирус»). Проверено: за 40 с работы — три окна. Поэтому
+       всякий запуск без явных флагов получает CREATE_NO_WINDOW. Окна
+       обычных программ (Chrome, scrcpy) этот флаг не прячет.
+    2. DLL. Загрузчик PyInstaller зовёт SetDllDirectory(распаковка), и это
+       НАСЛЕДУЮТ дочерние процессы (проверено на Python: ребёнок видит тот же
+       путь). Сервер adb, Chrome, lms искали DLL сначала в нашей временной
+       папке; переживший программу держал её VCRUNTIME140.dll, и на выходе
+       загрузчик показывал «Failed to remove temporary directory», а папка
+       оставалась мусором (чужой ПК, 2026-09-29).
+    """
+    if os.name != "nt":
+        return
+    import ctypes
+
+    for name in NATIVE:
+        try:
+            __import__(name)
+        except Exception:
+            pass
+    try:
+        ctypes.windll.kernel32.SetDllDirectoryW(None)
+    except (AttributeError, OSError):
+        pass
+
+    if getattr(subprocess.Popen, "_quiet", False):
+        return
+    loud = (getattr(subprocess, "CREATE_NEW_CONSOLE", 0x10)
+            | getattr(subprocess, "DETACHED_PROCESS", 0x8))
+    hide = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+    class QuietPopen(subprocess.Popen):
+        _quiet = True
+
+        def __init__(self, *args, **kwargs):
+            flags = kwargs.get("creationflags") or 0
+            if not flags & loud:            # свою консоль просили явно — не мешаем
+                kwargs["creationflags"] = flags | hide
+            super().__init__(*args, **kwargs)
+
+    # `subprocess.run` и прочие берут Popen из модуля — подмена ловит всех.
+    subprocess.Popen = QuietPopen
+
+
 def unpack(base):
     """Разложить встроенное в `base`. Без сборки (из исходников) — ничего."""
     src = _inside()
     if not src:
         return
+    quiet_children()                # до первого же запуска чего-либо
     os.makedirs(base, exist_ok=True)
     remember_first_run(base)
     sweep_stale(keep=src)
