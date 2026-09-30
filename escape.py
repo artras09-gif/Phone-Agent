@@ -40,6 +40,7 @@ import random
 import re
 import time
 
+import abort
 import adb
 import config
 import device
@@ -363,7 +364,7 @@ def _ask_menu(png, menu, history, w, h, shrink=None):
         return {"действие": "", "кнопка": 0, "почему": ""}
     raw = vision.ask(png, build_prompt(menu, history, w, h),
                      system=SYSTEM, max_tokens=80, temperature=0.1,
-                     shrink=shrink)
+                     shrink=shrink, think=THINK)
     return parse(raw, menu)
 
 
@@ -372,7 +373,7 @@ def _ask_else(png, history, shrink=None, allow_done=False):
     prompt = ASK_ELSE.format(tried=_describe_tried(history),
                              done=DONE_OPTION if allow_done else "")
     raw = vision.ask(png, prompt, system=SYSTEM, max_tokens=80,
-                     temperature=0.1, shrink=shrink)
+                     temperature=0.1, shrink=shrink, think=THINK)
     return parse_else(raw, allow_done)
 
 
@@ -404,6 +405,11 @@ def _run(action, button, direction, menu, w, h):
 # Запас на ответ. Рассуждающие модели (deepseek-flash) сначала думают, и на
 # 120 токенах ответ обрывался посреди JSON: `{"x": 198, "` — без «y».
 ANSWER_TOKENS = 400
+
+# В тупике размышление у облачной модели ОСТАВЛЯЕМ (`config.API_THINKING`
+# его выключает для ленты ради скорости): руки и список мерились с ним, а
+# тупик — не каждый ролик, секунда здесь дешевле промаха.
+THINK = True
 
 ASK_WHERE_DOT = ('Снимок {w}x{h} пикселей. Где красный круг? '
                  'Ответь: {{"x": число, "y": число}} в пикселях снимка.')
@@ -444,6 +450,14 @@ CONTROL_WORDS = ("кнопк", "значок", "иконк", "крестик", "
 # отвечают Qwen3-VL и Gemini) или в долях единицы. Узнаётся проверкой, а не
 # по имени модели. Ключ — (модель, ширина, высота); None — рук ей не дают.
 _HANDS = {}
+_MISSED = {}         # почему рук не дали — для журнала
+_WHY = ""
+
+
+def hands_why():
+    """Почему последняя проверка рук не дала — для журнала выхода."""
+    return _WHY or "неизвестно"
+
 
 FEED_TITLES = {"com.zhiliaoapp.musically": "TikTok", "com.ss.android.ugc.trill": "TikTok",
                "com.google.android.youtube": "YouTube Shorts",
@@ -520,26 +534,39 @@ def hands_ready(iw, ih, say=None):
     размера, что и экран. deepseek-flash отвечает в пикселях с промахом
     35-60, у 3B-модели половина координат была вне экрана вовсе.
     """
-    if not config.ESCAPE_HANDS or not iw or not ih:
+    global _WHY
+    if not config.ESCAPE_HANDS:
+        _WHY = "руки выключены (ESCAPE_HANDS)"
+        return None
+    if not iw or not ih:
+        _WHY = "снимок экрана не снялся"
         return None
     ok, model = vision.available()
     if not ok:
+        _WHY = "модель недоступна"
         return None
     key = (model, iw, ih)
     if key in _HANDS:
+        _WHY = _MISSED.get(key, "")
         return _HANDS[key]
 
     spots = [(int(iw * 0.75), int(ih * 0.79)), (int(iw * 0.185), int(ih * 0.21)),
              (int(iw * 0.86), int(ih * 0.33))]
     answers = []
     for spot in spots:
+        if abort.requested():
+            _WHY = "остановлено"
+            return None
         png = picture.dots_png(iw, ih, [spot])
         if not png:
+            _WHY = "не нарисовалась проверочная картинка"
             return None                  # рисовать нечем — это не приговор модели
         try:
             raw = vision.ask(png, ASK_WHERE_DOT.format(w=iw, h=ih), system=SYSTEM,
-                             max_tokens=ANSWER_TOKENS, temperature=0.1, shrink=1)
+                             max_tokens=ANSWER_TOKENS, temperature=0.1, shrink=1,
+                             think=THINK)
         except vision.VisionError:
+            _WHY = "нет связи с моделью"
             return None                  # связь, а не меткость — не запоминаем
         got = _point_of(raw)
         if got:
@@ -549,11 +576,15 @@ def hands_ready(iw, ih, say=None):
     # рассуждающей модели бывает и при хорошей меткости, поэтому рук не
     # даём, но и не запоминаем: следующая помеха спросит заново.
     if len(answers) < len(spots):
+        _WHY = "модель ответила не на все проверочные точки"
         if say is not None:
             say("  руки: {} ответила не на все проверочные точки — пока без рук".format(model))
         return None
     way, miss = _fit(answers, iw, ih)
     _HANDS[key] = way if miss <= config.HANDS_MAX_MISS else None
+    if _HANDS[key] is None:
+        _MISSED[key] = "{} промахивается по проверочным точкам на {:.0f} пикс.".format(model, miss)
+    _WHY = _MISSED.get(key, "")
     if say is not None:
         name = way if isinstance(way, str) else "своя шкала"
         if _HANDS[key] is None:
@@ -605,7 +636,8 @@ def _ask_point(png, iw, ih, way, w, h, feed, history):
     raw = vision.ask(png, ASK_POINT.format(
         w=iw, h=ih, feed=" " + feed if feed else "",
         tried=("\n" + _describe_tried(history).strip()) if history else ""),
-        system=SYSTEM, max_tokens=ANSWER_TOKENS, temperature=0.1, shrink=1)
+        system=SYSTEM, max_tokens=ANSWER_TOKENS, temperature=0.1, shrink=1,
+                             think=THINK)
     data = vision._json_from(raw)
     other = str(data.get("иначе", "")).lower().strip() if isinstance(data, dict) else ""
     if other:
@@ -675,7 +707,8 @@ def _confirm(png, iw, ih, point, feed, claimed=""):
     if crop is None:
         return None, "не вырезался фрагмент для проверки"
     raw = vision.ask(crop, ASK_CLOSER.format(feed=" " + feed if feed else ""),
-                     system=SYSTEM, max_tokens=ANSWER_TOKENS, temperature=0.1, shrink=1)
+                     system=SYSTEM, max_tokens=ANSWER_TOKENS, temperature=0.1, shrink=1,
+                             think=THINK)
     data = vision._json_from(raw)
     if not isinstance(data, dict) or "опасно" not in data:
         # `_json_from` вытаскивает из оборванного JSON только поля разбора
@@ -796,6 +829,12 @@ def escape(goal="лента не листается", package=None, done=None, l
         if deadline and time.time() > deadline:
             report["почему"] = "время вышло"
             break
+        # Кнопка «Остановить»: шаг выхода — это кадр, дерево и вопрос модели,
+        # до десятка секунд, а шагов до восьми. Без проверки здесь остановка
+        # ждала конца всего выхода (жалоба 2026-10-01).
+        if abort.requested():
+            report["почему"] = "остановлено"
+            break
 
         # Не в том приложении — модели тут делать нечего. Поймано первым же
         # живым прогоном: «назад» вывалил агента на рабочий стол MIUI, и
@@ -830,9 +869,13 @@ def escape(goal="лента не листается", package=None, done=None, l
             if way is None:
                 # Дерево не снимается — значит перед нами живая лента, а не
                 # окно. Тревога ложная; тапать тут нельзя ни в коем случае.
+                # Если же сессия знает, что лента СТОИТ, «это лента» — неправда,
+                # и в журнале должно быть видно, почему руки не пошли в дело.
                 report["ok"] = step > 1
-                report["почему"] = ("выбрались" if step > 1
-                                    else "дерево не снимается — это лента, помехи нет")
+                report["почему"] = (
+                    "выбрались" if step > 1
+                    else "дерево не снимается, а нажимать по точке нельзя: " + hands_why()
+                    if stuck else "дерево не снимается — это лента, помехи нет")
                 break
             # Лента стоит, а дерева нет: поверх играющего видео окно, которое
             # uiautomator не отдаёт. Раньше здесь сдавались. Сначала проверка,

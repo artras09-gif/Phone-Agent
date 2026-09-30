@@ -254,16 +254,28 @@ def _one_topic_matches(frame, want_topic, expansions, judge):
 def _topic_matches(frame, want, expansions=None, judge=None):
     """Подходит ли ролик хоть под одну из тем.
 
-    Тем может быть несколько через запятую, и достаточно любой. Проверяем по
-    очереди и останавливаемся на первой подошедшей: каждая проверка — это
-    отдельный вопрос к модели, лишние ни к чему.
+    Тем может быть несколько через запятую, и достаточно любой. С моделью-
+    судьёй вопросы по всем темам задаются ОДНОВРЕМЕННО: по очереди они
+    складывались, и на двух темах «мимо» стоило лишние 1.4-2.8 с (журнал
+    2026-10-01: «тема 2.97» при «модель 2.56»). Лишний запрос дешевле этих
+    секунд — ролик всё это время висит на экране.
     """
     wanted = topics({"тема": want})
     if not wanted:
         return True, ""
 
-    for topic in wanted:
-        ok, related = _one_topic_matches(frame, topic, expansions, judge)
+    if judge and len(wanted) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=len(wanted)) as pool:
+            results = list(pool.map(
+                lambda t: _one_topic_matches(frame, t, expansions, judge), wanted))
+    else:
+        results = None
+
+    for n, topic in enumerate(wanted):
+        ok, related = (results[n] if results is not None
+                       else _one_topic_matches(frame, topic, expansions, judge))
         if ok:
             note = f"тема «{topic}»"
             return True, (f"{note} ({related})" if related else note)

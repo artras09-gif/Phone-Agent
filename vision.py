@@ -321,15 +321,28 @@ def _model_queue():
         g.release()
 
 
-def _completion(model, messages, max_tokens, temperature, timeout, kind=None):
+# Модели, которые отвергли параметр `thinking`: второй раз его им не шлём,
+# иначе каждый вопрос стоил бы двух запросов.
+_NO_THINKING_PARAM = set()
+
+
+def _completion(model, messages, max_tokens, temperature, timeout, kind=None,
+                think=None):
     """Один запрос к модели. Единственное место, где собирается payload.
 
     `enable_thinking: false` — для облака обязательно. Модели Qwen с
     рассуждением включают его сами, а тогда ответ приходит только потоком, и
     обычный запрос падает с ошибкой. Рассуждение нам и не нужно: ролик висит
     на экране, пока модель думает, а ответ здесь — одна строка JSON.
+
+    `thinking: {"type": "disabled"}` — то же для DeepSeek: `enable_thinking`
+    он не слушает. Замер 2026-10-01 на deepseek-flash, вопрос судьи темы:
+    1.72 с с размышлением, 0.53 с без него, верно 4/4 в обоих случаях.
+    `think=True` — размышление оставить (нужно рукам в тупике: там важна
+    меткость, а не секунда). По умолчанию — `config.API_THINKING`.
     """
     kind = kind or provider()
+    think = config.API_THINKING if think is None else think
     payload = {
         "model": model,
         "messages": messages,
@@ -339,6 +352,8 @@ def _completion(model, messages, max_tokens, temperature, timeout, kind=None):
     }
     if kind == API:
         payload["enable_thinking"] = False
+        if not think and model not in _NO_THINKING_PARAM:
+            payload["thinking"] = {"type": "disabled"}
 
     # Очередь к модели — когда телефонов несколько. При одном (или в облаке)
     # `gate.vision()` отдаёт заглушку и не стоит ничего. Пропускник
@@ -350,8 +365,10 @@ def _completion(model, messages, max_tokens, temperature, timeout, kind=None):
         except VisionError as e:
             # Модель параметра не знает — повторим без него, чтобы не терять
             # запрос из-за необязательной подробности.
-            if kind == API and "enable_thinking" in str(e):
+            if kind == API and "thinking" in str(e):
                 payload.pop("enable_thinking", None)
+                if payload.pop("thinking", None) is not None:
+                    _NO_THINKING_PARAM.add(model)
                 return _post("/chat/completions", payload, timeout, kind)
             raise
 
@@ -1397,8 +1414,11 @@ def _answer_of(res):
 
 
 def ask(png_bytes, prompt, system=None, max_tokens=400, temperature=0.2,
-        timeout=None, shrink=None):
-    """Задать модели вопрос по картинке. Возвращает текст ответа."""
+        timeout=None, shrink=None, think=None):
+    """Задать модели вопрос по картинке. Возвращает текст ответа.
+
+    `think` — оставить облачной модели размышление (см. `_completion`).
+    """
     kind = provider()
     ok, model = available()
     if not ok:
@@ -1419,7 +1439,8 @@ def ask(png_bytes, prompt, system=None, max_tokens=400, temperature=0.2,
         max_tokens *= 6
     wait = timeout or _timeout(kind)
     try:
-        res = _completion(model, build(kind), max_tokens, temperature, wait, kind)
+        res = _completion(model, build(kind), max_tokens, temperature, wait, kind,
+                          think)
     except VisionError as e:
         if kind == API and not getattr(e, "fatal", False):
             # Облако отвалилось: упал VPN, оборвалась связь, ответило 429.
@@ -1437,7 +1458,8 @@ def ask(png_bytes, prompt, system=None, max_tokens=400, temperature=0.2,
         # Модель выгрузилась по простою — поднимем её и попробуем ещё раз.
         if "No models loaded" not in str(e) or not load_model(model):
             raise
-        res = _completion(model, build(kind), max_tokens, temperature, wait, kind)
+        res = _completion(model, build(kind), max_tokens, temperature, wait, kind,
+                          think)
 
     # Рассуждающая модель не уложилась в запас токенов: всё ушло в
     # размышление, а сам ответ не начался. Спрашиваем ещё раз, дав вшестеро
@@ -1448,7 +1470,7 @@ def ask(png_bytes, prompt, system=None, max_tokens=400, temperature=0.2,
     if _thought_too_long(res):
         _NEEDS_ROOM.add(model)
         res = _completion(model, build(kind), max_tokens * 6, temperature,
-                          wait, kind)
+                          wait, kind, think)
 
     answer = _answer_of(res)
 
@@ -1462,7 +1484,7 @@ def ask(png_bytes, prompt, system=None, max_tokens=400, temperature=0.2,
         if kind == API or reload_model(model):
             try:
                 answer = _answer_of(_completion(model, build(kind), max_tokens,
-                                                temperature, wait, kind))
+                                                temperature, wait, kind, think))
             except VisionError:
                 pass
 

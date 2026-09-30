@@ -77,6 +77,7 @@ class Runner:
         self.lines = []
         self.started_at = 0.0
         self.on_done = []      # кого разбудить, когда телефон освободился
+        self.on_cancel = []    # кому сказать, что остановили кнопкой
 
     def busy(self):
         thread = self._thread
@@ -145,6 +146,11 @@ class Runner:
             return False
         abort.request()
         self.log("остановка по кнопке...")
+        for hook in list(self.on_cancel):
+            try:
+                hook()
+            except Exception:
+                pass
         return True
 
 
@@ -172,6 +178,7 @@ class Keeper:
         self.day = None
         self.schedule = []
         self.done = set()
+        self.running = None      # какой пункт плана сейчас идёт
 
     def rules(self):
         """Сколько включённых правил в расписании. Ноль — сторожить нечего."""
@@ -186,9 +193,35 @@ class Keeper:
         self._wake.set()
 
     def start(self):
-        self.runner.on_done.append(self._wake.set)
+        self.runner.on_done.append(self._finished)
+        self.runner.on_cancel.append(self._cancelled)
         self._wake.set()        # первый круг сразу, а не через полминуты
         threading.Thread(target=self._loop, daemon=True).start()
+
+    def _finished(self):
+        self.running = None
+        self._wake.set()
+
+    def _cancelled(self):
+        """«Остановить» посреди смешанного блока — отменить и его остаток.
+
+        Иначе остановка не останавливала ничего: сессия обрывалась, телефон
+        освобождался, и сторож тут же запускал следующий кусок блока — его
+        время как раз подошло (жалоба 2026-10-01 «не может остановиться»).
+        """
+        i = self.running
+        if i is None or i >= len(self.schedule):
+            return
+        skipped = 0
+        now = dt.datetime.now()
+        while i + 1 < len(self.schedule) and scheduler.chained(self.schedule, i, now):
+            i += 1
+            if i not in self.done:
+                self.done.add(i)
+                skipped += 1
+        if skipped:
+            scheduler._publish(self.day, self.schedule, self.done)
+            self.runner.log(f"остаток блока отменён: {skipped} сесс.")
 
     def _loop(self):
         while True:
@@ -219,6 +252,7 @@ class Keeper:
                 continue
             self.done.add(i)
             scheduler._publish(self.day, self.schedule, self.done)
+            self.running = i
             if kind == "post":
                 self.runner.start("публикация по расписанию", lambda: (
                     scheduler.scan_watch_dir(), scheduler.run_post_job(_tell)))

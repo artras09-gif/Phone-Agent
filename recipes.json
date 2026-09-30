@@ -576,6 +576,18 @@
         }
       ],
       "for_you_tabs": [],
+      "_feed_check_note": "Живой замер 2026-10-01: в ленте Shorts дерево снимается (3.3 с), вкладка «Shorts» selected=true и есть кнопки плеера; на «Главной» — «Главная» selected=true, кнопок плеера нет. «Главная» листается так же, как Shorts, и датчик залипания её не видит — отсюда проверка раз в feed_check_every роликов.",
+      "feed_selected": [
+        {
+          "desc": "Shorts",
+          "selected": true
+        },
+        {
+          "desc": "Шортс",
+          "selected": true
+        }
+      ],
+      "feed_check_every": 6,
       "feed_markers": [
         {
           "desc": "Приостановить видео"

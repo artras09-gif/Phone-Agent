@@ -195,9 +195,8 @@ def _ensure_feed(cfg, log, timeout=4):
             elif _pick(tree, selected) is not None or \
                     (markers and _pick(tree, markers) is not None):
                 return True
-            if time.time() >= deadline:
+            if time.time() >= deadline or abort.sleep(1.0):
                 return False
-            time.sleep(1.0)
 
     nodes = ui.dump(retries=1, tolerant=True, timeout=timeout)
     if not nodes:
@@ -276,10 +275,7 @@ def _raw_scaled(state):
     gdi = picture.available()
     if not gdi and not exe:
         return None
-    try:
-        raw = adb.exec_out("screencap", timeout=20)
-    except adb.AdbError:
-        return None
+    raw = _screencap_raw()
     if not raw or len(raw) < 16:
         return None
     w, h, fmt = struct.unpack("<III", raw[:12])
@@ -305,6 +301,42 @@ def _raw_scaled(state):
     except (OSError, subprocess.SubprocessError):
         return None
     return done.stdout or None
+
+
+# Как забирать сырой снимок: как есть (10 МБ) или сжатым на телефоне
+# (`gzip -1`, ~2.7 МБ). Что быстрее — зависит от кабеля и порта: на машине
+# разработки сырой 0.82 с против 0.93 с, а на чужом ПК кадр шёл 1.5-1.7 с —
+# там упор в передачу. Поэтому меряем оба на первых кадрах и берём быстрый.
+_CAPTURE = {"raw": [], "gzip": [], "pick": None}
+
+
+def _screencap_raw():
+    """Байты `screencap` без `-p` — способом, который быстрее на этой машине."""
+    import gzip
+
+    way = config.SHOT_COMPRESS
+    if way == "auto":
+        way = _CAPTURE["pick"] or ("gzip" if len(_CAPTURE["gzip"]) < len(_CAPTURE["raw"])
+                                   else "raw")
+    started = time.time()
+    try:
+        if way == "gzip":
+            data = gzip.decompress(adb.exec_out("screencap | gzip -1", timeout=20))
+        else:
+            data = adb.exec_out("screencap", timeout=20)
+    except (adb.AdbError, OSError, EOFError):
+        if way == "gzip":
+            _CAPTURE["pick"] = "raw"     # gzip на телефоне нет или сломан
+            return _screencap_raw()
+        return None
+    if config.SHOT_COMPRESS == "auto" and _CAPTURE["pick"] is None:
+        _CAPTURE[way].append(time.time() - started)
+        if len(_CAPTURE["raw"]) >= 3 and len(_CAPTURE["gzip"]) >= 3:
+            median = {k: sorted(_CAPTURE[k])[1] for k in ("raw", "gzip")}
+            _CAPTURE["pick"] = min(median, key=median.get)
+            print(f"[кадр] быстрее {'сжатый на телефоне' if _CAPTURE['pick'] == 'gzip' else 'сырой'}"
+                  f" снимок: {median['gzip']:.2f} с против {median['raw']:.2f} с", flush=True)
+    return data
 
 
 def _screen_shot(state, live):
@@ -455,6 +487,9 @@ def _feed_frozen(state, png):
     sig = vision.frame_signature(png)
     prev = state.get("last_sig")
     state["last_sig"] = sig
+    # Сдвинулась ли лента на НОВЫЙ ролик — по этому, а не по «кадр разобран»,
+    # обнуляется счётчик помех (см. цикл сессии).
+    state["moved"] = False
     # Отпечаток не снялся — молчащая проверка не должна останавливать сессию.
     if sig is None or prev is None:
         state["same_frames"] = 0
@@ -463,6 +498,7 @@ def _feed_frozen(state, png):
     state["last_diff"] = vision.frames_differ(prev, sig)
     if state["last_diff"] >= config.FEED_SAME_LIMIT:
         state["same_frames"] = 0
+        state["moved"] = True
         return False
     state["same_frames"] = state.get("same_frames", 0) + 1
     return state["same_frames"] >= config.FEED_SAME_TIMES
@@ -566,7 +602,7 @@ def _escape_now(state, goal, log, stuck=False):
     `stuck` — зовём, потому что лента встала. Только тогда пустое дерево
     значит «окно поверх видео», а не «это лента».
     """
-    if not config.ESCAPE_ENABLED or state["blind"]:
+    if not config.ESCAPE_ENABLED or state["blind"] or abort.requested():
         return False
 
     cfg = state.get("cfg") or {}
@@ -628,6 +664,8 @@ def _unstick(state, package, log):
     # нельзя ни закрывать окна, ни спрашивать модель — каждая кнопка что-то
     # публикует. Уходим «назад», а не помогло — перезапуском приложения.
     # 2026-08-30: именно на таком экране в личном аккаунте появилась история.
+    if abort.requested():
+        return "остановлено"
     here = ui.dump(retries=1, tolerant=True, timeout=5)
     if ui.looks_like_composer(here):
         log.append("  это экран публикации — ухожу назад, ничего не нажимая")
@@ -644,9 +682,26 @@ def _unstick(state, package, log):
     if ui.dismiss_popup(here):
         _ensure_feed(cfg, log)
         return "закрыл по кнопке"
+    if abort.requested():
+        return "остановлено"
     if _escape_now(state, "лента не листается, поверх неё окно", log, stuck=True):
         _ensure_feed(cfg, log)
         return "выбрался сам"
+    if abort.requested():
+        return "остановлено"
+
+    # Другой ЭКРАН приложения (activity), чем тот, на котором была лента в
+    # начале сессии, — это точно не ложная тревога, и ждать второй нечего:
+    # «назад» сразу. У TikTok лента и профиль живут в одной оболочке
+    # (SplashActivity), поэтому признак ловит не всё, но что ловит — точно.
+    home = state.get("feed_activity")
+    _pkg, act = adb.current_app()
+    if step == 1 and home and act and act != home:
+        log.append(f"  это другой экран приложения ({act.split('.')[-1]}) — «назад»")
+        device.back()
+        human.pause(0.8, 1.6)
+        _ensure_feed(cfg, log)
+        return "ушёл с чужого экрана по «назад»"
 
     if step == 1:
         # На первой попытке «назад» НЕ жмём. Тревога бывает ложной (ролик,
@@ -1880,6 +1935,9 @@ def browse(app="tiktok", duration=None, keep_open=False):
                  "expansions": interests.ensure_expansion(
                      taste["тема"], vision.expand_topic),
                  "stream": feed, "shrink": shrink}
+        # На каком экране (activity) живёт лента — чтобы в тупике отличить
+        # «окно поверх ленты» от «ушли на другой экран приложения».
+        state["feed_activity"] = adb.current_app()[1]
         # Время суток: вечером в ленту залипают, утром листают на бегу.
         # Постоянный множитель на всю сессию — он про время, а не про
         # настроение; за колебания внутри сессии отвечает дрейф.
@@ -2007,12 +2065,16 @@ def browse(app="tiktok", duration=None, keep_open=False):
                             break
                         continue
 
-                    # Дошли сюда — значит лента живая и ролик разобран, то
-                    # есть прошлая помеха снята. Обнуляем счётчик: он должен
-                    # считать неудачи ПОДРЯД, иначе сессия копит их за весь
-                    # прогон и заканчивается на ровном месте.
-                    state["popups"] = 0
-                    _trouble_over(state, log)
+                    # Помеха снята, только если лента СДВИНУЛАСЬ на новый
+                    # ролик. Раньше счётчик обнулял любой разобранный кадр — и
+                    # в магазине TikTok (журнал 2026-10-01) кадр «витрина с
+                    # окном о защите покупателей» разбирался как реклама,
+                    # счётчик падал в ноль, и лесенка вечно стояла на первой
+                    # ступени «жду подтверждения», до «назад» не доходя.
+                    # Обнуляем, чтобы считать неудачи ПОДРЯД, а не за сессию.
+                    if state.get("moved"):
+                        state["popups"] = 0
+                        _trouble_over(state, log)
 
                     # Залипание: раз в 8-10 роликов человек не листает дальше,
                     # а досматривает один до конца. Без этого вся сессия
@@ -2153,7 +2215,12 @@ def browse(app="tiktok", duration=None, keep_open=False):
                 every = cfg.get("feed_check_every")
                 if every and watched and watched % every == 0:
                     where = _off_feed(cfg)
-                    if where:
+                    # Второй взгляд: живой прогон на Shorts 2026-10-01 дал одну
+                    # ложную тревогу в самой ленте (дерево снялось в момент
+                    # перехода), а уводить из живой ленты — дороже секунды.
+                    if where and not abort.sleep(1.0):
+                        where = _off_feed(cfg)
+                    if where and not abort.requested():
                         log.append(f"  оказался не в ленте («{where}») — возвращаюсь")
                         if not _ensure_feed(cfg, log):
                             _open_feed(cfg, log)
@@ -2210,7 +2277,9 @@ def browse(app="tiktok", duration=None, keep_open=False):
         if feed is not None:
             feed.stop()
         device.keep_awake(False)
-        if not keep_open:
+        # Остановили кнопкой — следующего куска блока не будет (его отменяет
+        # сторож расписания), и оставлять телефон разблокированным незачем.
+        if not keep_open or abort.requested():
             device.go_home()
             human.pause(1, 2)
             device.lock()

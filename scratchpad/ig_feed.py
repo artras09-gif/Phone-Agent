@@ -56,6 +56,7 @@ ui.tap_node = lambda n: taps.append(n.desc)
 device.open_uri = lambda uri, pkg=None: links.append(uri)
 human.pause = lambda lo, hi: None
 session.time.sleep = lambda s: None
+session.abort.sleep = lambda s, step=0.2: False     # ожидание ленты — без настоящих секунд
 
 
 def run(*trees):

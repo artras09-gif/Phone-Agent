@@ -277,9 +277,22 @@ say(rep["ok"] and not points and not prompts, f"лента листается �
 
 reset()
 escape._HANDS[("проверочная-модель", 1080, 2400)] = None
+escape._MISSED[("проверочная-модель", 1080, 2400)] = "промахивается на 140 пикс."
 screens[:] = [[]]
 rep = escape.escape(goal="лента не листается", max_steps=3, stuck=True)
-say(not points and "это лента" in rep["почему"], "модели без меткости рук не дали — как раньше")
+say(not points and "нельзя" in rep["почему"] and "140" in rep["почему"],
+    f"модели без меткости рук не дали — и сказано почему: {rep['почему']}")
+
+print("\n--- кнопка «Остановить» ---")
+import abort  # noqa: E402
+
+reset()
+abort.request()
+screens[:] = [[], [], []]
+rep = escape.escape(goal="лента не листается", max_steps=5, stuck=True)
+abort.clear()
+say(rep["почему"] == "остановлено" and not prompts and not points,
+    "остановка посреди выхода — ни вопроса модели, ни нажатия")
 
 # --- 7. фрагмент и снимок ---------------------------------------------
 print("\n--- картинки ---")

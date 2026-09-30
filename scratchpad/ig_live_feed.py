@@ -1,9 +1,9 @@
-"""Живьём: Instagram, «Главная» -> Reels силами session._ensure_feed.
+"""Живьём: «Главная» -> лента силами session._ensure_feed (Instagram или YouTube).
 
 Только навигация по вкладкам: ни лайков, ни комментариев, ни публикаций
 (аккаунт личный). В общий прогон не входит — нужен телефон.
 
-    python scratchpad\\ig_live_feed.py
+    python scratchpad\\ig_live_feed.py [reels|shorts]
 """
 import json
 import os
@@ -21,7 +21,7 @@ import session  # noqa: E402
 
 prefs.apply()
 with open(os.path.join(os.path.dirname(HERE), "recipes.json"), encoding="utf-8") as f:
-    CFG = json.load(f)["_feed_apps"]["reels"]
+    CFG = json.load(f)["_feed_apps"][sys.argv[1] if len(sys.argv) > 1 else "reels"]
 ok = True
 
 
@@ -41,19 +41,19 @@ device.wake()
 device.unlock()
 time.sleep(1.5)
 try:
-    print("--- лента Reels по ссылке ---")
+    print(f"--- лента {CFG['title']} по ссылке ---")
     device.open_uri(CFG["open_uri"], CFG["package"])
     device.wait_for_app(CFG["package"], timeout=25)
     time.sleep(4)
     got, spent = where()
-    say(got == "", f"в ленте проверка молчит ({spent:.1f} с на попытку дерева)")
+    say(got == "", f"в ленте проверка молчит ({spent:.1f} с на попытку дерева){'' if got == '' else ': ' + repr(got)}")
 
     print("\n--- ушёл на «Главную» (как бывает после «назад») ---")
     w, h = adb.screen_size()
-    adb.tap(int(w * 0.10), int(h * 0.918))
+    adb.tap(int(w * 0.10), int(h * (0.925 if "youtube" in CFG["package"] else 0.918)))
     time.sleep(4)
     got, spent = where()
-    say(got == "Дом", f"проверка видит «{got}» ({spent:.1f} с)")
+    say(got in ("Дом", "Главная"), f"проверка видит «{got}» ({spent:.1f} с)")
 
     print("\n--- возврат ---")
     log = runlog.Log(live=False)

@@ -52,6 +52,7 @@ TESTS = [
     ("scratchpad/ig_feed.py", "Instagram: «Главная» против Reels, новые ключи рецепта"),
     ("scratchpad/alerts.py", "тревога в Telegram, когда помеха держится долго"),
     ("scratchpad/plan_mix.py", "расписание: разные ленты в одном окне вперемешку"),
+    ("scratchpad/stop_and_stuck.py", "«Остановить», круг в тупике, скорость решения"),
     ("scratchpad/gate_test.py", "замки между процессами"),
     ("scratchpad/fleet_isolation.py", "разделение телефонов по пространствам"),
 ]
