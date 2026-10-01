@@ -1629,6 +1629,21 @@ CONTENT_PROMPT = """Это кадр из ленты коротких видео.
 Опиши СВОЙ кадр так же. Не копируй пример."""
 
 
+# Два вопроса сверх описания — в том же запросе, а не отдельными (2026-10-01).
+# Отдельный судья темы стоил второго запроса на каждый ролик (1.2-1.6 с), а
+# «где мы» раньше узнавалось только по дереву экрана, которое у Instagram на
+# «Главной» снимается 3.3-4.2 с и не всегда успевало. Модель и так смотрит на
+# кадр — ей это ничего не стоит. Только для облака: 3B по картинке не умеет
+# сказать «нет» теме (проверено трижды, см. `judge_topic`).
+EXTRA_FIELDS = """
+- по_теме: true, если видео относится хотя бы к одной из тем: {topics};
+  иначе false. Суди по смыслу, а не по совпадению слов"""
+
+FEED_FIELD = """
+- лента: true, если на кадре лента коротких вертикальных видео во весь экран
+  (как TikTok, Reels, Shorts); false, если это главная страница приложения с
+  постами и кружками историй, профиль, поиск, магазин, чат или другое окно"""
+
 CAPTION_BLOCK = """
 Под роликом автор написал:
 ---
@@ -1639,17 +1654,34 @@ CAPTION_BLOCK = """
 Если подпись противоречит картинке, опиши и то, и другое."""
 
 
-def describe_frame(png_bytes, caption="", author="", music="", shrink=None):
+def frame_questions():
+    """Задавать ли в разборе кадра «по теме» и «лента»: только облаку."""
+    return config.FRAME_QUESTIONS and provider() == API
+
+
+def describe_frame(png_bytes, caption="", author="", music="", shrink=None,
+                   topics=""):
     """Разбор кадра ленты. Подпись под роликом, если её удалось прочитать,
     идёт в тот же запрос: текст и картинка дополняют друг друга.
 
-    topics — темы пользователя. Их сопоставляет сама модель, потому что
-    поиск по словам тут бессилен: «политика» не встречается в описании
-    «депутат обсуждает закон», хотя ролик именно про неё.
+    topics — темы пользователя. При `frame_questions()` модель сразу
+    отвечает, подходит ли ролик (`по_теме`), и в ленте ли мы (`лента`) —
+    без второго запроса. Иначе темы судит `judge_topic` по описанию.
 
     Возвращает dict (с ключом 'сырой', если ответ не разобрался).
     """
     prompt = CONTENT_PROMPT.replace("{example}", EXAMPLE_THEME)
+    asked = frame_questions()
+    if asked:
+        extra_fields = FEED_FIELD
+        example_tail = ', "лента": true}'
+        if topics:
+            extra_fields = EXTRA_FIELDS.format(topics=topics) + extra_fields
+            example_tail = ', "по_теме": false, "лента": true}'
+        prompt = prompt.replace(
+            "  не видишь\n",
+            "  не видишь" + extra_fields + "\n").replace(
+            '"язык": "ru"}', '"язык": "ru"' + example_tail)
     extra = " ".join(x for x in (caption, f"автор {author}" if author else "",
                                  f"музыка {music}" if music else "") if x).strip()
     if extra:
@@ -1658,7 +1690,7 @@ def describe_frame(png_bytes, caption="", author="", music="", shrink=None):
     # Ответ короткий намеренно: генерация текста — самая дорогая часть
     # запроса, а пока модель думает, неинтересный ролик висит на экране.
     text = ask(png_bytes, prompt, system=CONTENT_SYSTEM,
-               max_tokens=120, temperature=0.1, shrink=shrink)
+               max_tokens=170 if asked else 120, temperature=0.1, shrink=shrink)
     # Перезагрузка внутри ask() не помогла (или её придержал таймаут) —
     # честно говорим «не разобрал» вместо строки из «?» в теме и в базе.
     if looks_degenerate(text):
@@ -1694,6 +1726,17 @@ def describe_frame(png_bytes, caption="", author="", music="", shrink=None):
     data["категория"] = cat
     data["язык"] = normalize_lang(data.get("язык"))
     data.setdefault("тема", "")
+    # Ответы на дополнительные вопросы — только настоящие true/false. Нет
+    # ответа или мусор — убираем поле: тогда тему судит `judge_topic`, а
+    # «где мы» — дерево, как раньше. Выдумывать вердикт за модель нельзя.
+    for key in ("по_теме", "лента"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip().lower() in ("true", "false", "да", "нет"):
+            value = value.strip().lower() in ("true", "да")
+        if asked and isinstance(value, bool) and (key != "по_теме" or topics):
+            data[key] = value
+        else:
+            data.pop(key, None)
     return data
 
 

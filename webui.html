@@ -631,6 +631,13 @@ pre.report{
 
 <script>
 const TOKEN = "{{TOKEN}}";
+
+// Окно закрывают — сказать программе сразу. Иначе она ждёт, пока выйдет
+// сам Chrome, а это 15-30 с после закрытия окна. При перезагрузке страница
+// тоже скажет «пока», но тут же спросит состояние — и программа останется.
+addEventListener("pagehide", () => {
+  try { navigator.sendBeacon("/api/bye?t=" + encodeURIComponent(TOKEN), ""); } catch(e) {}
+});
 const $ = (id) => document.getElementById(id);
 
 let logCount = 0;
@@ -848,8 +855,11 @@ function renderSetup(s){
 
 function renderBot(s){
   const b = s.bot;
-  dot($("d-bot"), b.running, b.token);
+  dot($("d-bot"), b.running && !b.trouble, b.token);
+  // Причину — словами: «бот молчит» из-за второй копии на другом ПК и из-за
+  // отвергнутого токена лечатся по-разному, а раньше обе выглядели одинаково.
   $("t-bot").textContent = !b.token ? "токен не задан"
+    : b.trouble ? b.trouble
     : (b.running ? (b.owner ? "работает" : "работает, ждёт первое сообщение")
                  : "остановлен");
   $("bot-when").textContent = s.post_times.length

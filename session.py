@@ -10,6 +10,7 @@ import random
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import abort
 import adb
@@ -75,15 +76,22 @@ def _selected_tab(nodes):
     return ""
 
 
-def _off_feed(cfg):
+# Проверка «не на Главной ли» идёт в отдельном потоке, а ответ забирается на
+# следующем ролике. Один поток: проверки не копятся одна на другую.
+_PROBES = ThreadPoolExecutor(max_workers=1, thread_name_prefix="feed-probe")
+FEED_PROBE_TIMEOUT = 7
+
+
+def _off_feed(cfg, timeout=4):
     """Где мы, если НЕ в ленте: подпись выбранной вкладки или «другой экран».
     Пусто — в ленте (или не понять, и тогда верим, что в ленте).
 
-    Нужна для Instagram: на «Главной» лента тоже листается, кадры меняются,
-    и датчик залипания не срабатывает никогда — агент так и листал бы её
-    вместо Reels. Дерево на «Главной» снимается (3-4 с), в Reels — нет.
+    Нужна для Instagram и YouTube: на «Главной» лента тоже листается, кадры
+    меняются, и датчик залипания не срабатывает никогда — агент так и
+    листал бы её вместо ленты. Дерево на «Главной» Instagram снимается за
+    3.3-4.2 с (в Reels — никогда), поэтому из фона зовётся с запасом.
     """
-    nodes = ui.dump(retries=1, tolerant=True, timeout=4)
+    nodes = ui.dump(retries=1, tolerant=True, timeout=timeout)
     if not nodes:
         return ""                   # дерево не снялось — играет видео, это лента
     if _pick(nodes, cfg.get("feed_selected") or []) is not None:
@@ -790,11 +798,20 @@ def _look_and_decide(state, app, index, taste, log):
                     else state.get("shrink")))
     try:
         data = vision.describe_frame(png, caption, author, music,
-                                     shrink=shrink)
+                                     shrink=shrink, topics=(taste or {}).get("тема", ""))
     except vision.VisionError as e:
         state["blind"] = True
         log.append(f"  решения по теме отключены: {str(e)[:80]}")
         return None, False, None
+
+    # Модель заодно сказала, лента ли это вообще. Сама по себе она «Главную»
+    # Instagram от ленты не отличает (крупный пост для неё — ролик), зато
+    # YouTube-«Главную» узнаёт 6 из 6. Поэтому это не приговор, а повод
+    # заглянуть в дерево раньше очередной проверки (см. цикл сессии).
+    if data.get("лента") is False:
+        state["not_feed_streak"] = state.get("not_feed_streak", 0) + 1
+    elif data.get("лента") is True:
+        state["not_feed_streak"] = 0
 
     # Тема пустая — кадр не разобран (модель сорвалась или ответила мусором).
     # Выносить по такому вердикт нельзя: «тема не совпала» при неизвестном
@@ -2212,19 +2229,31 @@ def browse(app="tiktok", duration=None, keep_open=False):
                 # Не ушли ли с ленты внутри приложения. У Instagram «Главная»
                 # листается так же, как Reels, и залипания там не видно —
                 # проверяем по счёту роликов (`feed_check_every` в рецепте).
+                # Проверка идёт В ФОНЕ, пока смотрится следующий ролик: дерево
+                # «Главной» Instagram снимается 3.3-4.2 с, в самой ленте Reels
+                # не снимается никогда, и ждать его здесь значило бы держать
+                # каждый шестой ролик на экране на 7 с дольше. С таймаутом 4 с
+                # (как было) «Главная» иногда не успевала и сходила за ленту.
                 every = cfg.get("feed_check_every")
-                if every and watched and watched % every == 0:
-                    where = _off_feed(cfg)
+                probe = state.get("feed_probe")
+                where = ""
+                if probe is not None and probe.done():
+                    state["feed_probe"] = None
+                    where = "" if probe.exception() else probe.result()
                     # Второй взгляд: живой прогон на Shorts 2026-10-01 дал одну
                     # ложную тревогу в самой ленте (дерево снялось в момент
                     # перехода), а уводить из живой ленты — дороже секунды.
                     if where and not abort.sleep(1.0):
-                        where = _off_feed(cfg)
-                    if where and not abort.requested():
+                        where = _off_feed(cfg, timeout=FEED_PROBE_TIMEOUT)
+                elif probe is None and every and watched and (
+                        watched % every == 0 or state.get("not_feed_streak", 0) >= 2):
+                    state["not_feed_streak"] = 0
+                    state["feed_probe"] = _PROBES.submit(_off_feed, cfg, FEED_PROBE_TIMEOUT)
+                if where and not abort.requested():
                         log.append(f"  оказался не в ленте («{where}») — возвращаюсь")
-                        if not _ensure_feed(cfg, log):
+                        if not _ensure_feed(cfg, log, timeout=FEED_PROBE_TIMEOUT):
                             _open_feed(cfg, log)
-                        still = _off_feed(cfg)
+                        still = _off_feed(cfg, timeout=FEED_PROBE_TIMEOUT)
                         if still:
                             _trouble(state, f"не могу вернуться в ленту из «{still}»", log)
                         _forget_frames(state)

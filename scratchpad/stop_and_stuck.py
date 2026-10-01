@@ -202,5 +202,24 @@ session._CAPTURE.update({"raw": [0.1], "gzip": [], "pick": None})
 say(session._screencap_raw() == RAW and session._CAPTURE["pick"] == "raw",
     "gzip на телефоне нет — молча сырой")
 
+print("\n--- закрытие окна: «пока» от страницы ---")
+real_time = webui.time.time
+now = [1000.0]
+webui.time.time = lambda: now[0]
+webui.BYE_AT, webui.LAST_SEEN = 0.0, 990.0
+say(not webui._said_bye(), "«пока» не было — окно открыто")
+webui.BYE_AT = 1000.0
+now[0] = 1002.0
+say(not webui._said_bye(), "сразу после «пока» не выходим — может, это перезагрузка")
+webui.LAST_SEEN = 1001.0
+now[0] = 1010.0
+say(not webui._said_bye(), "после «пока» страница снова спросила состояние — перезагрузка, остаёмся")
+webui.BYE_AT = 1011.0
+now[0] = 1016.0
+say(webui._said_bye(), "«пока» и тишина 4+ с — окно закрыто, выходим")
+webui.time.time = real_time
+page = open(os.path.join(os.path.dirname(HERE), "webui.html"), encoding="utf-8").read()
+say('addEventListener("pagehide"' in page and "/api/bye" in page, "страница шлёт «пока» при закрытии")
+
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)

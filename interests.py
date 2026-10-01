@@ -264,6 +264,18 @@ def _topic_matches(frame, want, expansions=None, judge=None):
     if not wanted:
         return True, ""
 
+    # Облачная модель уже ответила «по теме» прямо в разборе кадра
+    # (vision.EXTRA_FIELDS) — второй запрос к судье не нужен. Замер
+    # 2026-10-01: 29 из 30 совпадений с отдельным судьёй, а экономия —
+    # целый запрос (1.2-1.6 с) на каждом ролике.
+    said = frame.get("по_теме")
+    if isinstance(said, bool):
+        if said:
+            return True, (f"тема «{wanted[0]}»" if len(wanted) == 1 else "тема из списка")
+        if len(wanted) == 1:
+            return False, f"тема не «{wanted[0]}»"
+        return False, "тема не из списка: " + ", ".join(f"«{t}»" for t in wanted)
+
     if judge and len(wanted) > 1:
         from concurrent.futures import ThreadPoolExecutor
 

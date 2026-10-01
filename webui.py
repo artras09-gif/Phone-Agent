@@ -433,18 +433,25 @@ def _start_bot():
         fleet.telegram_gate().acquire(timeout=0.5)
     except gate.Timeout:
         print("Telegram-бота уже ведёт служба телефона — окно его не поднимает")
+        _BOT_ELSEWHERE["yes"] = True
         return
 
     telegram_bot.set_submit(RUNNER.start)
     telegram_bot.start_background()
 
 
+_BOT_ELSEWHERE = {"yes": False}
+
+
 def _bot_state():
     import telegram_bot
 
     cfg = telegram_bot.load_settings()
+    trouble = telegram_bot.trouble()
+    if _BOT_ELSEWHERE["yes"] and not telegram_bot.running():
+        trouble = "бота ведёт служба телефона в другом процессе этой программы"
     return {"token": bool(cfg["token"]), "owner": cfg["owner"],
-            "running": telegram_bot.running()}
+            "running": telegram_bot.running(), "trouble": trouble}
 
 
 def _tell(text):
@@ -1229,11 +1236,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._host_ok():
             return self._send(403, "нет", "text/plain; charset=utf-8")
-        if self.headers.get("X-Token") != TOKEN:
-            return self._json(403, {"ok": False, "error": "чужой запрос"})
 
         parsed = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed.query)
+
+        # «Окно закрывается» — страница шлёт это через sendBeacon, а он не умеет
+        # заголовков, поэтому токен — в адресе. Ничего не делает, кроме отметки
+        # времени: выходить или нет, решает `_quit_when_window_closes`.
+        if parsed.path == "/api/bye":
+            if (query.get("t") or [""])[0] != TOKEN:
+                return self._json(403, {"ok": False, "error": "чужой запрос"})
+            global BYE_AT
+            BYE_AT = time.time()
+            return self._send(204, "", "text/plain; charset=utf-8")
+
+        if self.headers.get("X-Token") != TOKEN:
+            return self._json(403, {"ok": False, "error": "чужой запрос"})
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
 
@@ -1371,6 +1389,19 @@ SILENT_PAGE_SEC = 180.0
 
 LAST_SEEN = 0.0            # когда страница последний раз спрашивала состояние
 
+# Страница сказала «окно закрывается» (pagehide -> sendBeacon /api/bye). Это
+# главный признак закрытия: Chrome после закрытия окна живёт ещё 15-30 с
+# (замер 2026-10-01), и всё это время программа висела, держа порт, — а
+# снова открытая сразу программа цеплялась к уходящей. Перезагрузка страницы
+# тоже шлёт «пока», но через секунду снова спрашивает состояние — поэтому
+# выход только если после «пока» страница молчит BYE_GRACE_SEC.
+BYE_AT = 0.0
+BYE_GRACE_SEC = 4.0
+
+
+def _said_bye():
+    return bool(BYE_AT) and time.time() - BYE_AT > BYE_GRACE_SEC and LAST_SEEN < BYE_AT
+
 
 def _quit_when_window_closes(proc, httpd):
     """Закрыли окно — остановить действие и выйти. Только для собранного exe.
@@ -1394,13 +1425,20 @@ def _quit_when_window_closes(proc, httpd):
 
     def watch():
         started = time.time()
-        proc.wait()
+        while proc.poll() is None:
+            if _said_bye():
+                finish("окно закрыто")
+                return
+            time.sleep(0.5)
         if time.time() - started >= WINDOW_HANDOFF_SEC:
             finish("окно закрыто")
             return
         # Окно ушло в чужой процесс браузера — следим за самой страницей.
         while True:
-            time.sleep(5)
+            time.sleep(1)
+            if _said_bye():
+                finish("окно закрыто")
+                return
             seen = LAST_SEEN or started
             if time.time() - seen > SILENT_PAGE_SEC:
                 finish("страница молчит три минуты, окно закрыто")

@@ -53,6 +53,8 @@ TESTS = [
     ("scratchpad/alerts.py", "тревога в Telegram, когда помеха держится долго"),
     ("scratchpad/plan_mix.py", "расписание: разные ленты в одном окне вперемешку"),
     ("scratchpad/stop_and_stuck.py", "«Остановить», круг в тупике, скорость решения"),
+    ("scratchpad/bot_poll.py", "бот: говорит, почему молчит, и не умирает"),
+    ("scratchpad/frame_questions.py", "«по теме» и «лента» в разборе кадра, без второго запроса"),
     ("scratchpad/gate_test.py", "замки между процессами"),
     ("scratchpad/fleet_isolation.py", "разделение телефонов по пространствам"),
 ]

@@ -650,34 +650,95 @@ def _handle(msg):
     _run(f"публикация #{job_id}", work)
 
 
+# Почему бот сейчас не принимает сообщения — для окна и журнала. Пусто —
+# всё в порядке. Раньше при любой беде он молча повторял запрос раз в 5 с,
+# и «бот перестал работать» (жалоба 2026-10-01) не объяснялось ничем.
+_TROUBLE = {"text": ""}
+
+CONFLICT = ("бота уже опрашивает другая копия PhoneAgent — на другом компьютере "
+            "или в другом окне. Telegram отдаёт сообщения только одной; закрой "
+            "лишнюю или убери токен на втором компьютере")
+REJECTED = "Telegram не принимает токен (401) — вставь его заново во вкладке «Бот»"
+RETRY_SEC = 5            # пауза перед повтором после неудачного опроса
+
+
+def trouble():
+    return _TROUBLE["text"]
+
+
+def _why_failed(res):
+    """Человеческая причина неудачного getUpdates."""
+    text = str(res.get("description") or res.get("error") or "")
+    code = res.get("error_code")
+    if code == 409 or "409" in text or "Conflict" in text:
+        return CONFLICT
+    if code == 401 or "401" in text or "Unauthorized" in text:
+        return REJECTED
+    return "нет связи с Telegram: " + text[:80]
+
+
 def poll_forever():
+    """Опрос Telegram. Не падает никогда: ошибка разбора — в журнал, дальше."""
     if not load_settings()["token"]:
         return
+    # Здесь, в потоке, а не при старте окна: без связи getMe ждёт 20 с.
+    ok, info = check()
+    print(f"[бот] {'запущен: ' + info if ok else info}", flush=True)
+    if not ok and "не принят" in info:
+        _TROUBLE["text"] = REJECTED
     offset = 0
+    said = ""
     while True:
-        res = _call("getUpdates", {"offset": offset, "timeout": 50})
-        if not res.get("ok"):
-            time.sleep(5)
-            continue
-        for upd in res.get("result", []):
-            offset = upd["update_id"] + 1
-            msg = upd.get("message") or upd.get("channel_post")
-            if msg:
-                try:
-                    _handle(msg)
-                except Exception as e:
-                    send(f"ошибка обработки: {type(e).__name__}: {e}")
-                finally:
-                    # Обязательно: иначе следующее сообщение от другого
-                    # человека ушло бы в чат предыдущего.
-                    set_reply(None)
+        try:
+            offset = _poll_once(offset)
+            said = ""
+        except _PollFailed as e:
+            _TROUBLE["text"] = str(e)
+            if str(e) != said:               # в журнал — один раз на беду
+                print(f"[бот] {e}", flush=True)
+                said = str(e)
+            time.sleep(RETRY_SEC)
+        except Exception as e:               # поток бота не должен умирать
+            print(f"[бот] сбой: {type(e).__name__}: {e}", flush=True)
+            time.sleep(RETRY_SEC)
+
+
+class _PollFailed(Exception):
+    pass
+
+
+def _poll_once(offset):
+    """Один круг getUpdates. Возвращает новый offset."""
+    res = _call("getUpdates", {"offset": offset, "timeout": 50})
+    if not res.get("ok"):
+        raise _PollFailed(_why_failed(res))
+    if _TROUBLE["text"]:
+        print("[бот] снова на связи", flush=True)
+        _TROUBLE["text"] = ""
+    for upd in res.get("result", []):
+        offset = upd["update_id"] + 1
+        msg = upd.get("message") or upd.get("channel_post")
+        if msg:
+            try:
+                _handle(msg)
+            except Exception as e:
+                send(f"ошибка обработки: {type(e).__name__}: {e}")
+            finally:
+                # Обязательно: иначе следующее сообщение от другого
+                # человека ушло бы в чат предыдущего.
+                set_reply(None)
+    return offset
 
 
 _THREAD = None
 
 
 def start_background():
-    """Поднять приёмник в фоне. Возвращает функцию отправки отчётов."""
+    """Поднять приёмник в фоне. Возвращает функцию отправки отчётов.
+
+    Пишет в журнал, что поднялся и под каким именем: иначе «бот молчит» не
+    отличить от «бот и не запускался».
+    """
     global _THREAD
     if not load_settings()["token"]:
         return lambda text: None
