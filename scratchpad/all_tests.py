@@ -55,6 +55,7 @@ TESTS = [
     ("scratchpad/stop_and_stuck.py", "«Остановить», круг в тупике, скорость решения"),
     ("scratchpad/bot_poll.py", "бот: говорит, почему молчит, и не умирает"),
     ("scratchpad/frame_questions.py", "«по теме» и «лента» в разборе кадра, без второго запроса"),
+    ("scratchpad/categories.py", "категории: своя полка у понятого ролика, сбои отдельно"),
     ("scratchpad/gate_test.py", "замки между процессами"),
     ("scratchpad/fleet_isolation.py", "разделение телефонов по пространствам"),
 ]

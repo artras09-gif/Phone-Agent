@@ -66,9 +66,50 @@ say(len(orders) >= 6, f"порядков за 1000 дней: {len(orders)}; ча
 starts_tt = sum(v for k, v in orders.items() if k.startswith("tiktok"))
 say(200 < starts_tt < 800, f"начинает то TikTok ({starts_tt}), то Reels ({1000 - starts_tt})")
 
+print("\n--- всё внутри окна (жалоба 2026-10-02) ---")
+W0, W1 = dt.datetime(2026, 10, 1, 21, 0), dt.datetime(2026, 10, 1, 22, 0)
+CROWD = [{"окно": "21:00-22:00", "минут": [40, 60], "дни": "каждый день", "что": app, "вкл": True}
+         for app in ("tiktok", "reels", "shorts")]
+late, shares, squeezed = 0, [], 0
+for _ in range(300):
+    plan.LAST_SQUEEZE.clear()
+    items = plan.for_date(DAY, CROWD)
+    end = max(w + dt.timedelta(seconds=s) for w, _, s in items)
+    late += end > W1 + dt.timedelta(seconds=1) or items[0][0] < W0
+    per = Counter()
+    for _w, app, s in items:
+        per[app] += s
+    shares.append(max(per.values()) / sum(per.values()))
+    squeezed += plan.LAST_SQUEEZE.get(21 * 60, 1) < 0.99
+say(late == 0, "три сессии по 40-60 мин в окне 21-22: блок ВЕСЬ внутри окна (300 из 300)")
+say(squeezed == 300, "заказано больше окна — время ужато, а не вынесено за окно")
+say(max(shares) < 0.45, f"доли лент сохранены (самая большая — {max(shares):.0%})")
+real_load = plan.load
+plan.load = lambda: CROWD
+text = plan.describe(DAY)
+plan.load = real_load
+say("ужато" in text, "в плане сказано, что время ужато под окно")
+
+SAME3 = [dict(c, что="tiktok") for c in CROWD]
+items = plan.for_date(DAY, SAME3)
+end = max(w + dt.timedelta(seconds=s) for w, _, s in items)
+say(len(items) == 1 and end <= W1 + dt.timedelta(seconds=1),
+    f"три правила одной ленты на одно время — одна сессия в окне: {items[0][0]:%H:%M}, "
+    f"{items[0][2] / 60:.0f} мин")
+
+ONE = [{"окно": "21:00-22:00", "минут": 30, "дни": "каждый день", "что": "tiktok", "вкл": True}]
+ends = [plan.for_date(DAY, ONE)[0] for _ in range(300)]
+say(all(w + dt.timedelta(seconds=s) <= W1 + dt.timedelta(seconds=1) for w, _, s in ends),
+    "одно правило на 30 мин в окне 21-22 кончается до 22:00 (300 из 300)")
+LONG = [dict(ONE[0], минут=[60, 90])]
+starts = {plan.for_date(DAY, LONG)[0][0] for _ in range(50)}
+say(starts == {W0}, "сессия длиннее окна начинается в начале окна")
+POINT = [dict(c, окно="21:00", минут=20) for c in CROWD]
+items = plan.for_date(DAY, POINT)
+say(items[0][0] == W0 and abs(sum(s for *_, s in items) - 3600) < 5,
+    "окно-точка «21:00»: блок ровно с 21:00, без ужатия")
+
 print("\n--- что остаётся как раньше ---")
-SAME = [dict(MIX[0]), dict(MIX[0], окно="21:30-22:30")]
-say(len(plan.for_date(DAY, SAME)) == 2, "одна и та же лента в двух правилах — не режется")
 APART = [dict(MIX[0], окно="09:00-10:00"), dict(MIX[1], окно="21:00-22:00")]
 items = plan.for_date(DAY, APART)
 say(len(items) == 2 and items[0][0].hour == 9, "окна не пересекаются — две обычные сессии")

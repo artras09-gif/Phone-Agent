@@ -1403,6 +1403,46 @@ def _said_bye():
     return bool(BYE_AT) and time.time() - BYE_AT > BYE_GRACE_SEC and LAST_SEEN < BYE_AT
 
 
+def _has_window(pid):
+    """Есть ли у процесса видимое окно верхнего уровня. None — не знаем.
+
+    Второй признак закрытия, кроме «пока» от страницы: Chrome, закрывая
+    последнее окно, иногда не даёт странице его отправить (замер 2026-10-02:
+    в одном прогоне из двух программа ждала выхода Chrome 30+ с). Окно же
+    исчезает из Windows сразу, даже когда процесс Chrome доживает ещё полминуты.
+    Свёрнутое окно для Windows по-прежнему видимое — ложного выхода нет.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        # Типы явно: дескриптор окна на 64-битной Windows — указатель, и без
+        # объявления ctypes передал бы его как 32-битное число.
+        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+        found = []
+        proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def check(hwnd, _):
+            owner = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+            if owner.value == pid and user32.IsWindowVisible(hwnd) \
+                    and user32.GetWindowTextLengthW(hwnd) > 0:
+                found.append(hwnd)
+                return False
+            return True
+
+        user32.EnumWindows(proc(check), 0)
+        return bool(found)
+    except (AttributeError, OSError):
+        return None
+
+
 def _quit_when_window_closes(proc, httpd):
     """Закрыли окно — остановить действие и выйти. Только для собранного exe.
 
@@ -1425,10 +1465,19 @@ def _quit_when_window_closes(proc, httpd):
 
     def watch():
         started = time.time()
+        saw_window, gone = False, 0
         while proc.poll() is None:
             if _said_bye():
                 finish("окно закрыто")
                 return
+            alive = _has_window(proc.pid)
+            if alive:
+                saw_window, gone = True, 0
+            elif alive is False and saw_window:
+                gone += 1
+                if gone >= 3:                # полторы секунды без окна
+                    finish("окно закрыто")
+                    return
             time.sleep(0.5)
         if time.time() - started >= WINDOW_HANDOFF_SEC:
             finish("окно закрыто")

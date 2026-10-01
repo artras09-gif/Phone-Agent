@@ -133,8 +133,40 @@ def connect():
             for name, decl in columns:
                 if name not in have:
                     con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+        if con.execute("PRAGMA user_version").fetchone()[0] < CATEGORIES_VERSION:
+            recategorize(con)
+            con.execute(f"PRAGMA user_version={CATEGORIES_VERSION}")
+            con.commit()
         _SCHEMA_READY = True
     return con
+
+
+# Версия раскладки по категориям. Поднять — и при следующем запуске вся
+# накопленная история переложится заново (`recategorize`), а не только новые
+# кадры: иначе сводка за неделю ещё неделю показывала бы старую картину.
+CATEGORIES_VERSION = 1
+
+
+def recategorize(con):
+    """Переложить уже разобранные кадры по нынешнему списку категорий.
+
+    Модель при этом не нужна: в базе есть её описание ролика и, для слов вне
+    списка, само слово («категория вне списка: природа»). Сколько переложено.
+    """
+    import vision
+
+    moved = 0
+    rows = con.execute("SELECT id, category, tema, raw FROM content").fetchall()
+    for r in rows:
+        said = r["category"] or ""
+        raw = r["raw"] or ""
+        if raw.startswith("категория вне списка:"):
+            said = raw.split(":", 1)[1].strip() or said
+        new = vision.categorize(said, r["tema"] or "")
+        if new != r["category"]:
+            con.execute("UPDATE content SET category=? WHERE id=?", (new, r["id"]))
+            moved += 1
+    return moved
 
 
 def add(video_path, caption="", targets="tiktok", run_at=None):

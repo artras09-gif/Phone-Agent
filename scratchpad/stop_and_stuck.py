@@ -44,7 +44,9 @@ human.pause = lambda lo, hi: None
 print("--- «Остановить» посреди смешанного блока ---")
 import webui  # noqa: E402
 
-t0 = dt.datetime(2026, 10, 1, 21, 0)
+# Относительно «сейчас»: план на вчерашний вечер сегодня уже просрочен, и
+# chained() справедливо считает просроченное продолжением цепочки.
+t0 = dt.datetime.now().replace(microsecond=0) + dt.timedelta(hours=1)
 sched = [(t0, "session", ("tiktok", 600)),
          (t0 + dt.timedelta(seconds=630), "session", ("reels", 600)),
          (t0 + dt.timedelta(seconds=1260), "session", ("tiktok", 600)),
@@ -220,6 +222,20 @@ say(webui._said_bye(), "«пока» и тишина 4+ с — окно закр
 webui.time.time = real_time
 page = open(os.path.join(os.path.dirname(HERE), "webui.html"), encoding="utf-8").read()
 say('addEventListener("pagehide"' in page and "/api/bye" in page, "страница шлёт «пока» при закрытии")
+
+import subprocess  # noqa: E402
+
+note = subprocess.Popen(["notepad.exe"])
+seen = False
+for _ in range(20):                       # блокнот на холодную открывается не сразу
+    time.sleep(0.3)
+    if webui._has_window(note.pid):
+        seen = True
+        break
+note.terminate()
+note.wait(timeout=10)
+say(seen, "окно процесса видно, пока оно открыто")
+say(webui._has_window(note.pid) is False, "закрыли — окна нет (второй признак закрытия, кроме «пока»)")
 
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)

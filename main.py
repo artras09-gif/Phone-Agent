@@ -1071,11 +1071,18 @@ def cmd_content(args):
         langs = ", ".join(f"{r['lang']} {r['c']}" for r in st["langs"])
         print(f"Языки: {langs}")
 
+    import vision
+    broken = sum(r["c"] for r in st["cats"] if r["category"] == vision.NOT_PARSED)
+    videos = max(1, st["total"] - broken)
     print("\nКатегории:")
     for row in st["cats"]:
-        share = row["c"] * 100 // st["total"]
+        if row["category"] == vision.NOT_PARSED:
+            continue                 # сбой кадра — не категория ролика
+        share = row["c"] * 100 // videos
         bar = "#" * max(1, share // 3)
         print(f"  {row['category']:12s} {row['c']:4d}  {share:3d}%  {bar}")
+    if broken:
+        print(f"  не разобрано (сбой кадра): {broken}")
 
     if st["verdicts"]:
         print("\nРешения по вкусам:")

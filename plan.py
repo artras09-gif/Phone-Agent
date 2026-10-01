@@ -256,33 +256,62 @@ def _interleave(parts):
 
 
 def _mix(day, group):
-    """Окна разных лент пересекаются — один блок, ленты вперемешку.
+    """Правила с пересекающимися окнами — один блок, ленты вперемешку,
+    И ВЕСЬ БЛОК ВНУТРИ ОКНА.
 
     Просьба пользователя 2026-09-30: если в одном диапазоне стоят сессии в
     разных соцсетях, комбинировать их случайно. Каждая лента получает своё
     время из своего правила, режется на куски, и куски идут вперемешку, с
-    короткой паузой на «переключился в другое приложение». Начало блока —
-    случайное внутри общего окна, как у одиночного правила.
-    """
-    parts = []
-    for _start, _span, low, high, app in group:
-        parts += [(app, s) for s in _pieces(random.uniform(low, high) * 60)]
-    order = _interleave(parts)
+    короткой паузой на «переключился в другое приложение».
 
-    gap_lo, gap_hi = config.PLAN_MIX_GAP_SEC
-    total_min = (sum(s for _, s in order) + gap_hi * (len(order) - 1)) / 60
+    2026-10-02: «ставлю несколько сессий на одно время — он планирует их вне
+    промежутка». Блок начинался в окне, но если сумма длительностей больше
+    окна, просто вылезал за его конец — на час-два. Теперь блок обязан
+    уложиться в общее окно: не помещается — время каждой ленты ужимается в
+    одной пропорции (доли лент сохраняются). Окно-точка («21:00») — без
+    ужатия: укладывать некуда, блок начинается ровно тогда.
+    """
     first = min(e[0] for e in group)
-    last_end = max(e[0] + e[1] for e in group)
-    room = max(0.0, (last_end - first) - total_min)
-    # Блок длиннее окна — начало всё равно не ровно в начале окна.
-    at = first + (random.uniform(0, room) if room > 0
-                  else random.uniform(0, min(10, last_end - first)))
-    when = dt.datetime.combine(day, dt.time()) + dt.timedelta(minutes=at % (24 * 60))
+    span_sec = (max(e[0] + e[1] for e in group) - first) * 60
+    gap_lo, gap_hi = config.PLAN_MIX_GAP_SEC
+
+    want = [(app, random.uniform(low, high) * 60) for _s, _sp, low, high, app in group]
+    total = sum(s for _, s in want)
+    squeeze = 1.0
+    if span_sec > 0 and total > span_sec:
+        squeeze = span_sec / total
+        want = [(app, s * squeeze) for app, s in want]
+
+    parts = []
+    for app, seconds in want:
+        parts += [(app, s) for s in _pieces(seconds)]
+    order = _interleave(parts)
+    gaps = [random.uniform(gap_lo, gap_hi) for _ in order[1:]]
+
+    # Паузы между кусками тоже занимают окно — если с ними не влезает,
+    # ужимаем ещё (куски, а не паузы: «переключился» должно остаться).
+    busy = sum(s for _, s in order) + sum(gaps)
+    if span_sec > 0 and busy > span_sec:
+        k = max(0.05, (span_sec - sum(gaps)) / max(1.0, sum(s for _, s in order)))
+        order = [(app, s * k) for app, s in order]
+        squeeze *= k
+        busy = sum(s for _, s in order) + sum(gaps)
+
+    room = max(0.0, span_sec - busy)
+    start = first * 60 + random.uniform(0, room)
+    when = dt.datetime.combine(day, dt.time()) + dt.timedelta(
+        seconds=start % (24 * 3600))
     out = []
-    for app, seconds in order:
+    for n, (app, seconds) in enumerate(order):
         out.append((when, app, seconds))
-        when += dt.timedelta(seconds=seconds + random.uniform(gap_lo, gap_hi))
+        when += dt.timedelta(seconds=seconds + (gaps[n] if n < len(gaps) else 0))
+    LAST_SQUEEZE[first] = squeeze
     return out
+
+
+# Во сколько раз пришлось ужать блок, чтобы он влез в окно — по началу окна.
+# Для `describe`: человек должен видеть, что заказал больше, чем помещается.
+LAST_SQUEEZE = {}
 
 
 def for_date(day=None, rules=None):
@@ -292,22 +321,30 @@ def for_date(day=None, rules=None):
     окна. Окно через полночь укладывается в те же сутки: сессия встанет
     либо поздним вечером, либо ночью того же календарного дня.
 
-    Правила РАЗНЫХ лент с пересекающимися окнами смешиваются в один блок
-    (`_mix`, выключатель `PLAN_MIX`): «TikTok 21-23 на 40 минут» и «Reels
-    21-23 на 30 минут» дают, например, Reels 12 мин -> TikTok 25 -> Reels 18
-    -> TikTok 15, каждый день в новом порядке.
+    Правила с пересекающимися окнами смешиваются в один блок (`_mix`,
+    выключатель `PLAN_MIX`): «TikTok 21-23 на 40 минут» и «Reels 21-23 на 30
+    минут» дают, например, Reels 12 мин -> TikTok 25 -> Reels 18 -> TikTok
+    15, каждый день в новом порядке. Блок целиком в окне.
     """
     day = day or dt.date.today()
     entries = _today_rules(day, rules if rules is not None else load())
     out = []
     for group in _overlapping(entries):
-        if config.PLAN_MIX and len({e[4] for e in group}) > 1:
+        # Несколько правил на одно время — один блок, даже если лента одна:
+        # раньше три правила TikTok на 21:00-22:00 вставали в очередь друг за
+        # другом, и последнее начиналось далеко за окном.
+        if config.PLAN_MIX and len(group) > 1:
             out += _mix(day, group)
             continue
         for start, span, low, high, app in group:
-            at = (start + random.uniform(0, span)) % (24 * 60)
+            seconds = random.uniform(low, high) * 60
+            # Начало — так, чтобы сессия кончилась в окне, если влезает;
+            # длиннее окна — начинается в его начале (смысл «с 21 до 22»
+            # человек вкладывает именно такой).
+            room = max(0.0, span - seconds / 60)
+            at = (start + random.uniform(0, room)) % (24 * 60)
             when = dt.datetime.combine(day, dt.time()) + dt.timedelta(minutes=at)
-            out.append((when, app, random.uniform(low, high) * 60))
+            out.append((when, app, seconds))
 
     out.sort(key=lambda x: x[0])
     return out
@@ -336,10 +373,15 @@ def describe(day=None):
         lines.append(f" {mark}{i:2d}. {body}")
 
     day = day or dt.date.today()
+    LAST_SQUEEZE.clear()
     today = for_date(day, rules)
     lines += ["", f"на {day:%d.%m} ({days_text({day.weekday()})}) выпало:"]
     if not today:
         lines.append("  ничего — сегодня ни одно правило не работает")
     for when, app, seconds in today:
         lines.append(f"  {when:%H:%M} — {app}, {seconds / 60:.0f} мин")
+    for start, k in sorted(LAST_SQUEEZE.items()):
+        if k < 0.99:
+            lines.append(f"  (правила с окном от {start // 60 % 24:02d}:{start % 60:02d} не "
+                         f"помещались в окно — время ужато до {k:.0%})")
     return "\n".join(lines)

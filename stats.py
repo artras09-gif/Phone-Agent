@@ -134,15 +134,24 @@ def report(days=7):
                          + ("да" if ok else "НЕТ — смотрит одинаково"))
 
     # ------------------------------------------------------ категории
+    # Кадры-сбои (чёрный экран, окно поверх ленты, модель сорвалась) — не
+    # категория роликов: в доли они не идут, иначе «другое» раздувалось ими.
     cats = {}
+    broken = 0
     for r in rows:
+        if r["category"] == vision.NOT_PARSED:
+            broken += 1
+            continue
         cats[r["category"]] = cats.get(r["category"], 0) + 1
-    lines += ["", "КАТЕГОРИИ:"]
+    videos = max(1, total - broken)
+    lines += ["", f"КАТЕГОРИИ (из {total - broken} разобранных роликов):"]
     for name, count in sorted(cats.items(), key=lambda x: -x[1]):
-        lines.append(f"  {name:12} {count:4d}  {count / total:4.0%}  {_bar(count / total)}")
-    unknown = cats.get("другое", 0) / total
+        lines.append(f"  {name:12} {count:4d}  {count / videos:4.0%}  {_bar(count / videos)}")
+    unknown = cats.get("другое", 0) / videos
     lines.append(f"  доля «другое»: {unknown:.0%}"
-                 + ("  — модель часто не понимает, что на кадре" if unknown > 0.35 else ""))
+                 + ("  — много роликов без своей категории" if unknown > 0.2 else ""))
+    if broken:
+        lines.append(f"  не разобрано (сбой кадра, в доли не входит): {broken}")
 
     # ------------------------------------------------- качество разбора
     problems = {
