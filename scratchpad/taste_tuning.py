@@ -96,6 +96,47 @@ s5 = interests.watch_seconds(v5, m5, 8.0, t)
 say(v5 == "нейтрально" and 15 <= s5 <= 25 and interests.like_probability(v5, t, m5) > 0,
     f"тема на чужом языке — {s5:.0f}с и лайк иногда")
 
+print("\n--- «по теме» по кадру подтверждает судья (жалоба 2026-10-12) ---")
+craft = {"тема": "монтаж, моушендизайн", "язык": "ru", "не_смотреть": "",
+         "поведение": dict(interests.DEFAULTS["поведение"])}
+mama = {"тема": "мама обнимает спящего младенца в постели", "язык": "ru", "по_теме": True}
+strict_judge = lambda theme, topic: "таймлайн" in theme or "анимац" in theme
+v, why, m = interests.classify(mama, craft, judge=strict_judge, tuned={"этап": "тема"})
+say(v == "мимо" and "описание не про неё" in why, f"нейроролик «мама с младенцем» при «монтаже» — {v} ({why})")
+real = {"тема": "парень режет клипы на таймлайне premiere", "язык": "ru", "по_теме": True}
+v, why, m = interests.classify(real, craft, judge=strict_judge, tuned={"этап": "тема"})
+say(v == "интересно" and "монтаж" in why, f"настоящий урок монтажа — {v} ({why})")
+broken = lambda theme, topic: (_ for _ in ()).throw(RuntimeError("сеть"))
+v, why, m = interests.classify(mama, craft, judge=broken, tuned={"этап": "тема"})
+say(v == "интересно", "судья недоступен — верим кадру, а не теряем решение")
+
+print("\n--- «Не смотреть» ---")
+banned = dict(craft, не_смотреть="нейросети, мамы с детьми")
+v, why, m = interests.classify(dict(real, запрет=True), banned, judge=strict_judge)
+say(v == "мимо" and why.startswith("не смотреть"), f"запрет по кадру — мимо даже при теме ({why})")
+v, why, m = interests.classify(dict(real, запрет=False), banned, judge=strict_judge)
+say(v == "интересно", "запрет=false — решаем как обычно")
+text_judge = lambda theme, topic: topic == "мамы с детьми" and "мама" in theme
+hit, what = interests.banned_hit({"тема": "мама кормит малыша"}, banned, text_judge)
+say(hit and what == "мамы с детьми", "своя модель без поля «запрет» — судья по описанию")
+interests.set_choice(banned="Нейросети,  пранки")
+say(interests.load()["не_смотреть"] == "нейросети, пранки", "«не смотреть» сохраняется")
+import vision as _v  # noqa: E402
+asked = []
+real_fq, real_ask = _v.frame_questions, _v.ask
+_v.frame_questions = lambda: True
+_v.ask = lambda png, prompt, **kw: asked.append(prompt) or (
+    '{"тема": "x", "категория": "юмор", "реклама": false, "язык": "ru", '
+    '"запрет": true, "лента": true}')
+d = _v.describe_frame(b"png", topics="монтаж", banned="нейросети")
+say(d.get("запрет") is True and "запрет: true" in asked[-1] and "сгенерированные нейросетью" in asked[-1],
+    "вопрос «запрет» в том же запросе, с подсказкой про нейроролики")
+_v.describe_frame(b"png", topics="монтаж", banned="пранки")
+say("сгенерированные нейросетью" not in asked[-1], "без нейросетей в запрете подсказки нет")
+d = _v.describe_frame(b"png", topics="монтаж", banned="")
+say("запрет" not in d and "запрет:" not in asked[-1], "запрет пуст — поле не спрашивается и не берётся")
+_v.frame_questions, _v.ask = real_fq, real_ask
+
 print("\n--- доли считаются по базе этой соцсети ---")
 for i in range(12):
     path = os.path.join(tmp, f"f{i}.png")

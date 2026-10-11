@@ -50,6 +50,7 @@ import config
 DEFAULTS = {
     "тема": "",          # пусто = тема не важна, смотрим всё на нужном языке
     "язык": "",          # пусто = язык не важен; два — через запятую: «ru, en»
+    "не_смотреть": "",   # что листать сразу, по смыслу: «нейросети, мамы с детьми»
     "поведение": {
         "секунд_на_взгляд": [1.5, 3.0],
         # Нейтральное бывает двух сортов, и они не равны: совпавшая ТЕМА на
@@ -101,6 +102,7 @@ def load():
         return data
 
     data["тема"] = str(user.get("тема", "")).strip().lower()
+    data["не_смотреть"] = str(user.get("не_смотреть", "")).strip().lower()
     data["язык"] = str(user.get("язык", "")).strip().lower()
 
     # Перенос со старого формата со списками: берём первое, что там было.
@@ -170,18 +172,21 @@ def save(taste):
             "_версия": VERSION,
             "тема": taste.get("тема", ""),
             "язык": ", ".join(languages(taste)),
+            "не_смотреть": taste.get("не_смотреть", ""),
             "поведение": taste["поведение"]}
     with open(config.INTERESTS, "w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     return config.INTERESTS
 
 
-def set_choice(topic=None, lang=None, taste=None):
-    """Задать тему и/или язык. None — не трогать."""
+def set_choice(topic=None, lang=None, taste=None, banned=None):
+    """Задать тему, языки, «не смотреть». None — не трогать."""
     taste = taste or load()
     taste.pop("_ошибка", None)
     if topic is not None:
         taste["тема"] = topic.strip().lower()
+    if banned is not None:
+        taste["не_смотреть"] = ", ".join(topics({"тема": banned}))
     if lang is not None:
         taste["язык"] = ", ".join(languages({"язык": lang}))
     save(taste)
@@ -351,11 +356,21 @@ def _topic_matches(frame, want, expansions=None, judge=None):
     # целый запрос (1.2-1.6 с) на каждом ролике.
     said = frame.get("по_теме")
     if isinstance(said, bool):
-        if said:
-            return True, (f"тема «{wanted[0]}»" if len(wanted) == 1 else "тема из списка")
-        if len(wanted) == 1:
-            return False, f"тема не «{wanted[0]}»"
-        return False, "тема не из списка: " + ", ".join(f"«{t}»" for t in wanted)
+        if not said:
+            if len(wanted) == 1:
+                return False, f"тема не «{wanted[0]}»"
+            return False, "тема не из списка: " + ", ".join(f"«{t}»" for t in wanted)
+        # «Да» по кадру — повод, а не приговор (жалоба 2026-10-12: нейроролик
+        # «мама с младенцем» прошёл как «монтаж»). Полный просмотр и лайк
+        # учат ленту, поэтому попадание подтверждает судья по описанию:
+        # стоит запрос только на попаданиях, «мимо» он не замедляет.
+        if judge is not None:
+            confirmed = _confirm_topic(frame, wanted, judge)
+            if confirmed is False:
+                return False, "по кадру похоже на тему, но описание не про неё"
+            if confirmed:
+                return True, f"тема «{confirmed}»"
+        return True, (f"тема «{wanted[0]}»" if len(wanted) == 1 else "тема из списка")
 
     if judge and len(wanted) > 1:
         from concurrent.futures import ThreadPoolExecutor
@@ -376,6 +391,48 @@ def _topic_matches(frame, want, expansions=None, judge=None):
     if len(wanted) == 1:
         return False, f"тема не «{wanted[0]}»"
     return False, "тема не из списка: " + ", ".join(f"«{t}»" for t in wanted)
+
+
+def _confirm_topic(frame, wanted, judge):
+    """Подтвердить «по теме» судьёй по описанию. Тема, False или None (не смог)."""
+    theme = str(frame.get("тема", "")).strip()
+    if not theme:
+        return None
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(topic):
+        try:
+            return bool(judge(theme, topic))
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=len(wanted)) as pool:
+        answers = list(pool.map(one, wanted))
+    for topic, answer in zip(wanted, answers):
+        if answer:
+            return topic
+    return None if all(a is None for a in answers) else False
+
+
+def banned_hit(frame, taste, judge=None):
+    """Ролик из «не смотреть»: (да?, что именно). Модель ответила полем
+    «запрет» — верим ему; нет поля (своя модель) — спрашиваем судью."""
+    banned = topics({"тема": taste.get("не_смотреть", "")})
+    if not banned:
+        return False, ""
+    said = frame.get("запрет")
+    if isinstance(said, bool):
+        return said, ", ".join(banned)
+    theme = str(frame.get("тема", "")).strip()
+    if judge is None or not theme:
+        return False, ""
+    for item in banned:
+        try:
+            if judge(theme, item):
+                return True, item
+        except Exception:
+            pass
+    return False, ""
 
 
 def _is_ad(frame):
@@ -488,6 +545,11 @@ def classify(frame, taste=None, expansions=None, judge=None, tuned=None):
     # Отдельный вердикт, а не «мимо»: в сводке видно, сколько её было.
     if _is_ad(frame):
         return "реклама", "рекламная вставка", matched_none(taste)
+    # «Не смотреть» — сразу мимо, что бы ни совпало: человек сам сказал, что
+    # этого в ленте не хочет, а любой досмотр учит её обратному.
+    hit, what = banned_hit(frame, taste, judge)
+    if hit:
+        return "мимо", f"не смотреть: {what}", matched_none(taste)
 
     matched, hits, misses = {}, [], []
     stage = (tuned or {}).get("этап", "тема")

@@ -93,9 +93,12 @@ taste = {"тема": "политика, история", "язык": "ru"}
 verdict, why, matched = interests.classify(
     {"тема": "кот", "язык": "en", "по_теме": False}, taste, expansions={}, judge=judge)
 say(verdict == "мимо" and not judged, f"«мимо» без второго запроса: {why}")
+# С 2026-10-12 попадание по кадру подтверждает судья по описанию (нейроролик
+# «мама с младенцем» прошёл как «монтаж»): лишний запрос — только на
+# попаданиях, «мимо» выше по-прежнему решается одним запросом.
 verdict, why, matched = interests.classify(
     {"тема": "депутат", "язык": "ru", "по_теме": True}, taste, expansions={}, judge=judge)
-say(verdict == "интересно" and not judged, f"«интересно» без второго запроса: {why}")
+say(verdict == "интересно" and judged, f"«интересно» подтверждено судьёй: {why}")
 verdict, why, matched = interests.classify(
     {"тема": "депутат", "язык": "ru"}, taste, expansions={}, judge=judge)
 say(judged, "ответа «по теме» нет — судья спрошен, как раньше")

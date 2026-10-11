@@ -481,6 +481,10 @@ pre.report{
           </label>
           <button class="btn accent" id="b-taste" style="align-self:flex-end">Сохранить</button>
         </div>
+        <label class="field" style="margin-top:12px">
+          Не смотреть — листаю сразу, даже если тема совпала (через запятую)
+          <input type="text" id="t-banned" placeholder="нейросети, мамы с детьми, пранки">
+        </label>
         <div class="field" style="margin-top:12px">
           Языки — подходит любой из отмеченных. Ничего не отмечено — язык не проверяю.
           <div class="chips" id="t-langs" style="margin-top:6px"></div>
@@ -773,6 +777,7 @@ function render(s){
   renderPlan(s.plan);
 
   if(document.activeElement !== $("t-topic")) $("t-topic").value = s.taste.topic;
+  if(document.activeElement !== $("t-banned")) $("t-banned").value = s.taste.banned || "";
   if(!langsDirty){
     pickedLangs = (s.taste.lang || "").split(",").map(x => x.trim()).filter(Boolean);
     renderLangs();
@@ -1271,7 +1276,8 @@ $("b-planadd").onclick = () => {
 };
 
 $("b-taste").onclick = () =>
-{ send("taste", {topic: $("t-topic").value, lang: pickedLangs.join(", ")});
+{ send("taste", {topic: $("t-topic").value, lang: pickedLangs.join(", "),
+                 banned: $("t-banned").value});
   langsDirty = false; };
 
 // Языки — кнопками: отметить можно сколько угодно.

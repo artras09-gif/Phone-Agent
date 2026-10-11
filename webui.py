@@ -751,6 +751,7 @@ def state(since=0):
         "plan": _plan_state(),
         "fleet": _fleet_state(),
         "taste": {"topic": taste.get("тема", ""), "lang": taste.get("язык", ""),
+                  "banned": taste.get("не_смотреть", ""),
                   "tuning": _tuning_state(taste)},
         "apps": _apps(),
         "bot": _bot_state(),
@@ -1032,7 +1033,8 @@ def _cmd_plan_remove(body):
 
 @command("taste")
 def _cmd_taste(body):
-    interests.set_choice(topic=body.get("topic", ""), lang=body.get("lang", ""))
+    interests.set_choice(topic=body.get("topic", ""), lang=body.get("lang", ""),
+                         banned=body.get("banned", ""))
     return {"ok": True}
 
 

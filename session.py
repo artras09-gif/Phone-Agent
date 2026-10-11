@@ -798,7 +798,8 @@ def _look_and_decide(state, app, index, taste, log):
                     else state.get("shrink")))
     try:
         data = vision.describe_frame(png, caption, author, music,
-                                     shrink=shrink, topics=(taste or {}).get("тема", ""))
+                                     shrink=shrink, topics=(taste or {}).get("тема", ""),
+                                     banned=(taste or {}).get("не_смотреть", ""))
     except vision.VisionError as e:
         state["blind"] = True
         log.append(f"  решения по теме отключены: {str(e)[:80]}")
@@ -1363,9 +1364,11 @@ def _read_clipboard(cfg, route, log):
 
     # Чистим за собой: иначе адрес останется в строке поиска и всплывёт
     # хозяину телефона при первом же заходе. Курсор после вставки стоит в
-    # конце, поэтому хватает забоя — одним вызовом, а не семьюдесятью.
+    # конце, поэтому хватает забоя — одним вызовом. Число — по длине
+    # вставленного: ссылки Instagram с хвостом «?igsh=…» бывают длиннее 70
+    # знаков, и прежние ровно 70 оставляли в строке обрывок (2026-10-12).
     if text:
-        adb.shell("input keyevent " + " ".join(["KEYCODE_DEL"] * 70),
+        adb.shell("input keyevent " + " ".join(["KEYCODE_DEL"] * (len(text) + 10)),
                   check=False)
 
     found = _URL.search(text)
