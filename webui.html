@@ -452,27 +452,31 @@ pre.report{
             Тема (или несколько через запятую)
             <input type="text" id="t-topic" placeholder="коты, кулинария, мемы">
           </label>
-          <label class="field">
-            Язык
-            <select id="t-lang">
-              <option value="">не важен</option>
-              <option value="ru">ru — русский</option>
-              <option value="en">en — английский</option>
-              <option value="es">es — испанский</option>
-              <option value="другой">другой</option>
-            </select>
-          </label>
           <button class="btn accent" id="b-taste" style="align-self:flex-end">Сохранить</button>
         </div>
+        <div class="field" style="margin-top:12px">
+          Языки — подходит любой из отмеченных. Ничего не отмечено — язык не проверяю.
+          <div class="chips" id="t-langs" style="margin-top:6px"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Насколько ленты уже настроены</h2>
+        <p class="hint" style="margin:0" id="t-tuning">считаю...</p>
       </div>
 
       <div class="card">
         <h2>Как это работает</h2>
         <p class="hint" style="margin:0">
-          Совпали и тема, и язык — смотрю 20-30 секунд, могу лайкнуть.<br>
-          Совпала тема (любая из списка), но язык чужой — 10-15 секунд, без лайка.<br>
-          Совпал только язык — 1,5-10 секунд, без лайка.<br>
+          Совпали и тема, и язык (любой из отмеченных) — смотрю 20-30 секунд, могу лайкнуть.<br>
+          Совпала тема (любая из списка), но язык чужой — 15-25 секунд, лайк вдвое реже.<br>
           Не совпало ничего — листаю сразу.<br><br>
+          <b>Сначала язык, потом тема.</b> Новый телефон быстро привыкает к языку,
+          с темой труднее. Пока роликов на нужном языке меньше 60%, ролик на
+          своём языке, но не по теме, смотрю 3-7 секунд — так лента быстрее
+          понимает язык. Как только язык настроен — такие листаю сразу, всё
+          внимание теме: чем реже она попадается, тем чаще лайкаю и иногда
+          пересматриваю попадания. Считается отдельно для каждой соцсети.<br><br>
           Короткий ролик не кручу по второму разу: как только он пошёл на
           второй круг, листаю дальше.
         </p>
@@ -739,7 +743,13 @@ function render(s){
   renderPlan(s.plan);
 
   if(document.activeElement !== $("t-topic")) $("t-topic").value = s.taste.topic;
-  if(document.activeElement !== $("t-lang"))  $("t-lang").value  = s.taste.lang;
+  if(!langsDirty){
+    pickedLangs = (s.taste.lang || "").split(",").map(x => x.trim()).filter(Boolean);
+    renderLangs();
+  }
+  $("t-tuning").innerHTML = (s.taste.tuning || []).length
+    ? s.taste.tuning.map(t => "<b>" + esc(t.title) + "</b>: " + esc(t.text)).join("<br>")
+    : "задай тему или язык — тогда покажу";
 
   const sel = $("q-target");
   if(!sel.options.length){
@@ -1233,7 +1243,34 @@ $("b-planadd").onclick = () => {
 };
 
 $("b-taste").onclick = () =>
-  send("taste", {topic: $("t-topic").value, lang: $("t-lang").value});
+{ send("taste", {topic: $("t-topic").value, lang: pickedLangs.join(", ")});
+  langsDirty = false; };
+
+// Языки — кнопками: отметить можно сколько угодно.
+const LANGS = [["ru","русский"],["en","английский"],["es","испанский"],
+               ["de","немецкий"],["fr","французский"],["pt","португальский"],
+               ["it","итальянский"],["uk","украинский"],["tr","турецкий"],
+               ["другой","другой"]];
+let pickedLangs = [], langsDirty = false;
+function renderLangs(){
+  const box = $("t-langs");
+  box.innerHTML = "";
+  LANGS.forEach(([code, name]) => {
+    const chip = document.createElement("button");
+    chip.className = "chip" + (pickedLangs.includes(code) ? " on" : "");
+    chip.textContent = code === "другой" ? name : code + " — " + name;
+    chip.onclick = () => {
+      langsDirty = true;
+      pickedLangs = pickedLangs.includes(code)
+        ? pickedLangs.filter(x => x !== code) : pickedLangs.concat([code]);
+      renderLangs();
+    };
+    box.append(chip);
+  });
+}
+function esc(t){
+  return String(t).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+}
 
 $("b-kb").onclick = () => send("keyboard", {});
 

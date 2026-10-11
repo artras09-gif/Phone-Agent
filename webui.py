@@ -78,6 +78,9 @@ class Runner:
         self.started_at = 0.0
         self.on_done = []      # кого разбудить, когда телефон освободился
         self.on_cancel = []    # кому сказать, что остановили кнопкой
+        # Сессию остановили не кнопкой, а ради поста ко времени: остаток
+        # потом досматривается (см. `preempt`, `Keeper._finished`).
+        self.preempted = False
 
     def busy(self):
         thread = self._thread
@@ -109,6 +112,7 @@ class Runner:
             self.lines = []
             self.title = title
             self.started_at = time.time()
+            self.preempted = False
             self._thread = threading.Thread(target=self._wrap(fn), daemon=True)
             self._thread.start()
         abort.clear()          # прошлая остановка не должна гасить новое
@@ -135,6 +139,20 @@ class Runner:
                         pass
 
         return wrapper
+
+    def preempt(self, why):
+        """Приостановить СЕССИЮ ради поста с точным временем.
+
+        Не `cancel`: та для кнопки «Остановить» и отменяет остаток блока
+        расписания. Здесь сессия просто уступает телефон, а сторож расписания
+        потом её досмотрит.
+        """
+        if not self.busy() or not self.title.startswith("сессия") or self.preempted:
+            return False
+        self.preempted = True
+        abort.request()
+        self.log(f"приостанавливаю сессию: {why}")
+        return True
 
     def cancel(self):
         """Оборвать то, что идёт. Поток не убиваем — просим его закончить.
@@ -179,6 +197,8 @@ class Keeper:
         self.schedule = []
         self.done = set()
         self.running = None      # какой пункт плана сейчас идёт
+        self.running_since = 0.0   # когда он начался — для досмотра остатка
+        self.running_seconds = 0.0
 
     def rules(self):
         """Сколько включённых правил в расписании. Ноль — сторожить нечего."""
@@ -199,7 +219,18 @@ class Keeper:
         threading.Thread(target=self._loop, daemon=True).start()
 
     def _finished(self):
-        self.running = None
+        """Действие закончилось. Если сессию прервали ради поста ко времени —
+        вставить её остаток сразу следом, чтобы досмотреть после публикации."""
+        i, self.running = self.running, None
+        if i is not None and self.runner.preempted and i < len(self.schedule):
+            when, kind, arg = self.schedule[i]
+            left = self.running_seconds - (time.time() - self.running_since)
+            if kind == "session" and arg and left >= scheduler.MIN_PIECE_SEC:
+                self.schedule.insert(i + 1, (dt.datetime.now(), "session", (arg[0], left)))
+                self.done = {j + 1 if j > i else j for j in self.done}
+                scheduler._publish(self.day, self.schedule, self.done)
+                self.runner.log(f"досмотрю остаток сессии {arg[0]} после публикации: "
+                                f"{left / 60:.0f} мин")
         self._wake.set()
 
     def _cancelled(self):
@@ -236,23 +267,53 @@ class Keeper:
     def _tick(self):
         now = dt.datetime.now()
         if now.date() != self.day:
+            # Смена суток (или первый круг): хвост вчерашнего блока, который
+            # идёт через полночь, переносим, а не теряем.
+            carried = []
+            if self.day is not None and self.schedule:
+                carried = scheduler.carry_over(
+                    self.schedule, self.done, self.running,
+                    dt.datetime.combine(now.date(), dt.time()))
             self.day = now.date()
-            self.schedule = scheduler._plan_for_today(self.day)
+            fresh = scheduler._plan_for_today(self.day)
             # Пункты, время которых прошло до запуска окна, догонять не надо:
             # открыв программу вечером, не хочется получить пачку сессий
             # за весь день сразу.
-            self.done = scheduler._already_past(self.schedule, now)
+            past = scheduler._already_past(fresh, now)
+            rows = [(item, i in past, False) for i, item in enumerate(fresh)] + carried
+            rows.sort(key=lambda r: r[0][0])
+            self.schedule = [r[0] for r in rows]
+            self.done = {i for i, r in enumerate(rows) if r[1]}
+            running = [i for i, r in enumerate(rows) if r[2]]
+            self.running = running[0] if running else None
             scheduler._publish(self.day, self.schedule, self.done)
 
         if config.stop_requested() or self.runner.busy():
+            return
+        # Подошла публикация — телефон сначала ей: она ждёт точного времени,
+        # а сессия свой остаток досмотрит следом.
+        if jobs.due() is not None:
             return
 
         for i, (when, kind, arg) in enumerate(self.schedule):
             if i in self.done or now < when:
                 continue
             self.done.add(i)
+            if kind == "session" and arg and arg[1]:
+                left = scheduler.trimmed(arg[1], (now - when).total_seconds())
+                if left is None:
+                    self.runner.log(f"пропускаю сессию {arg[0]} на {when:%H:%M}: "
+                                    "телефон был занят, её время уже вышло")
+                    continue
+                if left < arg[1]:
+                    self.runner.log(f"сессия {arg[0]} начинается позже плана — "
+                                    f"укорачиваю до {left / 60:.0f} мин, чтобы "
+                                    "кончить в окне")
+                    arg = (arg[0], left)
             scheduler._publish(self.day, self.schedule, self.done)
             self.running = i
+            self.running_since = time.time()
+            self.running_seconds = float(arg[1] or 0) if kind == "session" and arg else 0.0
             if kind == "post":
                 self.runner.start("публикация по расписанию", lambda: (
                     scheduler.scan_watch_dir(), scheduler.run_post_job(_tell)))
@@ -295,6 +356,15 @@ class Dispatcher:
             self._wake.wait(self.EVERY)
             self._wake.clear()
             if self.runner.busy():
+                # Пост с точным временем не ждёт конца сессии (её остаток
+                # досмотрится потом, `Keeper._finished`). Остальное — ждёт:
+                # обрывать сессию ради «опубликуй, когда сможешь» незачем.
+                try:
+                    job = jobs.due()
+                    if job is not None and job["exact"]:
+                        self.runner.preempt(f"пора публиковать задачу #{job['id']}")
+                except Exception:
+                    pass
                 continue
             try:
                 scheduler.scan_watch_dir()          # видео, брошенные в watch/
@@ -441,6 +511,31 @@ def _start_bot():
 
 
 _BOT_ELSEWHERE = {"yes": False}
+
+
+_TUNING = {"at": 0.0, "key": None, "rows": []}
+
+
+def _tuning_state(taste):
+    """Насколько настроена лента каждой соцсети — для вкладки «Вкусы».
+
+    Страница спрашивает состояние раз в секунду, а считать это — три запроса к
+    базе. Кэш на полминуты; поменяли вкусы — пересчёт сразу.
+    """
+    if not (taste.get("тема") or taste.get("язык")):
+        return []
+    key = (taste.get("тема"), taste.get("язык"))
+    if _TUNING["key"] == key and time.time() - _TUNING["at"] < 30:
+        return _TUNING["rows"]
+    rows = []
+    for app in _apps():
+        try:
+            rows.append({"title": app.get("title") or app["id"],
+                         "text": interests.tuning(app["id"], taste)["текст"]})
+        except Exception:
+            pass
+    _TUNING.update(at=time.time(), key=key, rows=rows)
+    return rows
 
 
 def _bot_state():
@@ -650,7 +745,8 @@ def state(since=0):
         "queue": _queue(),
         "plan": _plan_state(),
         "fleet": _fleet_state(),
-        "taste": {"topic": taste.get("тема", ""), "lang": taste.get("язык", "")},
+        "taste": {"topic": taste.get("тема", ""), "lang": taste.get("язык", ""),
+                  "tuning": _tuning_state(taste)},
         "apps": _apps(),
         "bot": _bot_state(),
         "models": PROBE.data.get("models", []),

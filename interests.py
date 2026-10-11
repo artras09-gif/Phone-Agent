@@ -1,4 +1,4 @@
-"""Что смотреть: одна тема и один язык. Правится в interests.json.
+"""Что смотреть: тема и языки. Правится в interests.json.
 
 Раньше тут были списки интересных и скучных категорий, слов и языков —
 получалась путаница, в которой настройки противоречили друг другу
@@ -14,6 +14,31 @@
 «совпало всё» — это одно и то же, средней ступени просто не бывает, и
 неподходящее уходит в «мимо». Так задумано: нейтральное имеет смысл
 только когда есть чему не совпасть.
+
+ТЕМА ВАЖНЕЕ ЯЗЫКА (2026-10-08, просьба пользователя: «больший акцент на
+теме, чем на языке — некоторые соцсети вообще не могут уловить тему»).
+Лента учится на досмотрах и лайках. Пока ролик «на своём языке, но не про
+то» досматривался до десяти секунд, а «про то, но на чужом языке» не
+лайкался, ленте шёл сигнал скорее про язык. Теперь:
+
+    тема + язык            -> интересно   20-30 с, лайк
+    тема, язык чужой       -> нейтрально  15-25 с, лайк вдвое реже
+    только язык, тема мимо -> мимо        листаем сразу
+                              (вернуть просмотр — секунд_на_язык_без_темы > 0)
+
+Языков можно несколько — «ru, en, es»: подходит любой из них.
+
+УМНАЯ ГРАДАЦИЯ: СНАЧАЛА ЯЗЫК, ПОТОМ ТЕМА (2026-10-11). Новый телефон быстро
+подстраивается под язык, а с темой труднее: лента на испанском, но про
+«каких-то мамочек». Поэтому приоритет зависит от того, насколько лента уже
+настроена (`tuning`, по последним роликам ЭТОЙ соцсети на ЭТОМ телефоне):
+
+    этап «язык» — роликов на нужном языке меньше 60%: учим язык.
+        Свой язык без темы смотрим вполглаза (3-7 с), без лайка.
+    этап «тема» — язык настроен: всё внимание теме.
+        Свой язык без темы листаем сразу: досмотр учил бы ленту «мамочкам».
+        Чем реже попадается тема, тем сильнее сигнал на каждом попадании:
+        лайк чаще (до x2) и иногда пересмотр — лента учится на них.
 """
 import json
 import os
@@ -24,7 +49,7 @@ import config
 
 DEFAULTS = {
     "тема": "",          # пусто = тема не важна, смотрим всё на нужном языке
-    "язык": "",          # пусто = язык не важен
+    "язык": "",          # пусто = язык не важен; два — через запятую: «ru, en»
     "поведение": {
         "секунд_на_взгляд": [1.5, 3.0],
         # Нейтральное бывает двух сортов, и они не равны: совпавшая ТЕМА на
@@ -33,12 +58,36 @@ DEFAULTS = {
         # а тот сам случайный — выходило то 1.5, то 4 секунды, предсказать
         # нельзя. Где нужна понятная длительность, там и пишем секунды.
         "секунд_на_интересное": [20.0, 30.0],
-        "секунд_на_тему_без_языка": [10.0, 15.0],
-        "секунд_на_язык_без_темы": [1.5, 10.0],
+        "секунд_на_тему_без_языка": [15.0, 25.0],
+        # Ноль — ролик на своём языке, но не по теме, листается сразу, как
+        # любой неподходящий. Больше нуля — смотрится вполглаза, как раньше.
+        "секунд_на_язык_без_темы": [0.0, 0.0],
         "секунд_на_неинтересное": [0.0, 0.0],
         "лайк": 0.25,
+        # Лайк ролику по теме на чужом языке — доля от обычного лайка. Тянет
+        # ленту к теме, а её ленте уловить труднее всего.
+        "лайк_теме_без_языка": 0.5,
+        # Градация «сначала язык, потом тема». Пока роликов на нужном языке
+        # в последних `окно_настройки` меньше `язык_настроен_доля`, ролик на
+        # своём языке, но не по теме, смотрится `секунд_на_язык_пока_учим`.
+        "секунд_на_язык_пока_учим": [3.0, 7.0],
+        "язык_настроен_доля": 0.6,
+        "окно_настройки": 40,
     },
 }
+
+# Версия формата. 2 — тема важнее языка (2026-10-08). Значения в файле,
+# совпадающие с прежними умолчаниями, — не выбор человека, а записанные
+# когда-то умолчания: их заменяем новыми. Своё он сохранит.
+VERSION = 2
+OLD_DEFAULTS = {
+    "секунд_на_тему_без_языка": [10.0, 15.0],
+    "секунд_на_язык_без_темы": [1.5, 10.0],
+}
+
+# Сколько языков можно выбрать сразу. Ограничение не по смыслу, а от мусора:
+# в строку можно вписать что угодно.
+MAX_LANGUAGES = 8
 
 
 def load():
@@ -62,23 +111,53 @@ def load():
         old = (user.get("интересно") or {}).get("языки") or []
         data["язык"] = str(old[0]).strip().lower() if old else ""
 
+    try:
+        old_format = int(user.get("_версия", 1)) < VERSION
+    except (TypeError, ValueError):
+        old_format = True
     if isinstance(user.get("поведение"), dict):
         for key, value in user["поведение"].items():
-            if key in data["поведение"]:
-                data["поведение"][key] = value
+            if key not in data["поведение"]:
+                continue
+            if old_format and _same_numbers(value, OLD_DEFAULTS.get(key)):
+                continue                 # старое умолчание — берём новое
+            data["поведение"][key] = value
+    data["язык"] = ", ".join(languages(data))
     return data
 
 
+def _same_numbers(a, b):
+    try:
+        return b is not None and [float(x) for x in a] == [float(x) for x in b]
+    except (TypeError, ValueError):
+        return False
+
+
+def languages(taste=None):
+    """Языки списком: «ru, en» -> ["ru", "en"]. Не больше MAX_LANGUAGES."""
+    taste = taste if taste is not None else load()
+    raw = taste.get("язык", "") if isinstance(taste, dict) else str(taste)
+    out = []
+    for part in re.split(r"[,;/\s]+", str(raw).strip().lower()):
+        if part and part != "-" and part not in out:
+            out.append(part)
+    return out[:MAX_LANGUAGES]
+
+
 NOTE = [
-    "Всего две настройки: тема и язык.",
+    "Всего две настройки: тема и язык (языков можно несколько через запятую: «ru, en, es»).",
     "Тема — своими словами: «новости», «коты», «мемы про политику».",
     "Тем можно несколько через запятую: «коты, кулинария, мемы».",
     "Достаточно совпадения по ЛЮБОЙ из них.",
     "Модель сверяет описание ролика с темой по смыслу, а не по буквам.",
-    "Язык — ru, en или другой. Пусто = не проверять.",
+    "Язык — ru, en, es, de, fr… Пусто = не проверять. Несколько — подходит любой.",
+    "Градация: пока лента не настроена на язык (меньше язык_настроен_доля роликов",
+    "на нужном языке), свой язык без темы смотрю секунд_на_язык_пока_учим.",
+    "Язык настроен — всё внимание теме: свой язык без темы листаю сразу,",
+    "а редкую тему лайкаю чаще, чтобы лента её поняла.",
     "Совпало и то и другое — смотрю полностью и могу лайкнуть.",
-    "Совпала тема, но язык чужой — смотрю секунд_на_тему_без_языка, без лайка.",
-    "Совпал только язык — смотрю секунд_на_язык_без_темы, без лайка.",
+    "Совпала тема, но язык чужой — смотрю секунд_на_тему_без_языка, лайк вдвое реже.",
+    "Совпал только язык — листаю (секунд_на_язык_без_темы больше нуля — смотрю вполглаза).",
     "Не совпало ничего — листаю сразу.",
     "Рекламу листаю сразу в любом случае: досмотр она читает как «хочу ещё».",
     "После правки ничего перезапускать не надо — файл читается каждую сессию.",
@@ -88,8 +167,9 @@ NOTE = [
 def save(taste):
     """Записать настройки обратно в файл."""
     data = {"_как_пользоваться": NOTE,
+            "_версия": VERSION,
             "тема": taste.get("тема", ""),
-            "язык": taste.get("язык", ""),
+            "язык": ", ".join(languages(taste)),
             "поведение": taste["поведение"]}
     with open(config.INTERESTS, "w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -103,7 +183,7 @@ def set_choice(topic=None, lang=None, taste=None):
     if topic is not None:
         taste["тема"] = topic.strip().lower()
     if lang is not None:
-        taste["язык"] = lang.strip().lower()
+        taste["язык"] = ", ".join(languages({"язык": lang}))
     save(taste)
     return taste
 
@@ -213,7 +293,7 @@ def _haystack(frame):
 
 
 def _lang_matches(frame, want_lang):
-    """Совпал ли язык. Неизвестный язык не считается чужим.
+    """Совпал ли язык (любой из заданных). Неизвестный не считается чужим.
 
     Модель называет язык не всегда, и наказывать ролик за её молчание
     нельзя: так под нож уходили бы кадры без речи.
@@ -222,12 +302,13 @@ def _lang_matches(frame, want_lang):
     «не язык «ru»» читалась как «модель не смогла определить русский», хотя
     означала «распознан русский, а в настройках стоит английский».
     """
+    wanted = languages({"язык": want_lang})
     lang = str(frame.get("язык", "")).strip().lower()
     if not lang:
         return True, "язык не разобран"
-    if lang == want_lang:
+    if lang in wanted:
         return True, f"язык {lang}"
-    return False, f"язык {lang}, а нужен {want_lang}"
+    return False, f"язык {lang}, а нужен {' или '.join(wanted)}"
 
 
 def _one_topic_matches(frame, want_topic, expansions, judge):
@@ -310,7 +391,68 @@ def matched_none(taste):
             if taste.get(field, "")}
 
 
-def classify(frame, taste=None, expansions=None, judge=None):
+def tuning(app, taste=None, rows=None):
+    """Насколько лента ЭТОЙ соцсети уже настроена: этап, доли, пояснение.
+
+    Считается по последним `окно_настройки` разобранным роликам (без
+    рекламы и сбоев кадра) этого телефона. Возвращает dict:
+      этап        — «язык» (учим язык) или «тема» (язык настроен / не задан);
+      язык        — доля роликов на нужном языке среди тех, где он понят;
+      тема        — доля роликов по теме среди тех, где тема проверялась;
+      усиление    — во сколько раз чаще лайк на попадании в тему (1.0-2.0);
+      текст       — для журнала и окна.
+    `rows` — для проверок без базы: список (язык, по_теме) от новых к старым.
+    """
+    taste = taste or load()
+    behaviour = taste["поведение"]
+    window = int(behaviour.get("окно_настройки", 40) or 40)
+    if rows is None:
+        try:
+            import jobs
+            rows = jobs.recent_feed(app, window)
+        except Exception:
+            rows = []
+    rows = list(rows)[:window]
+    wanted = languages(taste)
+
+    known_lang = [lang for lang, _ in rows if lang]
+    lang_share = (sum(1 for lang in known_lang if lang in wanted) / len(known_lang)
+                  if wanted and len(known_lang) >= 10 else None)
+    known_topic = [t for _, t in rows if t in (0, 1, True, False)]
+    topic_share = (sum(1 for t in known_topic if t) / len(known_topic)
+                   if taste.get("тема") and len(known_topic) >= 10 else None)
+
+    need = float(behaviour.get("язык_настроен_доля", 0.6) or 0.6)
+    if not wanted or not taste.get("тема"):
+        stage = "тема" if taste.get("тема") else "язык"
+    else:
+        stage = "тема" if (lang_share is not None and lang_share >= need) else "язык"
+
+    boost = 1.0
+    if stage == "тема" and topic_share is not None:
+        boost = 2.0 if topic_share < 0.1 else (1.5 if topic_share < 0.25 else 1.0)
+
+    parts = []
+    if wanted:
+        parts.append(f"язык {'/'.join(wanted)} " + (
+            f"{lang_share:.0%}" if lang_share is not None else "пока мало данных"))
+    if taste.get("тема"):
+        parts.append("тема " + (f"{topic_share:.0%}" if topic_share is not None
+                                else "пока мало данных"))
+    if stage == "язык" and wanted and taste.get("тема"):
+        verdict = "учу язык: свой язык без темы смотрю вполглаза"
+    elif wanted and taste.get("тема"):
+        verdict = "язык настроен — упор на тему"
+    else:
+        verdict = "упор на тему" if taste.get("тема") else "упор на язык"
+    if boost > 1:
+        verdict += f", тема редкая — лайк x{boost:g}"
+    text = (", ".join(parts) + f" (по {len(rows)} роликам) — " + verdict) if parts else verdict
+    return {"этап": stage, "язык": lang_share, "тема": topic_share,
+            "усиление": boost, "роликов": len(rows), "текст": text}
+
+
+def classify(frame, taste=None, expansions=None, judge=None, tuned=None):
     """Насколько ролик подходит: (вердикт, причина, что совпало).
 
     Вердикт — 'интересно' | 'нейтрально' | 'мимо'. Считаются только заданные
@@ -320,7 +462,8 @@ def classify(frame, taste=None, expansions=None, judge=None):
 
     Третьим значением идут сами совпадения (`{"язык": True, "тема": False}`,
     незаданное условие отсутствует). Они нужны, чтобы решать время просмотра
-    по данным, а не разбирать обратно человеческую строку причины.
+    по данным, а не разбирать обратно человеческую строку причины. Туда же
+    кладутся «этап» и «усиление» из `tuned` (см. `tuning`).
     """
     taste = taste or load()
     want_lang = taste.get("язык", "")
@@ -334,6 +477,8 @@ def classify(frame, taste=None, expansions=None, judge=None):
         return "реклама", "рекламная вставка", matched_none(taste)
 
     matched, hits, misses = {}, [], []
+    stage = (tuned or {}).get("этап", "тема")
+    boost = float((tuned or {}).get("усиление", 1.0) or 1.0)
     if want_lang:
         ok, note = _lang_matches(frame, want_lang)
         matched["язык"] = ok
@@ -346,21 +491,36 @@ def classify(frame, taste=None, expansions=None, judge=None):
     # Причины уже написаны целиком («тема не «кулинария»», «язык ru, а нужен
     # en»), приставку «не» здесь не добавляем: раньше выходило «не язык «ru»»,
     # и это читалось как «язык не распознан».
+    if want_topic:
+        matched["этап"] = stage
+        if matched.get("тема") and boost > 1:
+            matched["усиление"] = boost
     if not hits and not misses:
         return "интересно", "ничего не задано", matched
     if not misses:
         return "интересно", " и ".join(hits), matched
     if not hits:
         return "мимо", " и ".join(misses), matched
+    # Тема задана и не совпала, совпал только язык. Пока лента не настроена
+    # на язык (этап «язык»), такой ролик смотрим вполглаза — так лента
+    # быстрее понимает язык. Язык настроен (этап «тема») — листаем сразу:
+    # досмотр «своего языка не про то» учил бы ленту не той теме (жалоба
+    # 2026-10-11: «контент на испанском, но про каких-то мамочек»).
+    if matched.get("тема") is False:
+        key = "секунд_на_язык_пока_учим" if stage == "язык" else "секунд_на_язык_без_темы"
+        low_high = taste["поведение"].get(key, [0.0, 0.0])
+        if max(float(x) for x in low_high) <= 0:
+            return "мимо", misses[0] + ("; язык уже настроен — нужна тема"
+                                        if stage == "тема" and want_lang else ""), matched
     return "нейтрально", f"{hits[0]}, но {misses[0]}", matched
 
 
 SKIP_VERDICTS = ("мимо", "реклама")
 
 
-def decide(frame, taste=None, expansions=None, judge=None):
+def decide(frame, taste=None, expansions=None, judge=None, tuned=None):
     """Что делать с роликом: (пролистать?, вердикт, причина, что совпало)."""
-    verdict, why, matched = classify(frame, taste, expansions, judge)
+    verdict, why, matched = classify(frame, taste, expansions, judge, tuned)
     return verdict in SKIP_VERDICTS, verdict, why, matched
 
 
@@ -382,9 +542,9 @@ def patience_seconds(taste=None):
 # решения: цикл досыпает остаток. Ставим около восьми — так и просили.
 NEUTRAL_SECONDS = {
     # Совпала тема на чужом языке — это по делу, просто озвучено не так.
-    "тема": ("секунд_на_тему_без_языка", [10.0, 15.0]),
-    # Совпал только язык — смотреть особо нечего.
-    "язык": ("секунд_на_язык_без_темы", [1.5, 10.0]),
+    "тема": ("секунд_на_тему_без_языка", [15.0, 25.0]),
+    # Совпал только язык — смотреть особо нечего (по умолчанию и не смотрим).
+    "язык": ("секунд_на_язык_без_темы", [0.0, 0.0]),
 }
 
 INTERESTING_SECONDS = ("секунд_на_интересное", [20.0, 30.0])
@@ -420,28 +580,41 @@ def watch_seconds(verdict, matched, full, taste=None):
         return max(random.uniform(float(low), float(high)), full, floor)
 
     key, default = NEUTRAL_SECONDS["тема" if matched.get("тема") else "язык"]
+    if not matched.get("тема") and matched.get("этап") == "язык":
+        key, default = "секунд_на_язык_пока_учим", [3.0, 7.0]
     low, high = behaviour.get(key, default)
     return random.uniform(float(low), float(high))
 
 
-def like_probability(verdict, taste=None):
-    """Лайк ставим только тому, что совпало полностью.
+def like_probability(verdict, taste=None, matched=None):
+    """Лайк — тому, что совпало полностью, и реже — теме на чужом языке.
 
-    Нейтральному — никогда: лайк тянет рекомендации в свою сторону, и
-    лайкать «наполовину подходящее» значит постепенно размывать тему.
+    Ролику, где совпал только язык, — никогда: лайк тянет рекомендации в
+    свою сторону, и лайкать «не про то» значит размывать тему. А тема на
+    чужом языке — как раз то, что ленте надо показать: лайк с долей
+    `лайк_теме_без_языка` от обычного (по умолчанию вдвое реже).
     """
-    if verdict != "интересно":
-        return 0.0
     taste = taste or load()
-    return float(taste["поведение"].get("лайк", 0.25))
+    matched = matched or {}
+    # Редкая тема на этапе «тема»: каждое попадание — сильнее сигнал (см.
+    # `tuning`). Потолок — чтобы агент не лайкал всё подряд.
+    full = min(0.6, float(taste["поведение"].get("лайк", 0.25))
+               * float(matched.get("усиление", 1.0) or 1.0))
+    if verdict == "интересно":
+        return full
+    if verdict == "нейтрально" and matched.get("тема"):
+        return full * float(taste["поведение"].get("лайк_теме_без_языка", 0.5))
+    return 0.0
 
 
 # ------------------------------------------------------------- диалог
 
-def pick(languages=("ru", "en", "es", "другой")):
-    """Два вопроса: тема и язык. True, если что-то поменяли."""
+def pick(choices=None):
+    """Два вопроса: тема и языки. True, если что-то поменяли."""
+    import vision
+    choices = choices or vision.LANGUAGES
     taste = load()
-    print("\nОдна тема и один язык — всё остальное агент листает.\n")
+    print("\nТема и до двух языков — всё остальное агент листает.\n")
 
     print(f"Сейчас тема: {taste['тема'] or 'не задана'}")
     print("Пиши своими словами: «новости», «коты», «мемы про политику».")
@@ -449,16 +622,19 @@ def pick(languages=("ru", "en", "es", "другой")):
     topic = input("Тема: ").strip()
 
     print(f"\nСейчас язык: {taste['язык'] or 'не проверяется'}")
-    print(f"Варианты: {', '.join(languages)}. Прочерк «-» — не проверять.")
+    print(f"Варианты: {', '.join(choices)}. Два — через запятую («ru, en»). "
+          "Прочерк «-» — не проверять.")
     lang = input("Язык: ").strip().lower()
 
     if not topic and not lang:
         print("\nНичего не поменял.")
         return False
 
-    if lang and lang not in languages and lang != "-":
-        print(f"  «{lang}» — не язык из списка, оставляю как было")
-        lang = ""
+    if lang and lang != "-":
+        bad = [x for x in languages({"язык": lang}) if x not in choices]
+        if bad:
+            print(f"  «{', '.join(bad)}» — не язык из списка, оставляю как было")
+            lang = ""
 
     set_choice(topic="" if topic == "-" else (topic or None),
                lang="" if lang == "-" else (lang or None),
@@ -475,7 +651,7 @@ def describe(taste=None):
                      "работаю на умолчаниях")
     lines.append(f"файл: {config.INTERESTS}")
     lines.append(f"  тема:  {taste['тема'] or 'не задана — смотрю всё'}")
-    lines.append(f"  язык:  {taste['язык'] or 'не проверяется'}")
+    lines.append(f"  язык:  {' или '.join(languages(taste)) or 'не проверяется'}")
     lines.append("поведение:")
     for key, value in taste["поведение"].items():
         lines.append(f"   {key}: {value}")

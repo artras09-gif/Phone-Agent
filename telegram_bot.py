@@ -54,6 +54,11 @@ MAX_LINKS_PER_MESSAGE = 20
 
 RE_TIME = re.compile(r"(?:^|\s)(?:в\s*)?([01]?\d|2[0-3])[:.]([0-5]\d)(?=\s|$)")
 
+# Сколько Telegram отдаёт боту: файл больше 20 МБ `getFile` не выдаёт вовсе
+# (ограничение Bot API, не наше). Говорим об этом сразу, а не «не смог
+# скачать».
+MAX_DOWNLOAD_MB = 20
+
 
 # ------------------------------------------------------- настройки бота
 
@@ -549,10 +554,11 @@ def _handle(msg):
     if text.startswith("/start"):
         when = ", ".join(config.LINKS_DIGEST_TIMES) or "только по команде"
         send("Работаю.\n\n"
-             "ВИДЕО файлом с подписью — опубликую.\n"
-             "Сети можно указать в подписи (tiktok, shorts, reels), "
-             "не указаны — публикую во все.\n"
-             "Время («в 18:30») ставит задачу на это время.\n\n"
+             "ВИДЕО файлом с подписью — опубликую. Точный текст, сети и "
+             "время — по шаблону: /template\n"
+             "Коротко тоже можно: «кот смешной тикток в 18:30» — сети и "
+             "время найду в тексте сам.\n"
+             "/queue — что ждёт публикации, /cancel 5 — отменить задачу #5\n\n"
              "ССЫЛКУ — сохраню в подборку. Любая соцсеть: TikTok, YouTube, "
              "Instagram, VK, X, Telegram, Pinterest, Reddit и прочие. "
              "Можно несколько сразу и с припиской — она станет заметкой.\n\n"
@@ -574,16 +580,18 @@ def _handle(msg):
         # довесок, и «Ссылки» из подписи он принял бы за аргумент.
         _cmd_links("/links")
         return
-    if text == BTN_POST:
+    if text == BTN_POST or text.startswith("/queue") or text.lower() == "очередь":
         # Публикацию кнопкой не заменить — нужен сам файл. Поэтому здесь
-        # состояние очереди и напоминание, как прислать видео.
-        send("В очереди: %d\n"
-             "Опубликовано сегодня: %d/%d\n\n"
-             "Чтобы опубликовать — пришли ВИДЕО файлом.\n"
-             "В подписи можно указать сети (tiktok, shorts, reels) и "
-             "время («в 18:30»). Без них публикую сразу во все."
-             % (len(jobs.pending()), jobs.count_today("done"),
-                config.MAX_POSTS_PER_DAY), keyboard=True)
+        # очередь и напоминание, как прислать видео.
+        send(_queue_text() + "\n\nЧтобы опубликовать — пришли ВИДЕО файлом. "
+             "Шаблон подписи: /template", keyboard=True)
+        return
+    if text.startswith("/template") or text.lower() in ("шаблон", "/шаблон"):
+        import postspec
+        send(postspec.TEMPLATE_HELP)
+        return
+    if text.startswith("/cancel") or text.lower().startswith("отмена"):
+        _cmd_cancel(text)
         return
     if text.startswith("/links") or text.lower().startswith("ссылки"):
         _cmd_links(text)
@@ -604,8 +612,22 @@ def _handle(msg):
                  keyboard=True)
         return
 
-    targets, text = parse_targets(text)
-    when, caption = parse_when(text)
+    import postspec
+
+    try:
+        spec = postspec.parse(text)
+    except postspec.SpecError as e:
+        send(f"Не понял подпись: {e}.\nШаблон: /template")
+        return
+    targets, when, caption = spec["targets"], spec["when"], spec["caption"]
+
+    size_mb = (video.get("file_size") or 0) / 1024 / 1024
+    if size_mb > MAX_DOWNLOAD_MB:
+        send(f"Файл {size_mb:.0f} МБ, а Telegram отдаёт боту только до "
+             f"{MAX_DOWNLOAD_MB} МБ — это его ограничение. Сожми видео "
+             "(или пришли его сжатым видео, а не файлом) — или положи файл "
+             "в папку watch программы, рядом .txt с тем же шаблоном.")
+        return
 
     send("Качаю...")
     path = _download(video["file_id"], config.QUEUE_DIR)
@@ -626,21 +648,20 @@ def _handle(msg):
         send(f"Не беру: {why}")
         return
 
-    # Время не названо и расписание пустое — значит ждать нечего.
-    now_post = when is None and not config.POST_TIMES
     job_id = jobs.add(path, caption=caption, targets=",".join(targets),
-                      run_at=when.timestamp() if when else None)
+                      run_at=when.timestamp() if when else None,
+                      captions=spec["captions"], exact=spec["exact"])
 
-    where = ", ".join(targets)
+    # Подтверждение — ровно то, что уйдёт в пост: сети, время, текст. Ошибку
+    # в подписи человек видит сразу, а не после публикации.
+    tail = f"\n\nОтменить: /cancel {job_id}"
     if when is not None:
-        send(f"Задача #{job_id}: {where}, опубликую в {when:%H:%M}.")
-        return
-    if not now_post:
-        send(f"Задача #{job_id}: {where}, опубликую по расписанию "
-             f"({', '.join(config.POST_TIMES)}).")
+        send(postspec.describe(spec, job_id) + "\n\nВыйдет точно в срок: если "
+             "в это время идёт сессия, приостановлю её, опубликую и досмотрю "
+             "остаток." + tail)
         return
 
-    send(f"Задача #{job_id}: {where}, публикую сейчас.")
+    send(postspec.describe(spec, job_id) + "\n\nПубликую сейчас." + tail)
 
     def work():
         import scheduler
@@ -648,6 +669,43 @@ def _handle(msg):
         send(report or "готово")
 
     _run(f"публикация #{job_id}", work)
+
+
+def _queue_text():
+    """Что ждёт публикации — номер, время, сети, начало описания."""
+    import postspec
+
+    rows = jobs.pending()
+    head = (f"Опубликовано сегодня: {jobs.count_today('done')}/"
+            f"{config.MAX_POSTS_PER_DAY} (с точным временем — сверх лимита)")
+    if not rows:
+        return head + "\nВ очереди пусто."
+    lines = [head, f"В очереди: {len(rows)}"]
+    now = time.time()
+    for row in rows[:15]:
+        when = ("сейчас" if (row["run_at"] or 0) <= now else
+                dt.datetime.fromtimestamp(row["run_at"]).strftime("%d.%m %H:%M"))
+        where = ", ".join(postspec.TITLES.get(t, t) for t in row["targets"].split(",") if t)
+        first = (row["caption"] or "(без описания)").splitlines()[0][:60]
+        lines.append(f"#{row['id']} · {when} · {where}\n   {first}")
+    return "\n".join(lines)
+
+
+def _cmd_cancel(text):
+    """/cancel 5 — убрать задачу #5 из очереди вместе с файлом."""
+    m = re.search(r"\d+", text)
+    if not m:
+        send("Какую отменить? Напиши номер: /cancel 5\n\n" + _queue_text())
+        return
+    row = jobs.cancel(int(m.group(0)))
+    if row is None:
+        send(f"Задачи #{m.group(0)} в очереди нет — уже вышла или отменена.")
+        return
+    try:
+        os.remove(row["video_path"])
+    except OSError:
+        pass
+    send(f"Задача #{row['id']} отменена, видео удалено.")
 
 
 # Почему бот сейчас не принимает сообщения — для окна и журнала. Пусто —

@@ -12,6 +12,7 @@ import time
 import config
 import jobs
 import plan
+import postspec
 import poster
 import runlog
 import session
@@ -173,15 +174,41 @@ def scan_watch_dir():
         if os.path.exists(txt):
             with open(txt, encoding="utf-8") as f:
                 caption = f.read().strip()
+        # .txt пишется тем же шаблоном, что и подпись в боте (`postspec`):
+        # «куда», «когда», «описание». Свободный текст без строк-ключей —
+        # описание для TikTok, как было.
+        spec = None
+        if postspec.is_template(caption):
+            try:
+                spec = postspec.parse(caption)
+            except postspec.SpecError as e:
+                jobs.log_event("skip", f"{name}: {e}")
+                runlog.Log(f"не беру «{name}»: {e}")
+                continue
 
         dst = os.path.join(config.QUEUE_DIR, name)
         os.replace(src, dst)
         if os.path.exists(txt):
             os.remove(txt)
 
-        job_id = jobs.add(dst, caption, targets="tiktok")
+        if spec is None:
+            job_id = jobs.add(dst, caption, targets="tiktok")
+        else:
+            job_id = jobs.add(dst, spec["caption"], targets=",".join(spec["targets"]),
+                              run_at=spec["when"].timestamp() if spec["when"] else None,
+                              captions=spec["captions"], exact=spec["exact"])
         added.append((job_id, name))
     return added
+
+
+def _tomorrow_same_time(job):
+    """Перенос поста, упёршегося в дневной лимит: завтра в то же время.
+
+    Не в полночь: раньше задача просто ждала смены суток и выходила в 00:00,
+    а пост посреди ночи — ровно то, чего человек не заказывал.
+    """
+    base = dt.datetime.fromtimestamp(max(job["run_at"] or 0, time.time()))
+    return (base + dt.timedelta(days=1)).timestamp()
 
 
 def run_post_job(notify=None, job_id=None):
@@ -190,19 +217,43 @@ def run_post_job(notify=None, job_id=None):
     `job_id` нужен боту: он присылает конкретное видео и ждёт отчёт именно по
     нему, а не по тому, что случайно оказалось первым в очереди.
     """
-    if jobs.count_today("done") >= config.MAX_POSTS_PER_DAY:
-        return "дневной лимит постов исчерпан"
-
     job = jobs.by_id(job_id) if job_id is not None else jobs.due()
     if job is None:
         return f"задачи #{job_id} нет" if job_id is not None else "очередь пуста"
 
+    # Дневной лимит — против разгона, а не против человека: пост с ЯВНО
+    # названным временем («когда: 18:30») выходит всегда. Остальное, упёршись
+    # в лимит, переносится на завтра в то же время — и человеку об этом
+    # говорится, а не задача молча ждёт полуночи.
+    if not job["exact"] and jobs.count_today("done") >= config.MAX_POSTS_PER_DAY:
+        when = _tomorrow_same_time(job)
+        jobs.reschedule(job["id"], when)
+        msg = (f"задача #{job['id']}: дневной лимит постов ({config.MAX_POSTS_PER_DAY}) "
+               f"на сегодня исчерпан — опубликую завтра в "
+               f"{dt.datetime.fromtimestamp(when):%H:%M}")
+        if notify:
+            notify(msg)
+        return msg
+
+    late = time.time() - (job["run_at"] or time.time())
+    if job["exact"] and late > 15 * 60 and notify:
+        notify(f"задача #{job['id']}: опаздываю на {late / 60:.0f} мин "
+               "(программа или телефон были недоступны) — публикую сейчас")
+
+    captions = jobs.captions_of(job)
     results, ok_all = [], True
     for target in job["targets"].split(","):
         target = target.strip()
         if not target:
             continue
-        ok, report = poster.post(job["video_path"], job["caption"], target)
+        text = postspec.fit(captions.get(target) or job["caption"], target)
+        try:
+            ok, report = poster.post(job["video_path"], text, target)
+        except Exception as e:
+            # Падение посреди маршрута не должно оставлять задачу «ждущей»:
+            # сторож очереди повторял бы её каждые 10 с, а расписание ждало бы
+            # её вечно (сессии уступают телефон подошедшей публикации).
+            ok, report = False, f"{target}: сбой публикации: {type(e).__name__}: {e}"
         ok_all &= ok
         results.append(report)
         if notify:
@@ -210,6 +261,45 @@ def run_post_job(notify=None, job_id=None):
 
     jobs.mark(job["id"], "done" if ok_all else "failed", "\n\n".join(results))
     return "\n\n".join(results)
+
+
+# Короче этого кусок не запускаем: две минуты — это разблокировка, открытие
+# приложения и пара роликов, сессией это уже не назовёшь.
+MIN_PIECE_SEC = 120
+
+
+def trimmed(seconds, late):
+    """Сколько смотреть, если сессия стартует с опозданием на `late` секунд.
+
+    Сессия по расписанию должна кончиться там же, где по плану: каждый кусок
+    смешанного блока тратит сверх своих минут ещё 15-40 с на разблокировку и
+    открытие приложения, и без поправки блок уползал за окно (замер
+    2026-10-08: в окне 21-22 при трёх сетях — до 1.6 мин в 180 случаях из
+    300). Опоздание больше минуты вычитается; осталось меньше
+    MIN_PIECE_SEC — кусок пропускается (None).
+    """
+    if not seconds:
+        return seconds
+    if late <= 60:
+        return seconds
+    left = seconds - late
+    return left if left >= MIN_PIECE_SEC else None
+
+
+def carry_over(items, done, running, day_start):
+    """Что из вчерашнего плана перенести в сегодняшний при смене суток.
+
+    Смешанный блок через полночь («23:30-00:30») строится в день начала, и
+    его куски после 00:00 стоят на завтрашнюю дату. Раньше в полночь план
+    просто перестраивался, и эти куски пропадали (симуляция 2026-10-08).
+    Переносим всё, что ещё не сделано и стоит на новые сутки, плюс идущий
+    сейчас кусок — по нему считается «продолжение блока».
+    """
+    out = []
+    for i, item in enumerate(items):
+        if i == running or (i not in done and item[0] >= day_start):
+            out.append((item, i in done or i == running, i == running))
+    return out
 
 
 def chained(items, i, now=None):

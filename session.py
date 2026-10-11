@@ -840,7 +840,8 @@ def _look_and_decide(state, app, index, taste, log):
     phases["база"] = time.time() - mark_at
     mark_at = time.time()
     skip, verdict, why, matched = interests.decide(
-        data, taste, state.get("expansions"), judge=vision.judge_topic)
+        data, taste, state.get("expansions"), judge=vision.judge_topic,
+        tuned=state.get("tuned"))
     phases["тема"] = time.time() - mark_at
 
     # Что именно совпало, нужно и ЗА пределами этой функции: заход в
@@ -869,8 +870,9 @@ def _look_and_decide(state, app, index, taste, log):
     # обрывать нечем — там потолок много скромнее.
     if watch:
         watch = min(watch, _deep_watch_seconds(state))
+    # Тема на чужом языке смотрится по-настоящему (15-25 с), а не вполглаза.
     mark = "листаю" if skip else ("вполглаза" if verdict == "нейтрально"
-                                  else "смотрю")
+                                  and not matched.get("тема") else "смотрю")
     # В логе именно ВРЕМЯ НА ЭКРАНЕ, а не время решения: раньше стояло второе,
     # и «вполглаза за 2.2с» читалось как «посмотрел две секунды», хотя это
     # думала модель, а просмотр шёл после строки.
@@ -883,7 +885,8 @@ def _look_and_decide(state, app, index, taste, log):
         detail = " [" + " ".join(f"{k} {v:.2f}" for k, v in phases.items()) + "]"
     log.append(f"  {mark} {watch:.1f}с (решение {time.time() - started:.1f}с){detail}: "
                f"{verdict} ({why}) — {str(data.get('тема', ''))[:46]}")
-    jobs.set_verdict(path, verdict, skip)
+    jobs.set_verdict(path, verdict, skip, matched.get("тема"))
+    _retune(state, app, taste, log)
     _watch_speed(state, phases, log)
     return verdict, skip, watch
 
@@ -921,6 +924,37 @@ def _leave_rearm(state, watched, log=None):
     state["leave_at"] = (watched + gap) if gap else 0
     if log is not None and gap:
         log.append(f"  (следующий выход из приложения через {gap} видео)")
+
+
+def _flick_rearm(state, watched):
+    """Через сколько роликов следующая очередь быстрых свайпов."""
+    gap = human.deep_watch_gap(span=getattr(config, "FLICK_EVERY", None),
+                               scale=state.get("daypart", 1.0))
+    state["flick_at"] = (watched + gap) if gap else 0
+
+
+def _next_video(state, w, h, watched, log, quick=False):
+    """Свайп на следующий ролик — иногда очередью из 2-3 без взгляда.
+
+    Человек не разглядывает каждый ролик: бывает, смахивает два-три подряд,
+    пока что-то не зацепит. Без этого каждый свайп у агента отделён от
+    соседнего решением модели, и ритм ленты слишком ровный. Очередь — без
+    кадров и без модели: смотреть там нечего, на то она и очередь.
+    """
+    human.scroll_feed(w, h, "up", quick=quick)
+    at = state.get("flick_at")
+    if at and watched >= at and not abort.requested():
+        low, high = getattr(config, "FLICK_BURST", (2, 3))
+        extra = random.randint(int(low), int(high)) - 1
+        pause_lo, pause_hi = getattr(config, "FLICK_PAUSE", (0.25, 0.8))
+        for _ in range(max(0, extra)):
+            if abort.sleep(random.uniform(pause_lo, pause_hi)):
+                break
+            human.scroll_feed(w, h, "up", quick=True)
+            state["flicked"] = state.get("flicked", 0) + 1
+        log.append(f"  смахнул {extra + 1} подряд не глядя")
+        _flick_rearm(state, watched)
+    state["shown_at"] = time.time()
 
 
 def _deep_watch_seconds(state):
@@ -1644,7 +1678,7 @@ def _plan_like(state, verdict, taste, watch, cfg, w, h, log):
     done = [False]
     empty = {"at": None, "do": None, "done": done}
 
-    chance = (interests.like_probability(verdict, taste)
+    chance = (interests.like_probability(verdict, taste, state.get("matched"))
               if verdict else config.LIKE_PROBABILITY)
     if not human.chance(chance):
         return empty
@@ -1665,7 +1699,26 @@ def _plan_like(state, verdict, taste, watch, cfg, w, h, log):
     return {"at": human.like_moment() * watch, "do": do, "done": done}
 
 
-def _rewatch_loops(verdict):
+def _retune(state, app, taste, log, force=False):
+    """Пересчитать, настроена ли лента (`interests.tuning`), раз в 10 роликов.
+
+    Этап меняется по ходу сессии: новый телефон за полчаса набирает нужный
+    язык, и с этого момента внимание переходит на тему. Смена этапа — в журнал.
+    """
+    state["tune_count"] = state.get("tune_count", 0) + 1
+    if not force and state["tune_count"] % 10:
+        return
+    try:
+        tuned = interests.tuning(app, taste)
+    except Exception:
+        return
+    old = (state.get("tuned") or {}).get("этап")
+    state["tuned"] = tuned
+    if force or old != tuned["этап"]:
+        log.append("  лента: " + tuned["текст"])
+
+
+def _rewatch_loops(verdict, matched=None):
     """Сколько раз разрешено пересмотреть ролик, прежде чем листать дальше.
 
     Просмотр обрывался на первом повторе ВСЕГДА — то есть агент не
@@ -1680,7 +1733,10 @@ def _rewatch_loops(verdict):
     """
     if verdict is not None and verdict != "интересно":
         return 0
-    return 1 if human.chance(config.REWATCH_PROBABILITY) else 0
+    # Редкая тема (см. `interests.tuning`) — пересмотр чаще: это самый
+    # сильный сигнал ленте «покажи ещё такое».
+    boost = float((matched or {}).get("усиление", 1.0) or 1.0)
+    return 1 if human.chance(min(0.4, config.REWATCH_PROBABILITY * boost)) else 0
 
 
 def _may_distract(state):
@@ -1964,6 +2020,11 @@ def browse(app="tiktok", duration=None, keep_open=False):
         # человек уставился в первый же ролик, выглядит странно.
         _deep_watch_rearm(state, 0)
         _leave_rearm(state, 0)
+        _flick_rearm(state, 0)
+        # Насколько лента уже настроена на язык и тему — от этого зависит,
+        # чему сейчас приоритет (`interests.tuning`).
+        if taste.get("тема") or taste.get("язык"):
+            _retune(state, app, taste, log, force=True)
         # «Настроение» сессии: медленно блуждает вокруг единицы и тянет за
         # собой время просмотра. Начинаем не с ровной единицы — сессии
         # начинаются по-разному.
@@ -2124,8 +2185,7 @@ def browse(app="tiktok", duration=None, keep_open=False):
                                     - (time.time() - state["shown_at"]))
                             if left > 0:
                                 abort.sleep(left)
-                        human.scroll_feed(w, h, "up", quick=True)
-                        state["shown_at"] = time.time()
+                        _next_video(state, w, h, watched, log, quick=True)
                         continue
                     # Досматриваем ОСТАТОК: ролик уже висит на экране с момента
                     # свайпа, и запуск приложения, съёмка кадра и ответ модели —
@@ -2137,7 +2197,7 @@ def browse(app="tiktok", duration=None, keep_open=False):
                         watch = human.dwell()
                     plan = _plan_like(state, verdict, taste, watch, cfg, w, h, log)
                     _watch_video(state, watch, log, at=plan["at"], do=plan["do"],
-                                 loops=_rewatch_loops(verdict))
+                                 loops=_rewatch_loops(verdict, state.get("matched")))
                 else:
                     # Слепой режим: вердиктов нет, но залипание тут тем более
                     # уместно — иначе все ролики получают время из одного и
@@ -2215,8 +2275,7 @@ def browse(app="tiktok", duration=None, keep_open=False):
                     log.append("  выходил из приложения и вернулся")
                     _leave_rearm(state, watched, log)
 
-                human.scroll_feed(w, h, "up")
-                state["shown_at"] = time.time()
+                _next_video(state, w, h, watched, log)
 
                 # Иногда человек возвращается к предыдущему видео.
                 if human.chance(0.04):
@@ -2292,7 +2351,9 @@ def browse(app="tiktok", duration=None, keep_open=False):
         if saved_links:
             summary += f", {saved_links} ссылок сохранено"
         if skipped_by_taste:
-            summary += f", {skipped_by_taste} пролистано не глядя"
+            summary += f", {skipped_by_taste} пролистано не по вкусу"
+        if state.get("flicked"):
+            summary += f", {state['flicked']} смахнуто очередью не глядя"
         log.append(summary)
         if config.VISION_CAPTURE and watched:
             tail = "" if config.VISION_REALTIME else "  (разобрать: python main.py analyze)"

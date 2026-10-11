@@ -288,14 +288,18 @@ def _mix(day, group):
     order = _interleave(parts)
     gaps = [random.uniform(gap_lo, gap_hi) for _ in order[1:]]
 
-    # Паузы между кусками тоже занимают окно — если с ними не влезает,
-    # ужимаем ещё (куски, а не паузы: «переключился» должно остаться).
-    busy = sum(s for _, s in order) + sum(gaps)
+    # Паузы между кусками тоже занимают окно, и каждый кусок сверх своих
+    # минут тратит время на разблокировку и открытие приложения
+    # (PLAN_PIECE_OVERHEAD_SEC). Без этого запаса блок уползал за окно на
+    # минуту-полторы (симуляция 2026-10-08). Не влезает — ужимаем куски, а
+    # не паузы: «переключился» должно остаться.
+    extra = sum(gaps) + _overhead() * len(order)
+    busy = sum(s for _, s in order) + extra
     if span_sec > 0 and busy > span_sec:
-        k = max(0.05, (span_sec - sum(gaps)) / max(1.0, sum(s for _, s in order)))
+        k = max(0.05, (span_sec - extra) / max(1.0, sum(s for _, s in order)))
         order = [(app, s * k) for app, s in order]
         squeeze *= k
-        busy = sum(s for _, s in order) + sum(gaps)
+        busy = sum(s for _, s in order) + extra
 
     room = max(0.0, span_sec - busy)
     start = first * 60 + random.uniform(0, room)
@@ -307,6 +311,12 @@ def _mix(day, group):
         when += dt.timedelta(seconds=seconds + (gaps[n] if n < len(gaps) else 0))
     LAST_SQUEEZE[first] = squeeze
     return out
+
+
+def _overhead():
+    """Сколько секунд кусок тратит сверх своих минут: разблокировка,
+    открытие приложения, проверка ленты, досмотр последнего ролика."""
+    return float(getattr(config, "PLAN_PIECE_OVERHEAD_SEC", 40))
 
 
 # Во сколько раз пришлось ужать блок, чтобы он влез в окно — по началу окна.
@@ -341,7 +351,7 @@ def for_date(day=None, rules=None):
             # Начало — так, чтобы сессия кончилась в окне, если влезает;
             # длиннее окна — начинается в его начале (смысл «с 21 до 22»
             # человек вкладывает именно такой).
-            room = max(0.0, span - seconds / 60)
+            room = max(0.0, span - (seconds + _overhead()) / 60)
             at = (start + random.uniform(0, room)) % (24 * 60)
             when = dt.datetime.combine(day, dt.time()) + dt.timedelta(minutes=at)
             out.append((when, app, seconds))

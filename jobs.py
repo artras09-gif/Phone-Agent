@@ -3,6 +3,7 @@
 Зачем БД, а не список в памяти: ПК перезагрузится, служба упадёт —
 задачи останутся. Плюс видно историю и можно повторить упавшее.
 """
+import json
 import os
 import sqlite3
 import time
@@ -67,8 +68,15 @@ MIGRATIONS = {
                 # Размер кадра в КБ — пишется при разборе, потому что сам кадр
                 # после разбора удаляется, а по размеру `stats` узнаёт пустые
                 # (погашенный экран) кадры.
-                ("frame_kb", "INTEGER DEFAULT 0")],
-    "jobs": [("device", "TEXT DEFAULT ''")],
+                ("frame_kb", "INTEGER DEFAULT 0"),
+                # Совпала ли тема: 1 / 0, -1 — тему не проверяли. По этому
+                # `interests.tuning` понимает, насколько лента уже про тему.
+                ("on_topic", "INTEGER DEFAULT -1")],
+    # captions — своё описание для отдельных сетей (JSON {сеть: текст});
+    # exact — время названо явно: ради него сессия приостанавливается
+    # (см. `postspec`, 2026-10-11).
+    "jobs": [("device", "TEXT DEFAULT ''"), ("captions", "TEXT DEFAULT ''"),
+             ("exact", "INTEGER DEFAULT 0")],
     "events": [("device", "TEXT DEFAULT ''")],
     "links": [("sent", "REAL DEFAULT 0")],
 }
@@ -169,15 +177,42 @@ def recategorize(con):
     return moved
 
 
-def add(video_path, caption="", targets="tiktok", run_at=None):
+def add(video_path, caption="", targets="tiktok", run_at=None, captions=None,
+        exact=False):
     with connect() as con:
         cur = con.execute(
             "INSERT INTO jobs (video_path, caption, targets, run_at, created_at,"
-            " device) VALUES (?,?,?,?,?,?)",
+            " device, captions, exact) VALUES (?,?,?,?,?,?,?,?)",
             (video_path, caption, targets, run_at or time.time(), time.time(),
-             DEVICE),
+             DEVICE, json.dumps(captions or {}, ensure_ascii=False),
+             1 if exact else 0),
         )
         return cur.lastrowid
+
+
+def captions_of(job):
+    """Своё описание для отдельных сетей задачи: {сеть: текст}."""
+    try:
+        data = json.loads(job["captions"] or "{}")
+    except (KeyError, IndexError, TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def cancel(job_id):
+    """Отменить задачу из очереди. Возвращает строку задачи или None."""
+    with connect() as con:
+        row = con.execute("SELECT * FROM jobs WHERE id=? AND status='pending'",
+                          (job_id,)).fetchone()
+        if row is not None:
+            con.execute("UPDATE jobs SET status='cancelled', done_at=? WHERE id=?",
+                        (time.time(), job_id))
+    return row
+
+
+def reschedule(job_id, run_at):
+    with connect() as con:
+        con.execute("UPDATE jobs SET run_at=? WHERE id=?", (run_at, job_id))
 
 
 def due(now=None):
@@ -342,11 +377,31 @@ def mark_links_sent(ids):
         return cur.rowcount
 
 
-def set_verdict(frame, verdict, skipped):
+def set_verdict(frame, verdict, skipped, on_topic=None):
+    topic = -1 if on_topic is None else (1 if on_topic else 0)
     with connect() as con:
-        con.execute("UPDATE content SET verdict=?, skipped=?, rules=? "
+        con.execute("UPDATE content SET verdict=?, skipped=?, rules=?, on_topic=? "
                     "WHERE frame=?",
-                    (verdict, 1 if skipped else 0, RULES, frame))
+                    (verdict, 1 if skipped else 0, RULES, topic, frame))
+
+
+def recent_feed(app, limit=40, days=14):
+    """Последние разобранные ролики ленты: [(язык, по_теме)], новые первыми.
+
+    Без рекламы и без кадров-сбоев — они не про то, что лента показывает.
+    По_теме: True/False или None, если тему не проверяли.
+    """
+    import vision
+
+    since = time.time() - days * 86400
+    mine, dev = _mine()
+    with connect() as con:
+        rows = con.execute(
+            "SELECT lang, on_topic FROM content WHERE app=? AND at>=? AND ad=0 "
+            "AND category!=?" + mine + " ORDER BY at DESC LIMIT ?",
+            (app, since, vision.NOT_PARSED) + dev + (int(limit),)).fetchall()
+    return [(r["lang"] or "", None if r["on_topic"] in (None, -1) else bool(r["on_topic"]))
+            for r in rows]
 
 
 def analyzed_frames():
