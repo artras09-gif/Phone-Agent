@@ -56,7 +56,7 @@ tb._cmd_links = real_links
 out = press(tb.BTN_POST)
 body = out[0]["text"] if out else ""
 ok &= say(bool(out) and "reply_markup" in out[0], "кнопка Постинг отвечает с клавиатурой")
-ok &= say("В очереди" in body and "ВИДЕО файлом" in body,
+ok &= say("В очереди" in body and "ВИДЕО" in body and "кнопками" in body,
           "в ответе есть очередь и как публиковать")
 ok &= say(body.count(chr(10)) >= 3, "ответ разбит на строки, а не слеплен")
 

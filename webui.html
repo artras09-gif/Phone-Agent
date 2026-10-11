@@ -187,6 +187,33 @@ label.field{display:flex;flex-direction:column;gap:6px;font-size:12.5px;color:va
 .chip.quick:hover{opacity:1}
 .day-sep{width:1px;align-self:stretch;background:var(--line);margin:0 4px}
 
+/* Насколько настроены ленты (вкладка «Вкусы»): карточка на соцсеть,
+   две шкалы — язык с порогом и тема. */
+.tune-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;margin-top:14px}
+.tune{background:var(--panel-2);border:1px solid var(--line);border-radius:12px;
+  padding:14px 16px 13px;display:flex;flex-direction:column;gap:12px}
+.tune-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.tune-name{display:flex;align-items:center;gap:9px;font-weight:600;font-size:15px}
+.tune-dot{width:10px;height:10px;border-radius:50%;flex:none}
+.stage{font-size:12px;padding:3px 10px;border-radius:999px;white-space:nowrap;border:1px solid}
+.stage.lang{background:rgba(255,176,32,.10);color:var(--warn);border-color:rgba(255,176,32,.35)}
+.stage.topic{background:rgba(61,220,132,.10);color:var(--ok);border-color:rgba(61,220,132,.35)}
+.stage.none{background:transparent;color:var(--muted);border-color:var(--line)}
+.meter-row{display:grid;grid-template-columns:1fr auto;align-items:baseline;gap:6px 10px;font-size:12.5px;color:var(--muted)}
+.meter-row .val{color:var(--text);font-weight:600;font-size:14px;font-variant-numeric:tabular-nums}
+.meter-row .val.dim{color:var(--muted);font-weight:500;font-size:12px}
+.meter{grid-column:1/-1;position:relative;height:8px;border-radius:999px;background:var(--bg)}
+.meter i{display:block;height:100%;border-radius:999px;transition:width .5s ease}
+.meter .mark{position:absolute;top:-4px;bottom:-4px;width:2px;margin-left:-1px;border-radius:2px;background:var(--text);opacity:.5}
+.meter.empty{background:repeating-linear-gradient(-45deg,var(--bg) 0 6px,var(--panel) 6px 12px)}
+.tune-note{font-size:12.5px;color:var(--muted);line-height:1.5;border-top:1px solid var(--line);padding-top:10px}
+.tune-note b{color:var(--text);font-weight:550}
+.tune-foot{font-size:11.5px;color:var(--muted);opacity:.8}
+.lang-split{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+.lang-split span{font-size:11.5px;padding:1px 8px;border-radius:999px;background:var(--bg);
+  border:1px solid var(--line);color:var(--muted);font-variant-numeric:tabular-nums}
+.lang-split span b{color:var(--text);font-weight:600}
+
 .running{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--accent-2)}
 .spin{
   width:13px;height:13px;border-radius:50%;flex:none;
@@ -462,7 +489,10 @@ pre.report{
 
       <div class="card">
         <h2>Насколько ленты уже настроены</h2>
-        <p class="hint" style="margin:0" id="t-tuning">считаю...</p>
+        <p class="hint" style="margin:0">Каждая соцсеть учится отдельно, по последним
+          40 роликам. Сначала лента привыкает к языку — потом всё внимание теме.
+          Черта на шкале языка — порог, после которого язык считается настроенным.</p>
+        <div class="tune-grid" id="t-tuning"></div>
       </div>
 
       <div class="card">
@@ -747,9 +777,7 @@ function render(s){
     pickedLangs = (s.taste.lang || "").split(",").map(x => x.trim()).filter(Boolean);
     renderLangs();
   }
-  $("t-tuning").innerHTML = (s.taste.tuning || []).length
-    ? s.taste.tuning.map(t => "<b>" + esc(t.title) + "</b>: " + esc(t.text)).join("<br>")
-    : "задай тему или язык — тогда покажу";
+  renderTuning(s.taste.tuning || [], s.taste.topic || "");
 
   const sel = $("q-target");
   if(!sel.options.length){
@@ -1268,6 +1296,80 @@ function renderLangs(){
     box.append(chip);
   });
 }
+// Карточки «насколько настроены ленты». Перерисовываем, только когда данные
+// поменялись: страница опрашивает раз в секунду, а шкалы анимированы.
+const APP_COLORS = {tiktok: "#25f4ee", shorts: "#ff3040",
+                    reels: "linear-gradient(135deg,#f58529,#dd2a7b,#8134af)"};
+let tuningShown = "";
+function renderTuning(rows, topic){
+  const key = JSON.stringify([rows, topic]);
+  if(key === tuningShown) return;
+  tuningShown = key;
+  const box = $("t-tuning");
+  if(!rows.length){
+    box.innerHTML = '<p class="hint" style="margin:0">Задай тему или отметь язык — тогда покажу.</p>';
+    return;
+  }
+  box.innerHTML = rows.map(t => tuneCard(t, topic)).join("");
+}
+function pct(x){ return Math.round(x * 100) + "%"; }
+function meter(label, value, seen, color, mark, extra){
+  extra = extra || "";
+  if(value === null || value === undefined){
+    return '<div class="meter-row"><span>' + label + '</span>' +
+      '<span class="val dim">мало данных: ' + seen + ' из 10</span>' +
+      '<div class="meter empty">' + (mark ? '<span class="mark" style="left:' + pct(mark) + '"></span>' : '') +
+      '</div></div>';
+  }
+  return '<div class="meter-row"><span>' + label + '</span>' +
+    '<span class="val">' + pct(value) + '</span>' +
+    '<div class="meter"><i style="width:' + Math.max(2, value * 100) + '%;background:' + color + '"></i>' +
+    (mark ? '<span class="mark" style="left:' + pct(mark) + '" title="порог ' + pct(mark) + '"></span>' : '') +
+    '</div>' + extra + '</div>';
+}
+// Несколько языков — под общей шкалой доля каждого: «ru 60% · en 17%».
+function langSplit(t){
+  const langs = t.langs || [];
+  if(langs.length < 2 || !t.per_lang) return "";
+  return '<div class="lang-split">' + langs.map(l =>
+    '<span>' + esc(l) + ' <b>' + (t.per_lang[l] === null || t.per_lang[l] === undefined
+      ? '—' : pct(t.per_lang[l])) + '</b></span>').join("") + '</div>';
+}
+function tuneCard(t, topic){
+  const langs = (t.langs || []).join(" / ");
+  let stage, cls, note;
+  if(!langs && !topic){
+    stage = "ничего не задано"; cls = "none"; note = "Смотрю всё подряд.";
+  }else if(!topic){
+    stage = "только язык"; cls = "none";
+    note = "Тема не задана — смотрю всё на нужном языке.";
+  }else if(t.stage === "язык"){
+    stage = "учу язык"; cls = "lang";
+    note = "Пока роликов на нужном языке меньше <b>" + pct(t.need) + "</b>, ролики на своём языке " +
+      "смотрю по 3–7 секунд, даже не по теме — так лента быстрее понимает язык.";
+  }else{
+    stage = "упор на тему"; cls = "topic";
+    note = (langs ? "Язык настроен. " : "") + "Всё не по теме листаю сразу" +
+      (t.boost > 1 ? ", а тема пока редкая — лайкаю её <b>в " + t.boost + " раза чаще</b>." : ".");
+  }
+  const langColor = (t.lang !== null && t.lang >= t.need) ? "var(--ok)" : "var(--warn)";
+  const parts = [
+    langs ? meter((t.langs.length > 1 ? "Языки " : "Язык ") + esc(langs) +
+                  (t.langs.length > 1 ? " (вместе)" : ""), t.lang, t.lang_seen, langColor, t.need, langSplit(t))
+          : '<div class="meter-row"><span>Язык</span><span class="val dim">не важен</span></div>',
+    topic ? meter("Тема «" + esc(topic) + "»", t.topic, t.topic_seen, "var(--accent-2)", 0)
+          : '<div class="meter-row"><span>Тема</span><span class="val dim">не задана</span></div>',
+  ];
+  return '<div class="tune">' +
+    '<div class="tune-head"><span class="tune-name"><span class="tune-dot" style="background:' +
+      (APP_COLORS[t.id] || "var(--muted)") + '"></span>' + esc(t.title) + '</span>' +
+      '<span class="stage ' + cls + '">' + stage + '</span></div>' +
+    parts.join("") +
+    '<div class="tune-note">' + note + '</div>' +
+    '<div class="tune-foot">по последним ' + t.videos + ' роликам</div>' +
+  '</div>';
+}
+
 function esc(t){
   return String(t).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 }

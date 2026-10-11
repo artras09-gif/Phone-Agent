@@ -554,11 +554,9 @@ def _handle(msg):
     if text.startswith("/start"):
         when = ", ".join(config.LINKS_DIGEST_TIMES) or "только по команде"
         send("Работаю.\n\n"
-             "ВИДЕО файлом с подписью — опубликую. Точный текст, сети и "
-             "время — по шаблону: /template\n"
-             "Коротко тоже можно: «кот смешной тикток в 18:30» — сети и "
-             "время найду в тексте сам.\n"
-             "/queue — что ждёт публикации, /cancel 5 — отменить задачу #5\n\n"
+             "ВИДЕО с подписью — опубликую. Подпись = описание поста, "
+             "как есть. Куда и когда — выберешь кнопками.\n"
+             "/queue — что ждёт публикации, /cancel 5 — отменить пост #5\n\n"
              "ССЫЛКУ — сохраню в подборку. Любая соцсеть: TikTok, YouTube, "
              "Instagram, VK, X, Telegram, Pinterest, Reddit и прочие. "
              "Можно несколько сразу и с припиской — она станет заметкой.\n\n"
@@ -583,8 +581,8 @@ def _handle(msg):
     if text == BTN_POST or text.startswith("/queue") or text.lower() == "очередь":
         # Публикацию кнопкой не заменить — нужен сам файл. Поэтому здесь
         # очередь и напоминание, как прислать видео.
-        send(_queue_text() + "\n\nЧтобы опубликовать — пришли ВИДЕО файлом. "
-             "Шаблон подписи: /template", keyboard=True)
+        send(_queue_text() + "\n\nЧтобы опубликовать — пришли ВИДЕО с подписью "
+             "(подпись = описание). Куда и когда — выберешь кнопками.", keyboard=True)
         return
     if text.startswith("/template") or text.lower() in ("шаблон", "/шаблон"):
         import postspec
@@ -595,6 +593,9 @@ def _handle(msg):
         return
     if text.startswith("/links") or text.lower().startswith("ссылки"):
         _cmd_links(text)
+        return
+    if text and not (msg.get("video") or msg.get("document") or msg.get("animation")) \
+            and _take_time_answer(chat_id, text):
         return
 
     # Ссылки принимаем до видео: сообщение со ссылкой — это не публикация,
@@ -612,22 +613,26 @@ def _handle(msg):
                  keyboard=True)
         return
 
-    import postspec
-
-    try:
-        spec = postspec.parse(text)
-    except postspec.SpecError as e:
-        send(f"Не понял подпись: {e}.\nШаблон: /template")
-        return
-    targets, when, caption = spec["targets"], spec["when"], spec["caption"]
-
     size_mb = (video.get("file_size") or 0) / 1024 / 1024
     if size_mb > MAX_DOWNLOAD_MB:
         send(f"Файл {size_mb:.0f} МБ, а Telegram отдаёт боту только до "
              f"{MAX_DOWNLOAD_MB} МБ — это его ограничение. Сожми видео "
-             "(или пришли его сжатым видео, а не файлом) — или положи файл "
-             "в папку watch программы, рядом .txt с тем же шаблоном.")
+             "(или пришли его как видео, а не файлом) — или положи файл "
+             "в папку watch программы.")
         return
+
+    import postspec
+
+    # Подпись со служебными строками («куда:», «когда:») — старый шаблон,
+    # для тех, кто к нему привык. Обычная подпись — это ПРОСТО описание:
+    # уходит в пост как есть, а куда и когда — человек выбирает кнопками.
+    spec = None
+    if postspec.is_template(text):
+        try:
+            spec = postspec.parse(text)
+        except postspec.SpecError as e:
+            send(f"Не понял подпись: {e}.")
+            return
 
     send("Качаю...")
     path = _download(video["file_id"], config.QUEUE_DIR)
@@ -648,27 +653,237 @@ def _handle(msg):
         send(f"Не беру: {why}")
         return
 
-    job_id = jobs.add(path, caption=caption, targets=",".join(targets),
-                      run_at=when.timestamp() if when else None,
-                      captions=spec["captions"], exact=spec["exact"])
-
-    # Подтверждение — ровно то, что уйдёт в пост: сети, время, текст. Ошибку
-    # в подписи человек видит сразу, а не после публикации.
-    tail = f"\n\nОтменить: /cancel {job_id}"
-    if when is not None:
-        send(postspec.describe(spec, job_id) + "\n\nВыйдет точно в срок: если "
-             "в это время идёт сессия, приостановлю её, опубликую и досмотрю "
-             "остаток." + tail)
+    if spec is None:
+        # Черновик: публиковать его нельзя, пока не нажата кнопка времени.
+        job_id = jobs.add(path, caption=text, targets=",".join(_default_targets()),
+                          status="draft")
+        _send_draft(job_id)
         return
 
-    send(postspec.describe(spec, job_id) + "\n\nПубликую сейчас." + tail)
+    job_id = jobs.add(path, caption=spec["caption"], targets=",".join(spec["targets"]),
+                      run_at=spec["when"].timestamp() if spec["when"] else None,
+                      captions=spec["captions"], exact=spec["exact"])
+    send(postspec.describe(spec, job_id) + f"\n\nОтменить: /cancel {job_id}")
+    if spec["when"] is None:
+        _publish_now(job_id)
 
+
+# --------------------------------------------------- пост кнопками (2026-10-11)
+#
+# «Какая-то странная хуйня, как-то проще можно?» — про шаблон «куда/когда/
+# описание». Можно: подпись к видео — это описание, а сети и время выбираются
+# кнопками под одним сообщением. Состояние черновика живёт в базе (сети — в
+# `jobs.targets`, статус 'draft'), поэтому кнопки работают и после перезапуска.
+
+TARGET_ORDER = ("tiktok", "reels", "shorts")
+_ASK_TIME = {}          # чат -> задача, для которой ждём «своё время» текстом
+
+
+def _defaults_path():
+    return os.path.join(config.BASE, "bot_post.json")
+
+
+def _default_targets():
+    """Какие сети отмечены сразу: те, что выбирали в прошлый раз. Впервые — все."""
+    try:
+        with open(_defaults_path(), encoding="utf-8") as f:
+            saved = [t for t in json.load(f).get("targets", []) if t in TARGET_ORDER]
+        if saved:
+            return saved
+    except (OSError, ValueError, AttributeError):
+        pass
+    return list(TARGET_ORDER)
+
+
+def _remember_targets(targets):
+    try:
+        with open(_defaults_path(), "w", encoding="utf-8") as f:
+            json.dump({"targets": targets}, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def _time_choices(now=None):
+    """Кнопки времени: (подпись, код). Вечер — сегодня, если ещё не поздно."""
+    now = now or dt.datetime.now()
+    evening = "сегодня 19:00" if now.hour < 18 else "завтра 19:00"
+    return [("▶️ Сейчас", "now"), ("⏱ Через час", "1h"),
+            ("🌆 " + evening.capitalize(), "eve"), ("☀️ Завтра 12:00", "tom12"),
+            ("🕐 Своё время", "ask")]
+
+
+def _when_of(code, now=None):
+    """Код кнопки -> (datetime или None, точное ли)."""
+    now = now or dt.datetime.now()
+    if code == "now":
+        return None, False
+    if code == "1h":
+        return (now + dt.timedelta(hours=1)).replace(second=0, microsecond=0), True
+    if code == "eve":
+        day = now.date() if now.hour < 18 else now.date() + dt.timedelta(days=1)
+        return dt.datetime.combine(day, dt.time(19, 0)), True
+    if code == "tom12":
+        return dt.datetime.combine(now.date() + dt.timedelta(days=1), dt.time(12, 0)), True
+    raise ValueError(code)
+
+
+def _draft_markup(job):
+    import postspec
+
+    picked = [t for t in job["targets"].split(",") if t]
+    jid = job["id"]
+    nets = [{"text": ("✅ " if t in picked else "⬜ ") + postspec.TITLES[t].split()[-1],
+             "callback_data": f"t:{jid}:{t}"} for t in TARGET_ORDER]
+    times = [{"text": label, "callback_data": f"w:{jid}:{code}"}
+             for label, code in _time_choices()]
+    rows = [nets, times[:2], times[2:4], [times[4],
+            {"text": "✖️ Отмена", "callback_data": f"x:{jid}"}]]
+    return json.dumps({"inline_keyboard": rows}, ensure_ascii=False)
+
+
+def _draft_text(job):
+    caption = (job["caption"] or "").strip()
+    body = caption if caption else "(без описания — пришли видео с подписью, если нужно)"
+    if len(body) > 900:
+        body = body[:900] + "…"
+    return (f"🎬 Видео #{job['id']} получил.\n\nОписание:\n{body}\n\n"
+            "Отметь сети и нажми, когда публиковать 👇")
+
+
+def _send_draft(job_id):
+    job = jobs.by_id(job_id)
+    cfg = load_settings()
+    target = current_chat() or cfg["owner"]
+    _call("sendMessage", {"chat_id": target, "text": _draft_text(job),
+                          "reply_markup": _draft_markup(job)}, timeout=20)
+
+
+def _edit(chat_id, message_id, text, markup=None):
+    params = {"chat_id": chat_id, "message_id": message_id, "text": text}
+    if markup is not None:
+        params["reply_markup"] = markup
+    return _call("editMessageText", params, timeout=20)
+
+
+def _scheduled_text(job, when):
+    import postspec
+
+    where = ", ".join(postspec.TITLES[t] for t in job["targets"].split(",") if t)
+    if when is None:
+        moment = "сейчас"
+    else:
+        days = (when.date() - dt.date.today()).days
+        day = {0: "сегодня", 1: "завтра", 2: "послезавтра"}.get(days, f"{when:%d.%m}")
+        moment = f"{day} в {when:%H:%M}"
+    caption = (job["caption"] or "").strip() or "(без описания)"
+    if len(caption) > 600:
+        caption = caption[:600] + "…"
+    text = (f"✅ Пост #{job['id']}: {where} — {moment}\n\n{caption}")
+    if "shorts" in job["targets"]:
+        title = postspec.fit(postspec.shorts_title(job["caption"] or ""), "shorts")
+        if title != (job["caption"] or "").strip():
+            text += f"\n\nНазвание на YouTube: {title or '(пусто)'}"
+    if when is not None:
+        text += "\n\nВыйдет точно в срок: если в это время идёт сессия, приостановлю её."
+    return text
+
+
+def _cancel_markup(job_id):
+    return json.dumps({"inline_keyboard": [[{"text": "✖️ Отменить пост",
+                                             "callback_data": f"x:{job_id}"}]]})
+
+
+def _schedule(job_id, when, exact, chat_id=None, message_id=None):
+    """Черновик -> очередь. Отвечает правкой того же сообщения, если оно есть."""
+    jobs.schedule(job_id, when.timestamp() if when else None, exact)
+    job = jobs.by_id(job_id)
+    _remember_targets([t for t in job["targets"].split(",") if t])
+    text = _scheduled_text(job, when)
+    if message_id:
+        _edit(chat_id, message_id, text, _cancel_markup(job_id))
+    else:
+        send(text)
+    if when is None:
+        _publish_now(job_id)
+
+
+def _publish_now(job_id):
     def work():
         import scheduler
         report = scheduler.run_post_job(job_id=job_id)
         send(report or "готово")
 
     _run(f"публикация #{job_id}", work)
+
+
+def _handle_callback(cq):
+    """Нажатие кнопки под сообщением бота."""
+    data = str(cq.get("data") or "")
+    msg = cq.get("message") or {}
+    chat_id = str((msg.get("chat") or {}).get("id", ""))
+    message_id = msg.get("message_id")
+    set_reply(chat_id)
+    note = ""
+    try:
+        kind, jid, *rest = data.split(":")
+        job = jobs.by_id(int(jid))
+    except (ValueError, TypeError):
+        job = None
+        kind = ""
+    if job is None:
+        note = "этой задачи уже нет"
+    elif kind == "x":
+        if jobs.cancel(job["id"]) is not None:
+            try:
+                os.remove(job["video_path"])
+            except OSError:
+                pass
+            _edit(chat_id, message_id, f"✖️ Пост #{job['id']} отменён, видео удалено.")
+        else:
+            note = "уже опубликован или отменён"
+    elif job["status"] in ("cancelled", "done", "failed"):
+        note = {"cancelled": "этот пост отменён", "done": "этот пост уже опубликован",
+                "failed": "этот пост не удалось опубликовать"}[job["status"]]
+    elif job["status"] != "draft":
+        note = "время уже выбрано — отменить можно кнопкой «Отменить пост»"
+    elif kind == "t":
+        picked = [t for t in job["targets"].split(",") if t]
+        target = rest[0] if rest else ""
+        picked = [t for t in picked if t != target] if target in picked else picked + [target]
+        picked = [t for t in TARGET_ORDER if t in picked]
+        jobs.set_targets(job["id"], ",".join(picked))
+        _edit(chat_id, message_id, _draft_text(jobs.by_id(job["id"])),
+              _draft_markup(jobs.by_id(job["id"])))
+    elif kind == "w":
+        code = rest[0] if rest else ""
+        if not [t for t in job["targets"].split(",") if t]:
+            note = "отметь хотя бы одну сеть"
+        elif code == "ask":
+            _ASK_TIME[chat_id] = (job["id"], message_id)
+            send("Напиши время одним сообщением: 18:30, завтра 9:00, 12.10 18:30 или пт 20:00")
+        else:
+            when, exact = _when_of(code)
+            _schedule(job["id"], when, exact, chat_id, message_id)
+    _call("answerCallbackQuery", {"callback_query_id": cq.get("id", ""),
+                                  "text": note}, timeout=10)
+
+
+def _take_time_answer(chat_id, text):
+    """Ответ на «Своё время». True — сообщение было про время и обработано."""
+    waiting = _ASK_TIME.get(chat_id)
+    if not waiting:
+        return False
+    import postspec
+
+    job_id, message_id = waiting
+    try:
+        when, exact = postspec.parse_when(text)
+    except postspec.SpecError as e:
+        send(f"Не понял: {e}. Ещё раз — например 18:30 или завтра 9:00")
+        return True
+    _ASK_TIME.pop(chat_id, None)
+    _schedule(job_id, when, exact, chat_id, message_id)
+    return True
 
 
 def _queue_text():
@@ -744,6 +959,7 @@ def poll_forever():
     print(f"[бот] {'запущен: ' + info if ok else info}", flush=True)
     if not ok and "не принят" in info:
         _TROUBLE["text"] = REJECTED
+    _drop_stale_drafts()
     offset = 0
     said = ""
     while True:
@@ -761,6 +977,20 @@ def poll_forever():
             time.sleep(RETRY_SEC)
 
 
+def _drop_stale_drafts():
+    """Видео прислали, а кнопку времени так и не нажали — через 2 дня убираем,
+    чтобы файлы не копились в очереди."""
+    try:
+        for row in jobs.stale_drafts():
+            jobs.cancel(row["id"])
+            try:
+                os.remove(row["video_path"])
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 class _PollFailed(Exception):
     pass
 
@@ -775,6 +1005,14 @@ def _poll_once(offset):
         _TROUBLE["text"] = ""
     for upd in res.get("result", []):
         offset = upd["update_id"] + 1
+        if upd.get("callback_query"):
+            try:
+                _handle_callback(upd["callback_query"])
+            except Exception as e:
+                send(f"ошибка кнопки: {type(e).__name__}: {e}")
+            finally:
+                set_reply(None)
+            continue
         msg = upd.get("message") or upd.get("channel_post")
         if msg:
             try:

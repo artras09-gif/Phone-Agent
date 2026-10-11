@@ -71,7 +71,10 @@ MIGRATIONS = {
                 ("frame_kb", "INTEGER DEFAULT 0"),
                 # Совпала ли тема: 1 / 0, -1 — тему не проверяли. По этому
                 # `interests.tuning` понимает, насколько лента уже про тему.
-                ("on_topic", "INTEGER DEFAULT -1")],
+                ("on_topic", "INTEGER DEFAULT -1"),
+                # На какую тему проверяли: сменили тему во «Вкусах» — старые
+                # отметки «по теме» к новой не относятся.
+                ("topic_key", "TEXT DEFAULT ''")],
     # captions — своё описание для отдельных сетей (JSON {сеть: текст});
     # exact — время названо явно: ради него сессия приостанавливается
     # (см. `postspec`, 2026-10-11).
@@ -178,16 +181,38 @@ def recategorize(con):
 
 
 def add(video_path, caption="", targets="tiktok", run_at=None, captions=None,
-        exact=False):
+        exact=False, status="pending"):
+    """Задача в очередь. status="draft" — черновик из бота: видео скачано, но
+    сети и время человек ещё выбирает кнопками; публиковать его нельзя."""
     with connect() as con:
         cur = con.execute(
             "INSERT INTO jobs (video_path, caption, targets, run_at, created_at,"
-            " device, captions, exact) VALUES (?,?,?,?,?,?,?,?)",
+            " device, captions, exact, status) VALUES (?,?,?,?,?,?,?,?,?)",
             (video_path, caption, targets, run_at or time.time(), time.time(),
              DEVICE, json.dumps(captions or {}, ensure_ascii=False),
-             1 if exact else 0),
+             1 if exact else 0, status),
         )
         return cur.lastrowid
+
+
+def set_targets(job_id, targets):
+    with connect() as con:
+        con.execute("UPDATE jobs SET targets=? WHERE id=?", (targets, job_id))
+
+
+def schedule(job_id, run_at, exact):
+    """Черновик -> в очередь: время выбрано."""
+    with connect() as con:
+        con.execute("UPDATE jobs SET run_at=?, exact=?, status='pending' "
+                    "WHERE id=? AND status IN ('draft', 'pending')",
+                    (run_at or time.time(), 1 if exact else 0, job_id))
+
+
+def stale_drafts(days=2):
+    """Черновики, про которые забыли: видео прислали, кнопку не нажали."""
+    with connect() as con:
+        return con.execute("SELECT * FROM jobs WHERE status='draft' AND created_at<?",
+                           (time.time() - days * 86400,)).fetchall()
 
 
 def captions_of(job):
@@ -202,7 +227,7 @@ def captions_of(job):
 def cancel(job_id):
     """Отменить задачу из очереди. Возвращает строку задачи или None."""
     with connect() as con:
-        row = con.execute("SELECT * FROM jobs WHERE id=? AND status='pending'",
+        row = con.execute("SELECT * FROM jobs WHERE id=? AND status IN ('pending', 'draft')",
                           (job_id,)).fetchone()
         if row is not None:
             con.execute("UPDATE jobs SET status='cancelled', done_at=? WHERE id=?",
@@ -377,19 +402,20 @@ def mark_links_sent(ids):
         return cur.rowcount
 
 
-def set_verdict(frame, verdict, skipped, on_topic=None):
+def set_verdict(frame, verdict, skipped, on_topic=None, topic_key=""):
     topic = -1 if on_topic is None else (1 if on_topic else 0)
     with connect() as con:
-        con.execute("UPDATE content SET verdict=?, skipped=?, rules=?, on_topic=? "
-                    "WHERE frame=?",
-                    (verdict, 1 if skipped else 0, RULES, topic, frame))
+        con.execute("UPDATE content SET verdict=?, skipped=?, rules=?, on_topic=?, "
+                    "topic_key=? WHERE frame=?",
+                    (verdict, 1 if skipped else 0, RULES, topic, topic_key, frame))
 
 
-def recent_feed(app, limit=40, days=14):
+def recent_feed(app, limit=40, days=14, topic=None):
     """Последние разобранные ролики ленты: [(язык, по_теме)], новые первыми.
 
     Без рекламы и без кадров-сбоев — они не про то, что лента показывает.
-    По_теме: True/False или None, если тему не проверяли.
+    По_теме: True/False или None, если тему не проверяли — или проверяли на
+    другую (`topic` задан и не совпал с той, что стояла тогда).
     """
     import vision
 
@@ -397,11 +423,17 @@ def recent_feed(app, limit=40, days=14):
     mine, dev = _mine()
     with connect() as con:
         rows = con.execute(
-            "SELECT lang, on_topic FROM content WHERE app=? AND at>=? AND ad=0 "
+            "SELECT lang, on_topic, topic_key FROM content WHERE app=? AND at>=? AND ad=0 "
             "AND category!=?" + mine + " ORDER BY at DESC LIMIT ?",
             (app, since, vision.NOT_PARSED) + dev + (int(limit),)).fetchall()
-    return [(r["lang"] or "", None if r["on_topic"] in (None, -1) else bool(r["on_topic"]))
-            for r in rows]
+    def judged(r):
+        if r["on_topic"] in (None, -1):
+            return None
+        if topic is not None and (r["topic_key"] or "") != topic:
+            return None
+        return bool(r["on_topic"])
+
+    return [(r["lang"] or "", judged(r)) for r in rows]
 
 
 def analyzed_frames():

@@ -282,6 +282,18 @@ def caption_for(spec, target):
     return (captions.get(target) or spec.get("caption") or "").strip()
 
 
+def shorts_title(text):
+    """Название ролика YouTube из описания: первая непустая строка.
+
+    В поле названия влезает 100 знаков, и туда уходит описание. Многострочное
+    описание целиком в название не годится — берём первую строку.
+    """
+    for line in str(text or "").splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
 def fit(text, target):
     """Уложить описание в предел сети — по последнему целому слову."""
     limit = LIMITS.get(target)

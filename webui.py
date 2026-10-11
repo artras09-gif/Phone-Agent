@@ -530,10 +530,15 @@ def _tuning_state(taste):
     rows = []
     for app in _apps():
         try:
-            rows.append({"title": app.get("title") or app["id"],
-                         "text": interests.tuning(app["id"], taste)["текст"]})
+            t = interests.tuning(app["id"], taste)
         except Exception:
-            pass
+            continue
+        rows.append({"id": app["id"], "title": app.get("title") or app["id"],
+                     "stage": t["этап"], "lang": t["язык"], "topic": t["тема"],
+                     "lang_seen": t["языков_учтено"], "topic_seen": t["тем_учтено"],
+                     "langs": t["языки"], "need": t["порог"], "boost": t["усиление"],
+                     "per_lang": t["по_языкам"],
+                     "videos": t["роликов"], "text": t["текст"]})
     _TUNING.update(at=time.time(), key=key, rows=rows)
     return rows
 

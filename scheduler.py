@@ -246,7 +246,10 @@ def run_post_job(notify=None, job_id=None):
         target = target.strip()
         if not target:
             continue
-        text = postspec.fit(captions.get(target) or job["caption"], target)
+        text = captions.get(target) or job["caption"]
+        if target == "shorts" and target not in captions:
+            text = postspec.shorts_title(text)
+        text = postspec.fit(text, target)
         try:
             ok, report = poster.post(job["video_path"], text, target)
         except Exception as e:

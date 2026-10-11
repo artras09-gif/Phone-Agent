@@ -885,7 +885,8 @@ def _look_and_decide(state, app, index, taste, log):
         detail = " [" + " ".join(f"{k} {v:.2f}" for k, v in phases.items()) + "]"
     log.append(f"  {mark} {watch:.1f}с (решение {time.time() - started:.1f}с){detail}: "
                f"{verdict} ({why}) — {str(data.get('тема', ''))[:46]}")
-    jobs.set_verdict(path, verdict, skip, matched.get("тема"))
+    jobs.set_verdict(path, verdict, skip, matched.get("тема"),
+                     interests.topic_key(taste or {}))
     _retune(state, app, taste, log)
     _watch_speed(state, phases, log)
     return verdict, skip, watch

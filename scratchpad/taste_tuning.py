@@ -100,12 +100,14 @@ print("\n--- доли считаются по базе этой соцсети -
 for i in range(12):
     path = os.path.join(tmp, f"f{i}.png")
     jobs.add_content("s1", "tiktok", path, {"тема": "x", "язык": "es", "категория": "еда"})
-    jobs.set_verdict(path, "мимо", True, i < 3)
+    jobs.set_verdict(path, "мимо", True, i < 3, "кулинария")
 jobs.add_content("s1", "reels", os.path.join(tmp, "r.png"), {"тема": "y", "язык": "ru"})
 rows = jobs.recent_feed("tiktok")
 say(len(rows) == 12 and rows.count(("es", True)) == 3, f"tiktok: 12 роликов, 3 по теме")
 live = interests.tuning("tiktok", t)
 say(live["этап"] == "тема" and abs(live["тема"] - 0.25) < 0.01, f"из базы: {live['текст']}")
+other = interests.tuning("tiktok", dict(t, тема="политика"))
+say(other["тема"] is None, "сменили тему — старые отметки «по теме» не считаются")
 
 print("\n--- быстрые свайпы очередью ---")
 import abort    # noqa: E402

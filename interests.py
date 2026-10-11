@@ -391,6 +391,11 @@ def matched_none(taste):
             if taste.get(field, "")}
 
 
+def topic_key(taste):
+    """Тема в виде ключа для базы: «Коты,  кулинария» == «коты, кулинария»."""
+    return ", ".join(topics(taste))
+
+
 def tuning(app, taste=None, rows=None):
     """Насколько лента ЭТОЙ соцсети уже настроена: этап, доли, пояснение.
 
@@ -409,7 +414,7 @@ def tuning(app, taste=None, rows=None):
     if rows is None:
         try:
             import jobs
-            rows = jobs.recent_feed(app, window)
+            rows = jobs.recent_feed(app, window, topic=topic_key(taste))
         except Exception:
             rows = []
     rows = list(rows)[:window]
@@ -449,7 +454,15 @@ def tuning(app, taste=None, rows=None):
         verdict += f", тема редкая — лайк x{boost:g}"
     text = (", ".join(parts) + f" (по {len(rows)} роликам) — " + verdict) if parts else verdict
     return {"этап": stage, "язык": lang_share, "тема": topic_share,
-            "усиление": boost, "роликов": len(rows), "текст": text}
+            "усиление": boost, "роликов": len(rows), "текст": text,
+            # Для окна: сколько роликов уже учтено (доля считается от 10),
+            # какие языки и какой порог.
+            "языков_учтено": len(known_lang), "тем_учтено": len(known_topic),
+            # Каждый язык отдельно — когда их несколько, видно, какой лента
+            # уже даёт, а какой нет.
+            "по_языкам": {w: (sum(1 for lang in known_lang if lang == w) / len(known_lang)
+                              if len(known_lang) >= 10 else None) for w in wanted},
+            "языки": wanted, "порог": need}
 
 
 def classify(frame, taste=None, expansions=None, judge=None, tuned=None):
