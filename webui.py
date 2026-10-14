@@ -499,18 +499,26 @@ def _start_bot():
     """
     import telegram_bot
 
-    try:
-        fleet.telegram_gate().acquire(timeout=0.5)
-    except gate.Timeout:
-        print("Telegram-бота уже ведёт служба телефона — окно его не поднимает")
-        _BOT_ELSEWHERE["yes"] = True
-        return
+    if _BOT_GATE["gate"] is None:
+        g = fleet.telegram_gate()
+        try:
+            g.acquire(timeout=0.5)
+        except gate.Timeout:
+            print("Telegram-бота уже ведёт служба телефона — окно его не поднимает")
+            _BOT_ELSEWHERE["yes"] = True
+            return
+        # Держим ссылку: замок живёт, пока жив объект. И второй раз его не
+        # берём — свой же замок второй раз не даётся, и сохранение нового
+        # токена раньше кончалось ложным «бота ведёт служба телефона».
+        _BOT_GATE["gate"] = g
+        _BOT_ELSEWHERE["yes"] = False
 
     telegram_bot.set_submit(RUNNER.start)
     telegram_bot.start_background()
 
 
 _BOT_ELSEWHERE = {"yes": False}
+_BOT_GATE = {"gate": None}
 
 
 _TUNING = {"at": 0.0, "key": None, "rows": []}
@@ -967,8 +975,10 @@ def _cmd_job_add(body):
     path = (body.get("path") or "").strip('" ')
     if not os.path.exists(path):
         raise ValueError(f"файла нет: {path}")
-    job_id = jobs.add(os.path.abspath(path), body.get("caption", ""),
-                      body.get("target") or "tiktok")
+    targets = scheduler.normalize_targets(body.get("targets") or body.get("target") or "")
+    if not targets:
+        raise ValueError("отметь хотя бы одну соцсеть в «Куда»")
+    job_id = jobs.add(os.path.abspath(path), body.get("caption", ""), targets)
     return {"ok": True, "message": f"задача #{job_id} добавлена"}
 
 
@@ -1224,6 +1234,9 @@ def _cmd_telegram(body):
         current = telegram_bot.load_settings()
         telegram_bot.save_settings(body.get("token", current["token"]),
                                    body.get("owner", current["owner"]))
+        # Новый токен — новый опрос с нуля, не дожидаясь, пока старый
+        # долгий запрос (до 50 с) вернётся со старым токеном.
+        telegram_bot.restart()
     ok, info = telegram_bot.check()
     if ok or telegram_bot.load_settings()["token"]:
         _start_bot()
@@ -1359,11 +1372,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b""
 
         if parsed.path == "/api/upload":
+            targets = scheduler.normalize_targets((query.get("targets") or [""])[0])
+            if not targets:
+                return self._json(400, {"ok": False,
+                                        "error": "отметь хотя бы одну соцсеть в «Куда»"})
             try:
                 name = _save_upload((query.get("name") or [""])[0], raw)
             except (ValueError, OSError) as e:
                 return self._json(400, {"ok": False, "error": str(e)})
-            added = scheduler.scan_watch_dir()
+            added = scheduler.scan_watch_dir(targets)
             return self._json(200, {"ok": True,
                                     "message": f"{name} — в очереди"
                                     if added else f"{name} принят"})

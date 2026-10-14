@@ -703,7 +703,14 @@ def _unstick(state, package, log):
     # «назад» сразу. У TikTok лента и профиль живут в одной оболочке
     # (SplashActivity), поэтому признак ловит не всё, но что ловит — точно.
     home = state.get("feed_activity")
-    _pkg, act = adb.current_app()
+    act = None
+    if step == 1 and home:
+        # Спрашиваем только когда есть с чем сравнить, и сбой adb здесь —
+        # не повод ронять всю лесенку: просто идём дальше по ступеням.
+        try:
+            _pkg, act = adb.current_app()
+        except adb.AdbError:
+            act = None
     if step == 1 and home and act and act != home:
         log.append(f"  это другой экран приложения ({act.split('.')[-1]}) — «назад»")
         device.back()

@@ -144,11 +144,16 @@ def looks_like_video(path):
     return "это не видео: файл не похож ни на mp4, ни на mkv"
 
 
-def scan_watch_dir():
+def scan_watch_dir(targets="tiktok"):
     """Видео, брошенные в watch/, попадают в очередь.
 
-    Описание берётся из одноимённого .txt рядом с файлом.
+    Описание берётся из одноимённого .txt рядом с файлом. `targets` — куда
+    постить, если в .txt это не сказано: окно передаёт сюда соцсети, отмеченные
+    на вкладке «Очередь». Раньше здесь намертво стоял «tiktok», и видео,
+    перетащенное в окно, уходило только в TikTok, что бы ни было выбрано
+    (жалоба 2026-10-14).
     """
+    targets = normalize_targets(targets) or "tiktok"
     added = []
     for name in sorted(os.listdir(config.WATCH_DIR)):
         src = os.path.join(config.WATCH_DIR, name)
@@ -192,13 +197,26 @@ def scan_watch_dir():
             os.remove(txt)
 
         if spec is None:
-            job_id = jobs.add(dst, caption, targets="tiktok")
+            job_id = jobs.add(dst, caption, targets=targets)
         else:
             job_id = jobs.add(dst, spec["caption"], targets=",".join(spec["targets"]),
                               run_at=spec["when"].timestamp() if spec["when"] else None,
                               captions=spec["captions"], exact=spec["exact"])
         added.append((job_id, name))
     return added
+
+
+def normalize_targets(value):
+    """Список соцсетей из окна («tiktok,reels» или список) -> «tiktok,reels».
+
+    Неизвестное отбрасывается: опечатка не должна создавать задачу в сеть,
+    которой нет. Порядок — как в рецептах, повторы убираются.
+    """
+    if isinstance(value, str):
+        value = value.split(",")
+    known = list(postspec.TITLES)
+    wanted = {str(v).strip().lower() for v in (value or []) if str(v).strip()}
+    return ",".join(t for t in known if t in wanted)
 
 
 def _tomorrow_same_time(job):

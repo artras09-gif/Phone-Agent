@@ -950,8 +950,18 @@ def _why_failed(res):
     return "нет связи с Telegram: " + text[:80]
 
 
-def poll_forever():
-    """Опрос Telegram. Не падает никогда: ошибка разбора — в журнал, дальше."""
+def poll_forever(generation=0):
+    """Опрос Telegram. Не падает никогда: ошибка разбора — в журнал, дальше.
+
+    `generation` — номер запуска. Сменили токен — `restart()` поднимает новый
+    поток с новым номером, а этот, вернувшись из долгого запроса, видит, что
+    устарел, и молча выходит, не трогая пришедшее.
+
+    Почему не просто читать токен заново на каждом круге: номер прочитанного
+    сообщения (`offset`) у каждого бота свой. Со старым номером новый бот
+    отдавал «ничего нового» — и на новый токен не реагировал вовсе (жалоба
+    2026-10-14). Новый поток начинает с нуля.
+    """
     if not load_settings()["token"]:
         return
     # Здесь, в потоке, а не при старте окна: без связи getMe ждёт 20 с.
@@ -962,9 +972,21 @@ def poll_forever():
     _drop_stale_drafts()
     offset = 0
     said = ""
+    token = load_settings()["token"]
     while True:
+        if generation != _GENERATION["n"]:
+            return                           # нас сменил поток с новым токеном
+        now_token = load_settings()["token"]
+        if now_token != token:
+            # Токен поменяли в обход окна (руками в telegram.json).
+            token, offset, said = now_token, 0, ""
+            _TROUBLE["text"] = ""
+            if not token:
+                return
+            ok, info = check()
+            print(f"[бот] новый токен: {'запущен: ' + info if ok else info}", flush=True)
         try:
-            offset = _poll_once(offset)
+            offset = _poll_once(offset, generation)
             said = ""
         except _PollFailed as e:
             _TROUBLE["text"] = str(e)
@@ -995,9 +1017,13 @@ class _PollFailed(Exception):
     pass
 
 
-def _poll_once(offset):
+def _poll_once(offset, generation=None):
     """Один круг getUpdates. Возвращает новый offset."""
     res = _call("getUpdates", {"offset": offset, "timeout": 50})
+    # Пока ждали ответа, токен сменили: пришедшее — для старого бота, и
+    # отвечать на него новым токеном нельзя.
+    if generation is not None and generation != _GENERATION["n"]:
+        return offset
     if not res.get("ok"):
         raise _PollFailed(_why_failed(res))
     if _TROUBLE["text"]:
@@ -1027,6 +1053,16 @@ def _poll_once(offset):
 
 
 _THREAD = None
+_GENERATION = {"n": 0}
+
+
+def restart():
+    """Сменили токен — бросить старый опрос и начать новый с нуля."""
+    global _THREAD
+    _GENERATION["n"] += 1
+    _TROUBLE["text"] = ""
+    _THREAD = None
+    return start_background()
 
 
 def start_background():
@@ -1039,7 +1075,8 @@ def start_background():
     if not load_settings()["token"]:
         return lambda text: None
     if _THREAD is None or not _THREAD.is_alive():
-        _THREAD = threading.Thread(target=poll_forever, daemon=True)
+        _THREAD = threading.Thread(target=poll_forever, args=(_GENERATION["n"],),
+                                   daemon=True)
         _THREAD.start()
     return send
 

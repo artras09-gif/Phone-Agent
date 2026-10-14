@@ -373,10 +373,10 @@ pre.report{
             Описание для следующего файла
             <input type="text" id="q-caption" placeholder="можно оставить пустым">
           </label>
-          <label class="field">
-            Куда
-            <select id="q-target"></select>
-          </label>
+          <div class="field">
+            Куда (можно несколько)
+            <div class="chips" id="q-targets"></div>
+          </div>
         </div>
       </div>
 
@@ -784,10 +784,7 @@ function render(s){
   }
   renderTuning(s.taste.tuning || [], s.taste.topic || "");
 
-  const sel = $("q-target");
-  if(!sel.options.length){
-    s.targets.forEach(t => sel.append(new Option(t, t)));
-  }
+  renderTargets(s.targets || []);
   renderSpaces(s);
   renderFleet(s);
   renderApps(s.apps);
@@ -1058,9 +1055,50 @@ $("b-post2").onclick = postNow;
 
 $("b-cancel").onclick = () => send("cancel", {});
 
+/* Куда постить из окна — галочками, а не одной строкой списка: раньше
+   выбиралась одна сеть, а перетащенное видео и её не учитывало и уходило
+   только в TikTok (жалоба 2026-10-14). Выбор запоминается. */
+const TARGET_TITLES = {tiktok: "TikTok", reels: "Instagram Reels", shorts: "YouTube Shorts"};
+let pickedTargets = null;
+function loadTargets(all){
+  if(pickedTargets) return;
+  try{ pickedTargets = JSON.parse(localStorage.getItem("pa-targets") || "null"); }catch(e){}
+  if(!Array.isArray(pickedTargets)) pickedTargets = all.slice();
+  pickedTargets = pickedTargets.filter(t => all.includes(t));
+}
+function renderTargets(all){
+  loadTargets(all);
+  const box = $("q-targets"), sign = all.join(",") + "|" + pickedTargets.join(",");
+  if(box.dataset.sign === sign) return;
+  box.dataset.sign = sign;
+  box.innerHTML = "";
+  all.forEach(t => {
+    const c = document.createElement("button");
+    c.type = "button";
+    c.className = "chip" + (pickedTargets.includes(t) ? " on" : "");
+    c.textContent = TARGET_TITLES[t] || t;
+    c.onclick = () => {
+      pickedTargets = pickedTargets.includes(t)
+        ? pickedTargets.filter(x => x !== t) : pickedTargets.concat([t]);
+      try{ localStorage.setItem("pa-targets", JSON.stringify(pickedTargets)); }catch(e){}
+      renderTargets(all);
+    };
+    box.append(c);
+  });
+}
+function targetsOrWarn(){
+  if(!pickedTargets || !pickedTargets.length){
+    toast("отметь хотя бы одну соцсеть в «Куда»", "bad");
+    return "";
+  }
+  return pickedTargets.join(",");
+}
+
 $("b-jobadd").onclick = () => {
+  const targets = targetsOrWarn();
+  if(!targets) return;
   send("job-add", {path: $("j-path").value, caption: $("j-caption").value,
-                   target: $("q-target").value});
+                   targets: targets});
   $("j-path").value = ""; $("j-caption").value = "";
 };
 
@@ -1469,12 +1507,15 @@ window.addEventListener("dragover", e => e.preventDefault());
 window.addEventListener("drop", e => e.preventDefault());
 
 function upload(file){
+  const targets = targetsOrWarn();
+  if(!targets){ fileInput.value = ""; return; }
   const bar = $("bar"), fill = bar.querySelector("i");
   bar.classList.add("on"); fill.style.width = "0%";
 
   // XHR, а не fetch: у больших видео без полосы непонятно, идёт ли что-то.
   const xhr = new XMLHttpRequest();
-  xhr.open("POST", "/api/upload?name=" + encodeURIComponent(file.name));
+  xhr.open("POST", "/api/upload?name=" + encodeURIComponent(file.name)
+                 + "&targets=" + encodeURIComponent(targets));
   xhr.setRequestHeader("X-Token", TOKEN);
   xhr.upload.onprogress = e => {
     if(e.lengthComputable) fill.style.width = (e.loaded / e.total * 100) + "%";
