@@ -86,9 +86,14 @@ try:
     say(False, "неизвестная сеть должна быть ошибкой")
 except postspec.SpecError as e:
     say("вк" in str(e), f"неизвестная сеть: {e}")
-free = postspec.parse("смешной кот #коты тикток в 21:00", now)
+free = postspec.parse("смешной кот #коты\nтикток\nв 21:00", now)
 say(not free["template"] and free["targets"] == ["tiktok"] and free["caption"] == "смешной кот #коты"
-    and free["when"] == dt.datetime(2026, 10, 11, 21, 0), "свободная подпись — как раньше")
+    and free["when"] == dt.datetime(2026, 10, 11, 21, 0),
+    "свободная подпись: сеть и время отдельными строками")
+inline = postspec.parse("смешной кот в тикток в 21:00 — Me da igual", now)
+say(inline["targets"] == ["tiktok", "shorts", "reels"] and inline["when"] is None
+    and inline["caption"] == "смешной кот в тикток в 21:00 — Me da igual",
+    "слова внутри текста («тикток», «21:00», «igual») не трогаются, сети — все")
 shown = postspec.describe(spec, 7, now)
 say("Задача #7" in shown and "Куда: TikTok, Instagram Reels" in shown
     and "Когда: завтра в 18:30" in shown and "#еда" in shown, "подтверждение: сети, время, текст")

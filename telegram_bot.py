@@ -655,7 +655,18 @@ def _handle(msg):
 
     if spec is None:
         # Черновик: публиковать его нельзя, пока не нажата кнопка времени.
-        job_id = jobs.add(path, caption=text, targets=",".join(_default_targets()),
+        # Сети — все, кроме явно исключённых строкой «без ютуба» / «кроме
+        # инсты»; сама эта строка в пост не уходит.
+        excluded, caption = postspec.exclusions(text)
+        targets = [t for t in _default_targets() if t not in excluded]
+        if not targets:
+            send("Все сети исключены — публиковать некуда. Убери строку «без …».")
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return
+        job_id = jobs.add(path, caption=caption, targets=",".join(targets),
                           status="draft")
         _send_draft(job_id)
         return
@@ -684,23 +695,18 @@ def _defaults_path():
 
 
 def _default_targets():
-    """Какие сети отмечены сразу: те, что выбирали в прошлый раз. Впервые — все."""
-    try:
-        with open(_defaults_path(), encoding="utf-8") as f:
-            saved = [t for t in json.load(f).get("targets", []) if t in TARGET_ORDER]
-        if saved:
-            return saved
-    except (OSError, ValueError, AttributeError):
-        pass
+    """Какие сети отмечены сразу: ВСЕ.
+
+    Раньше отмечались те, что выбирали в прошлый раз, — и одна снятая галочка
+    тихо переезжала на все следующие посты. Просьба 2026-10-14: «по дефолту
+    постил во все соцсети, если только я явно не укажу, какую проигнорировать».
+    Исключить — строкой «без ютуба» в подписи или галочкой под черновиком.
+    """
     return list(TARGET_ORDER)
 
 
 def _remember_targets(targets):
-    try:
-        with open(_defaults_path(), "w", encoding="utf-8") as f:
-            json.dump({"targets": targets}, f, ensure_ascii=False)
-    except OSError:
-        pass
+    """Больше ничего не запоминаем (см. `_default_targets`)."""
 
 
 def _time_choices(now=None):
@@ -746,8 +752,18 @@ def _draft_text(job):
     body = caption if caption else "(без описания — пришли видео с подписью, если нужно)"
     if len(body) > 900:
         body = body[:900] + "…"
-    return (f"🎬 Видео #{job['id']} получил.\n\nОписание:\n{body}\n\n"
-            "Отметь сети и нажми, когда публиковать 👇")
+    import postspec
+
+    text = f"🎬 Видео #{job['id']} получил.\n\nОписание:\n{body}\n\n"
+    picked = [t for t in job["targets"].split(",") if t]
+    if "shorts" in picked and caption:
+        title = postspec.fit(postspec.shorts_title(caption), "shorts")
+        if title != caption:
+            text += f"Название на YouTube: {title}\n\n"
+    skipped = [postspec.TITLES[t] for t in TARGET_ORDER if t not in picked]
+    if skipped:
+        text += "Не публикую в: " + ", ".join(skipped) + "\n\n"
+    return text + "Проверь сети и нажми, когда публиковать 👇"
 
 
 def _send_draft(job_id):

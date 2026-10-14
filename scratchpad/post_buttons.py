@@ -84,13 +84,13 @@ say("TikTok" in text and "Reels" in text and "Shorts" not in text and "завт�
     and "пиццу" in text, "подтверждение: сети, время, описание")
 press("t:1:tiktok")
 say(jobs.by_id(1)["targets"] == "tiktok,reels", "после выбора времени сети уже не меняются")
-saved = json.load(open(os.path.join(tmp, "bot_post.json"), encoding="utf-8"))
-say(saved["targets"] == ["tiktok", "reels"], "выбор сетей запомнен на следующий раз")
+say(not os.path.exists(os.path.join(tmp, "bot_post.json")),
+    "снятая галочка НЕ запоминается (2026-10-14: по умолчанию — все сети)")
 
-print("\n--- следующее видео: сети как в прошлый раз, «Своё время» ---")
+print("\n--- следующее видео: снова все сети, «Своё время» ---")
 bot._handle({"chat": {"id": 1}, "video": {"file_id": "f", "file_size": 1000}, "caption": "кот"})
 rows = markup_of([c for c in calls if c[0] == "sendMessage"][-1])
-say([b["text"] for b in rows[0]] == ["✅ TikTok", "✅ Reels", "⬜ Shorts"], "отмечено как в прошлый раз")
+say([b["text"] for b in rows[0]] == ["✅ TikTok", "✅ Reels", "✅ Shorts"], "снова отмечены все")
 press("w:2:ask")
 say(sent and "Напиши время" in sent[-1], "«Своё время» — просит написать")
 sent.clear()
@@ -117,6 +117,7 @@ say(answers and answers[-1][1]["text"] == "этот пост отменён", f"
 bot._handle({"chat": {"id": 1}, "video": {"file_id": "f", "file_size": 1000}, "caption": "y"})
 press("t:5:tiktok")
 press("t:5:reels")
+press("t:5:shorts")
 press("w:5:now")
 answers = [c for c in calls if c[0] == "answerCallbackQuery"]
 say(jobs.by_id(5)["status"] == "draft" and "хотя бы одну" in answers[-1][1]["text"],

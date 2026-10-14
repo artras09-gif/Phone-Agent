@@ -18,10 +18,22 @@
    название ролика, до 100 знаков). Строки «куда»/«когда» необязательны:
    без «куда» — во все сети, без «когда» — сразу.
 
-2. СВОБОДНАЯ ПОДПИСЬ (как было): названия сетей и «в 18:30» ищутся прямо в
-   тексте и из него вырезаются. Удобно для короткой подписи, но слово
-   «тикток» внутри описания тоже примется за сеть — для точного текста
-   нужен шаблон.
+ИСКЛЮЧЕНИЯ (2026-10-14, «по дефолту постил во все соцсети, если только я
+явно не укажу, какую проигнорировать»). Отдельная строка из одних названий
+сетей после «без», «кроме», «не в», «минус» или «-» убирает эти сети и в
+описание не попадает:
+
+       🇺🇸 CERO PREOCUPACIONES          <- название на YouTube (первая строка)
+       Donald Trump volvió a ...       <- описание
+       без ютуба                       <- не публиковать в YouTube
+
+В шаблоне то же самое в строке «куда»: «куда: все кроме ютуба», «куда: без
+инсты». Строка, где кроме сетей есть другие слова («без слов», «не знаю,
+что сказать»), — обычный текст поста, её не трогаем.
+
+2. СВОБОДНАЯ ПОДПИСЬ: текст поста как есть, во все сети. Сети и время —
+   только отдельной строкой («тикток, рилс», «в 21:00», «без ютуба»); слова
+   внутри текста не трогаются (см. `_free`).
 """
 import datetime as dt
 import re
@@ -31,7 +43,7 @@ import re
 ALIASES = {
     "tiktok": ("tiktok", "тикток", "тик-ток", "тт"),
     "shorts": ("shorts", "шорт", "youtube", "ютуб", "yt"),
-    "reels": ("reels", "рилс", "рилз", "instagram", "инст", "ig"),
+    "reels": ("reels", "рилс", "рилз", "instagram", "инстаграм", "инст", "ig"),
 }
 TITLES = {"tiktok": "TikTok", "shorts": "YouTube Shorts", "reels": "Instagram Reels"}
 
@@ -156,10 +168,63 @@ def parse_when(text, now=None):
     return when, True
 
 
+# Слова, после которых идут сети, которые надо ИСКЛЮЧИТЬ.
+RE_EXCLUDE = re.compile(
+    r"^\s*(?:[-−–—✖❌🚫⛔]+\s*|(?:без|кроме|минус|не\s+(?:в|на|постить\s+в|публиковать\s+в)"
+    r"|не|игнор\w*|исключ\w*|пропусти\w*|except|without|skip|no)\s+)(.+?)\s*[.!]?\s*$",
+    re.I | re.U)
+# Связки между названиями сетей: «ютуба и инсты», «в тикток, в рилс».
+_GLUE = ("и", "в", "на", "and", "or", "или")
+
+
+def _networks_only(text):
+    """Сети из строки, ТОЛЬКО если в ней нет ничего, кроме сетей и связок."""
+    found = []
+    for word in re.split(r"[,;/\s]+", str(text or "").strip().lower()):
+        word = word.strip(".!?")
+        if not word or word in _GLUE:
+            continue
+        target = target_of(word)
+        if target is None:
+            return []
+        if target not in found:
+            found.append(target)
+    return found
+
+
+def exclusions(text):
+    """Строки-исключения из подписи: (какие сети убрать, текст без этих строк).
+
+    Строка считается исключением, только если после «без»/«кроме»/«-» в ней
+    одни названия сетей. Иначе это текст поста и остаётся на месте.
+    """
+    excluded, kept = [], []
+    for line in str(text or "").replace("\r\n", "\n").split("\n"):
+        m = RE_EXCLUDE.match(line)
+        nets = _networks_only(m.group(1)) if m else []
+        if nets:
+            excluded += [t for t in nets if t not in excluded]
+        else:
+            kept.append(line)
+    return excluded, "\n".join(kept).strip()
+
+
 def _targets_of(text):
     raw = str(text or "").strip().lower()
     if not raw or raw in ALL_WORDS:
         return list(ALIASES)
+    # «все кроме ютуба», «без инсты», «всё, кроме тиктока»
+    split = re.split(r"(?:^|[\s,])(?:кроме|без|минус|except|without)\s+", raw, maxsplit=1)
+    if len(split) == 2:
+        head = split[0].strip(" ,")
+        drop = _networks_only(split[1])
+        if not drop:
+            raise SpecError(f"не понял, какую сеть исключить: «{split[1]}»")
+        base = list(ALIASES) if not head or head in ALL_WORDS else _targets_of(head)
+        left = [t for t in base if t not in drop]
+        if not left:
+            raise SpecError("все сети исключены — публиковать некуда")
+        return left
     found, bad = [], []
     for word in re.split(r"[,;/\s]+|\sи\s", raw):
         if not word or word in ("и", "в"):
@@ -207,38 +272,35 @@ def _template(text, now):
 
 
 def _free(text, now):
-    """Свободная подпись — как было: сети и время ищутся в самом тексте."""
-    # Адреса на время разбора прячем: иначе «instagram», «reels», «shorts»
-    # ловятся внутри ссылки и вырезаются из неё.
-    import weblink
+    """Свободная подпись: это ОПИСАНИЕ, как есть. Сети — все.
 
-    stashed = []
+    Раньше названия сетей и время искались прямо в тексте поста и из него
+    вырезались. На испанском посте 2026-10-14 «Me da igual» слово «igual»
+    сошло за «ig» (Instagram): пост ушёл бы только в Instagram, а слово
+    пропало бы из описания. Теперь служебное — только ОТДЕЛЬНОЙ строкой:
 
-    def hide(match):
-        stashed.append(match.group(0))
-        return "\x00{}\x00".format(len(stashed) - 1)
+        строка из одних сетей («тикток, рилс») — публиковать только туда;
+        строка из одного времени («в 21:00», «21:00») — когда;
+        строка «без ютуба» — исключение (это разбирает `exclusions`).
 
-    found, cleaned = [], weblink.RE_BARE.sub(hide, weblink.RE_URL.sub(hide, text))
-    for target, words in ALIASES.items():
-        for word in words:
-            pattern = re.compile(rf"(?<!\w)#?{re.escape(word)}\w{{0,3}}(?!\w)",
-                                 re.IGNORECASE | re.UNICODE)
-            if pattern.search(cleaned):
-                if target not in found:
-                    found.append(target)
-                cleaned = pattern.sub(" ", cleaned)
-    cleaned = re.sub(r"\x00(\d+)\x00", lambda m: stashed[int(m.group(1))], cleaned)
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip(" ,.;:—-")
-
-    when = None
-    match = RE_FREE_TIME.search(cleaned)
-    if match:
-        hour, minute = int(match.group(1)), int(match.group(2))
-        when = (now or dt.datetime.now()).replace(hour=hour, minute=minute,
-                                                  second=0, microsecond=0)
-        if when <= (now or dt.datetime.now()):
-            when += dt.timedelta(days=1)
-        cleaned = re.sub(r"[ \t]{2,}", " ", RE_FREE_TIME.sub(" ", cleaned, count=1)).strip()
+    Всё остальное, включая слова «тикток» и «19:00» внутри текста, остаётся в
+    описании нетронутым.
+    """
+    found, when, kept = [], None, []
+    for line in text.split("\n"):
+        nets = _networks_only(line)
+        clock = RE_FREE_TIME.fullmatch(line.strip()) if line.strip() else None
+        if nets:
+            found += [t for t in nets if t not in found]
+        elif clock and when is None:
+            hour, minute = int(clock.group(1)), int(clock.group(2))
+            now = now or dt.datetime.now()
+            when = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if when <= now:
+                when += dt.timedelta(days=1)
+        else:
+            kept.append(line)
+    cleaned = "\n".join(kept).strip()
     return found or list(ALIASES), when, when is not None, cleaned, {}
 
 
@@ -256,8 +318,13 @@ def parse(text, now=None):
     """
     now = now or dt.datetime.now()
     text = str(text or "").replace("\r\n", "\n").strip()
+    excluded, text = exclusions(text)
     template = is_template(text)
     targets, when, exact, caption, captions = (_template if template else _free)(text, now)
+    if excluded:
+        targets = [t for t in targets if t not in excluded]
+        if not targets:
+            raise SpecError("все сети исключены — публиковать некуда")
     spec = {"targets": targets, "when": when, "exact": exact, "caption": caption,
             "captions": {t: c for t, c in captions.items() if t in targets},
             "template": template, "notes": []}
@@ -331,7 +398,18 @@ def describe(spec, job_id=None, now=None):
     return "\n".join(lines)
 
 
-TEMPLATE_HELP = """Шаблон поста — пришли ВИДЕО файлом, а это в подписи:
+TEMPLATE_HELP = """Проще всего — пришли ВИДЕО, а в подписи просто текст поста:
+
+🇺🇸 Первая строка — название на YouTube
+Дальше описание как есть, #хэштеги
+без ютуба   ← необязательно: какую сеть пропустить
+
+• По умолчанию — во все сети (TikTok, Instagram, YouTube).
+• Пропустить сеть — отдельной строкой: «без ютуба», «кроме инсты и тиктока», «- тикток».
+• В TikTok и Instagram уходит весь текст, в YouTube — первая строка как название.
+• Когда публиковать — выберешь кнопкой под сообщением.
+
+Или шаблоном, если нужно всё сразу:
 
 куда: тикток, рилс, шортс
 когда: завтра 18:30
@@ -340,7 +418,7 @@ TEMPLATE_HELP = """Шаблон поста — пришли ВИДЕО файл�
 можно в несколько строк
 
 Что можно писать:
-• куда — тикток, рилс (инстаграм), шортс (ютуб), «все». Нет строки — во все.
+• куда — тикток, рилс (инстаграм), шортс (ютуб), «все», «все кроме ютуба». Нет строки — во все.
 • когда — 18:30, «сегодня 18:30», «завтра 9:00», «12.10 18:30», «пт 20:00», «сейчас». Нет строки — сразу.
 • описание — всё после него уходит в пост без изменений.
 • своё описание для сети — «описание шортс: Название до 100 знаков» (у YouTube это название).
