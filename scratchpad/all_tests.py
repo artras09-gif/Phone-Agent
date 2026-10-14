@@ -60,6 +60,7 @@ TESTS = [
     ("scratchpad/post_template.py", "постинг: шаблон подписи, точное время, лимит, очередь"),
     ("scratchpad/keeper_post.py", "расписание: пост ко времени, опоздания, полночь"),
     ("scratchpad/post_buttons.py", "пост кнопками: подпись = описание, сети и время кнопками"),
+    ("scratchpad/post_new_phone.py", "новый телефон: обрезка YouTube, окно микрофона Instagram"),
     ("scratchpad/post_exclude.py", "подпись: название YouTube + описание, во все сети, «без ютуба»"),
     ("scratchpad/post_targets_bot.py", "пост из окна — в отмеченные сети; бот берёт новый токен"),
     ("scratchpad/gate_test.py", "замки между процессами"),

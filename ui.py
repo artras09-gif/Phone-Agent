@@ -15,14 +15,24 @@ _BOUNDS = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
 _REMOTE = "/sdcard/pa_dump.xml"
 
 
+def _plain(text):
+    """Типографские апострофы и кавычки — к простым.
+
+    Android пишет «Don’t allow» с U+2019, а в списках у нас «Don't allow»: на
+    новом телефоне 2026-10-14 окно разрешения микрофона поэтому не закрылось,
+    и публикация в Instagram встала.
+    """
+    return (text or "").replace("\u2019", "'").replace("\u2018", "'").replace("\u00a0", " ")
+
+
 class Node:
     __slots__ = ("text", "rid", "desc", "cls", "pkg", "clickable", "enabled",
                  "selected", "bounds")
 
     def __init__(self, a):
-        self.text = (a.get("text") or "").strip()
+        self.text = _plain(a.get("text")).strip()
         self.rid = a.get("resource-id") or ""
-        self.desc = (a.get("content-desc") or "").strip()
+        self.desc = _plain(a.get("content-desc")).strip()
         self.cls = a.get("class") or ""
         self.pkg = a.get("package") or ""
         self.clickable = a.get("clickable") == "true"
@@ -273,6 +283,60 @@ def looks_like_composer(nodes):
     return False
 
 
+# Системное окно разрешения Android («Allow Instagram to record audio?»).
+PERMISSION_PACKAGES = ("com.google.android.permissioncontroller",
+                       "com.android.permissioncontroller",
+                       "com.lbe.security.miui", "com.miui.securitycenter")
+PERMISSION_DENY = ("Don't allow", "Deny", "Не разрешать", "Запретить", "Отклонить")
+# Без доступа к фото и видео публиковать нечего: галерея будет пустой. Такое
+# окно не закрываем отказом — человеку надо разрешить один раз руками.
+MEDIA_WORDS = ("photo", "video", "media", "music", "files", "фото", "видео",
+               "медиа", "музык", "файл")
+
+
+class NeedsPermission(RuntimeError):
+    """Приложению нужен доступ, который программа сама не выдаёт."""
+
+
+def permission_dialog(nodes):
+    """(вопрос, кнопка отказа) системного окна разрешения или (None, None)."""
+    question, deny = None, None
+    for node in nodes or []:
+        if node.pkg not in PERMISSION_PACKAGES:
+            continue
+        label = node.text or node.desc
+        if label.endswith("?") and question is None:
+            question = label
+        if deny is None and any(label.lower() == d.lower() for d in PERMISSION_DENY):
+            deny = node
+    return (question, deny) if (question or deny) else (None, None)
+
+
+def handle_permission(nodes=None, strict=False):
+    """Окно разрешения: микрофон, камера, геолокация — отказать (для
+    публикации готового видео они не нужны). Доступ к фото и видео нужен —
+    `NeedsPermission`, человек разрешает сам. True — окно закрыто.
+
+    Сами программа ничего не РАЗРЕШАЕТ: выдать приложению доступ — решение
+    человека, а не автоматизации.
+    """
+    nodes = nodes if nodes is not None else dump(retries=2, tolerant=True)
+    question, deny = permission_dialog(nodes)
+    if question is None and deny is None:
+        return False
+    if question and any(w in question.lower() for w in MEDIA_WORDS):
+        if not strict:
+            return False            # в ленте не падаем — просто не трогаем
+        raise NeedsPermission(
+            f"на телефоне окно «{question}» — без доступа к фото и видео "
+            "публиковать нечего. Разреши один раз руками и запусти снова")
+    if deny is None:
+        return False
+    tap_node(deny)
+    human.pause(0.8, 1.4)
+    return True
+
+
 def dismiss_popup(nodes=None):
     """Попробовать закрыть неизвестное окно. True, если что-то нажали.
 
@@ -282,6 +346,10 @@ def dismiss_popup(nodes=None):
     # Дерево может не сняться (играющее видео) — это не повод падать:
     # раз окна не видно, значит и закрывать нечего.
     nodes = nodes if nodes is not None else dump(retries=2, tolerant=True)
+    # Окно разрешения — раньше всего: оно поверх любого экрана, в том числе
+    # поверх экрана публикации, и его кнопки ничего не публикуют.
+    if handle_permission(nodes):
+        return True
 
     # На экране публикации не закрываем ничего: «ОК» там подтверждает, а не
     # отменяет, и цена ошибки — пост в чужом аккаунте.

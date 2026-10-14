@@ -61,11 +61,35 @@ def merge_new_keys(packed_path, target_path):
         return 0                    # битый файл человека не чиним молча
     if not isinstance(mine, dict) or not isinstance(packed, dict):
         return 0
-    added = _add_missing(mine, packed)
+    # Сначала маршруты: `_add_missing` дописал бы человеку и сам `rev`, и
+    # маршрут тогда казался бы уже новым.
+    added = _newer_routes(mine, packed)
+    added += _add_missing(mine, packed)
     if added:
         with open(target_path, "w", encoding="utf-8", newline="\n") as f:
             json.dump(mine, f, ensure_ascii=False, indent=2)
     return added
+
+
+def _newer_routes(mine, packed):
+    """Маршрут публикации поменялся в новой версии — заменить его шаги.
+
+    Новые КЛЮЧИ дописываются и так, но исправленные шаги существующего
+    маршрута до старой установки не доходили бы никогда: файл человека
+    важнее встроенного. Поэтому у маршрута есть `rev` — версия; встроенная
+    новее — шаги (и `_note`) заменяются, остальные ключи человека остаются.
+    """
+    replaced = 0
+    for name, route in packed.items():
+        have = mine.get(name)
+        if not (isinstance(route, dict) and isinstance(have, dict) and "steps" in route):
+            continue
+        if int(route.get("rev", 0) or 0) > int(have.get("rev", 0) or 0):
+            for key in ("steps", "rev", "_note"):
+                if key in route:
+                    have[key] = route[key]
+            replaced += 1
+    return replaced
 
 
 def _inside():

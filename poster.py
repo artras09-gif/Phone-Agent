@@ -1,6 +1,8 @@
 """Исполнитель маршрутов публикации из recipes.json."""
 import json
 import os
+import re
+import struct
 import time
 
 import abort
@@ -160,6 +162,22 @@ def run_step(step, ctx, log_path, index):
     if op == "dismiss":
         return "закрыто окно" if ui.dismiss_popup() else "закрывать нечего"
 
+    if op == "permissions":
+        # Окна разрешений идут по одному (микрофон, потом камера): закрываем
+        # все, что всплывут за отведённое время.
+        closed, deadline = 0, time.time() + step.get("timeout", 6)
+        while time.time() < deadline and closed < 3:
+            if ui.handle_permission(strict=True):
+                closed += 1
+                deadline = time.time() + 3
+            else:
+                time.sleep(0.6)
+        return (f"окон разрешений закрыто отказом: {closed}" if closed
+                else "окон разрешений нет")
+
+    if op == "advance_until":
+        return _advance_until(step, ctx, log_path, index)
+
     if op in ("tap", "optional_tap", "wait", "publish"):
         node, nodes = ui.wait_any(selectors, timeout=timeout)
 
@@ -202,6 +220,157 @@ def run_step(step, ctx, log_path, index):
         return f"введён текст ({len(value)} символов)"
 
     raise StepFailed(f"неизвестная операция: {op}")
+
+
+# ---------------------------------------------- промежуточные экраны
+
+# Длина ролика на кнопке выбора длительности: «15s», «60s», «3m», «1 мин».
+RE_LENGTH = re.compile(r"^\s*(\d+)\s*(s|с|сек\.?|m|м|мин\.?|min)\s*$", re.I)
+# Такие кнопки не нажимаются никогда, даже если совпали с «вперёд».
+NEVER_ADVANCE = ("upload", "загруз", "опубликов", "publish", "post", "поделиться", "share")
+
+
+def _length_of(text):
+    m = RE_LENGTH.match(str(text or ""))
+    if not m:
+        return None
+    n, unit = int(m.group(1)), m.group(2).lower()
+    return n * 60 if unit.startswith(("m", "м")) else n
+
+
+def mp4_seconds(path):
+    """Длина mp4/mov по заголовку (атом mvhd). None — не разобрать.
+
+    Своими силами, без ffprobe: на чужом ПК его нет.
+    """
+    try:
+        with open(path, "rb") as f:
+            data = f.read(8 * 1024 * 1024)
+            at = data.find(b"mvhd")
+            if at < 0:
+                # moov бывает в конце файла — смотрим хвост.
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - 8 * 1024 * 1024))
+                data = f.read()
+                at = data.find(b"mvhd")
+            if at < 0:
+                return None
+        version = data[at + 4]
+        if version == 1:
+            scale, length = struct.unpack(">IQ", data[at + 24:at + 36])
+        else:
+            scale, length = struct.unpack(">II", data[at + 16:at + 24])
+        return length / scale if scale else None
+    except (OSError, struct.error, IndexError):
+        return None
+
+
+def _length_chip(nodes):
+    """Кнопка длины («15s») — только в верхней четверти экрана: внизу на
+    полосе обрезки есть свои подписи времени («6.1s»), их трогать нельзя."""
+    height = max((n.bounds[3] for n in nodes), default=0) or 1
+    for n in nodes:
+        if n.area > 0 and _length_of(n.text or n.desc) and n.center[1] < height * 0.25:
+            return n
+    return None
+
+
+def _set_length(nodes, ctx, notes):
+    """Экран обрезки YouTube: кнопка длины («15s») — дотянуть до длины видео.
+
+    Если нажать «Done» на «15s», YouTube обрежет ролик до 15 секунд. Жмём
+    кнопку длины, пока на ней не станет не меньше длины видео (или пока она
+    не перестанет расти — дальше максимум сети).
+    """
+    want = ctx.get("seconds")
+    if want is None and ctx.get("video"):
+        want = ctx["seconds"] = mp4_seconds(ctx["video"])
+    chip = _length_chip(nodes)
+    if chip is None or want is None:
+        return nodes
+    seen = []
+    for _ in range(4):
+        have = _length_of(chip.text or chip.desc)
+        if have >= want - 0.5:
+            notes.append(f"длина {have} с — видео {want:.0f} с влезает целиком")
+            return nodes
+        if have in seen:
+            break                       # пошла по кругу — больше не бывает
+        seen.append(have)
+        ui.tap_node(chip)
+        human.pause(0.8, 1.4)
+        nodes = ui.dump(retries=2, tolerant=True)
+        chip = _length_chip(nodes)
+        if chip is None:
+            return nodes
+    best = max(seen + [_length_of(chip.text or chip.desc) or 0])
+    notes.append(f"[!] видео {want:.0f} с длиннее, чем YouTube даёт ({best} с) — обрежется")
+    # Ставим максимум, который видели: если ушли по кругу на меньшее — докручиваем.
+    for _ in range(4):
+        if (_length_of(chip.text or chip.desc) or 0) >= best:
+            break
+        ui.tap_node(chip)
+        human.pause(0.8, 1.4)
+        nodes = ui.dump(retries=2, tolerant=True)
+        chip = _length_chip(nodes)
+        if chip is None:
+            break
+    return nodes
+
+
+def _advance_until(step, ctx, log_path, index):
+    """Пройти промежуточные экраны («Done», «Next»), пока не появится цель.
+
+    Нужно YouTube: по одним версиям он открывает сразу экран названия, по
+    другим — сначала обрезку («Drag to adjust video» / «Done»), потом
+    редактор («Next»), и только потом название (живой сбой 2026-10-14). Порядок
+    и набор экранов от версии к версии разный, поэтому не шаги подряд, а
+    круг: цель есть — готово; есть кнопка «вперёд» — жмём; нет — ждём.
+    """
+    targets = step.get("any", [])
+    advance = step.get("advance", [])
+    deadline = time.time() + step.get("timeout", 90)
+    label = step.get("desc", "advance_until")
+    done, notes, nodes = [], [], []
+    last_tap = None
+    while time.time() < deadline:
+        if abort.requested():
+            raise StepFailed("остановлено")
+        nodes = ui.dump(retries=1, tolerant=True)
+        if ui.find_any(nodes, targets) is not None:
+            tail = ("; " + "; ".join(done)) if done else ""
+            return f"дошли до «{label}»{tail}" + ("".join("\n     " + n for n in notes))
+        node = None
+        for sel in advance:
+            hits = [n for n in ui.find(nodes, **sel) if n.area > 0
+                    and not any(w in (n.text + " " + n.desc).lower() for w in NEVER_ADVANCE)]
+            if hits:
+                node = hits[-1]          # нижняя — кнопка, а не заголовок
+                break
+        if node is None:
+            time.sleep(0.8)
+            continue
+        if step.get("length_chip"):
+            nodes = _set_length(nodes, ctx, notes)
+            again = [n for sel in advance for n in ui.find(nodes, **sel) if n.area > 0]
+            node = again[-1] if again else node
+        name = (node.text or node.desc or "?")[:30]
+        # Тот же экран и та же кнопка, а цель не появилась — даём экрану время.
+        if last_tap == (name, node.bounds) and time.time() - last_tap_at < 4:
+            time.sleep(1.0)
+            continue
+        ui.tap_node(node)
+        last_tap, last_tap_at = (name, node.bounds), time.time()
+        done.append(f"«{name}»")
+        human.pause(1.5, 2.5)
+    _snap(log_path, index, "STUCK")
+    with open(os.path.join(log_path, f"{index:02d}_screen.txt"), "w", encoding="utf-8") as f:
+        f.write(ui.describe(nodes, limit=80))
+    raise StepFailed(
+        f"не дошёл до «{label}» (нажато: {', '.join(done) or 'ничего'}). "
+        f"Дерево экрана сохранено в {log_path}"
+        + _vision_note(log_path, index, label))
 
 
 def post(video_path, caption, target, recipes=None):
@@ -256,7 +425,7 @@ def post(video_path, caption, target, recipes=None):
             raise StepFailed(f"{package} не открылся")
         report.append("приложение открыто на экране публикации")
 
-        ctx = {"caption": caption}
+        ctx = {"caption": caption, "video": video_path}
         for i, step in enumerate(recipe["steps"], start=1):
             line = run_step(step, ctx, log_path, i)
             report.append(f"  {i:2d}. {line}")
@@ -270,6 +439,7 @@ def post(video_path, caption, target, recipes=None):
         return True, report.text()
 
     except (StepFailed, adb.AdbError, RuntimeError) as e:
+        # NeedsPermission — тоже RuntimeError: текст для человека готовый.
         report.append(f"ОШИБКА: {e}")
         return False, report.text()
 
