@@ -1230,6 +1230,10 @@ def _cmd_telegram(body):
     """Сохранить настройки бота и поднять его."""
     import telegram_bot
 
+    if "token" in body and str(body["token"] or "").strip() \
+            and not telegram_bot.clean_token(body["token"]):
+        return {"ok": False, "error": "это не похоже на токен бота — он выглядит "
+                                      "так: 1234567890:AAH… (число, двоеточие, 35 знаков)"}
     if "token" in body or "owner" in body:
         current = telegram_bot.load_settings()
         telegram_bot.save_settings(body.get("token", current["token"]),

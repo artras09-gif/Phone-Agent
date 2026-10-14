@@ -114,8 +114,9 @@ say('id="q-target"' not in page and "q-targets" in page and "&targets=" in page,
 
 print("\n--- бот: новый токен ---")
 calls = []
-updates = {"OLD": [{"update_id": 900, "message": {"text": "старый", "chat": {"id": 1}}}],
-           "NEW": [{"update_id": 5, "message": {"text": "новый", "chat": {"id": 1}}}]}
+OLD, NEW = "1111111:" + "A" * 35, "2222222:" + "B" * 35
+updates = {OLD: [{"update_id": 900, "message": {"text": "старый", "chat": {"id": 1}}}],
+           NEW: [{"update_id": 5, "message": {"text": "новый", "chat": {"id": 1}}}]}
 handled = []
 
 
@@ -135,25 +136,37 @@ telegram_bot.check = lambda: (True, "@bot_" + telegram_bot.load_settings()["toke
 telegram_bot._handle = lambda msg: handled.append(msg["text"])
 telegram_bot.send = lambda *a, **k: None
 telegram_bot.RETRY_SEC = 0.05
-telegram_bot.save_settings("OLD", "1")
+telegram_bot.save_settings(OLD, "1")
 webui._start_bot()
 time.sleep(0.4)
 say("старый" in handled, "старый бот принимает сообщения")
 say(not webui._BOT_ELSEWHERE["yes"], "замок бота взят этим окном")
 
-res = post("/api/telegram", json.dumps({"token": "NEW"}).encode())
+res = post("/api/telegram", json.dumps({"token": " \"bot" + NEW + "\" "}).encode())
 deadline = time.time() + 3
 while "новый" not in handled and time.time() < deadline:
     time.sleep(0.05)
 say("новый" in handled, f"новый токен подхвачен сразу, сообщение принято: {handled}")
 say(not webui._BOT_ELSEWHERE["yes"],
     "повторное сохранение не пишет «бота ведёт служба телефона»")
-new_offsets = [c[2].get("offset", 0) for c in calls if c[0] == "NEW" and c[1] == "getUpdates"]
+new_offsets = [c[2].get("offset", 0) for c in calls if c[0] == NEW and c[1] == "getUpdates"]
 say(new_offsets and new_offsets[0] == 0,
     f"новый бот опрашивается с нуля, а не со старого номера (первый offset {new_offsets[:1]})")
 time.sleep(0.3)
 say(handled.count("старый") == 1, "старый поток больше не принимает сообщений")
 say(telegram_bot.running(), "бот работает")
+
+print("\n--- токен, вставленный с мусором (2026-10-14: «HTTP Error 404») ---")
+say(telegram_bot.load_settings()["token"] == NEW,
+    "вставили « \"bot<токен>\" » — сохранён чистый токен")
+say(telegram_bot.clean_token(NEW[:12] + "​" + NEW[12:]) == NEW, "невидимый символ внутри убран")
+res = post("/api/telegram", json.dumps({"token": "привет, вот токен"}).encode())
+say(res.get("ok") is False and "не похоже на токен" in res.get("error", "")
+    and telegram_bot.load_settings()["token"] == NEW,
+    "не токен вовсе — понятная ошибка, рабочий токен не затёрт")
+why = telegram_bot._why_failed({"ok": False, "error": "HTTP Error 404: Not Found"})
+say(why == telegram_bot.MALFORMED and "нет связи" not in why,
+    "404 — «токен вставлен с ошибкой», а не «нет связи»")
 
 server.shutdown()
 shutil.rmtree(tmp, ignore_errors=True)

@@ -38,7 +38,7 @@ def main():
     assert config.DB_PATH != live
     config.BOT_OPEN = True
     tg._call = fake_call
-    tg.save_settings("111:AAA", "")        # владельца ещё нет
+    tg.save_settings("111111:" + "A" * 35, "")        # владельца ещё нет
 
     ok = True
 

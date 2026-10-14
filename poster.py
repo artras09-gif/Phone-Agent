@@ -373,6 +373,34 @@ def _advance_until(step, ctx, log_path, index):
         + _vision_note(log_path, index, label))
 
 
+# Папка разбора последней НЕУДАЧНОЙ публикации — для отчёта в Telegram.
+LAST_FAIL = {"dir": "", "target": ""}
+
+
+def failure_files(log_path):
+    """(снимок экрана в байтах или None, текст «что на экране») из папки сбоя."""
+    shot, screen = None, ""
+    try:
+        names = sorted(os.listdir(log_path))
+    except OSError:
+        return None, ""
+    for name in reversed(names):
+        path = os.path.join(log_path, name)
+        if shot is None and name.lower().endswith(".png"):
+            try:
+                with open(path, "rb") as f:
+                    shot = f.read()
+            except OSError:
+                pass
+        if not screen and name.endswith(("_screen.txt", "_vision.txt")):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    screen = f.read()
+            except OSError:
+                pass
+    return shot, screen
+
+
 def post(video_path, caption, target, recipes=None):
     """Опубликовать видео в одну соцсеть. Возвращает (успех, отчёт)."""
     recipes = recipes or load_recipes()
@@ -441,6 +469,8 @@ def post(video_path, caption, target, recipes=None):
     except (StepFailed, adb.AdbError, RuntimeError) as e:
         # NeedsPermission — тоже RuntimeError: текст для человека готовый.
         report.append(f"ОШИБКА: {e}")
+        LAST_FAIL.update(dir=log_path, target=target)
+        _snap(log_path, 99, "FAIL")
         return False, report.text()
 
     finally:

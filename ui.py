@@ -298,6 +298,26 @@ class NeedsPermission(RuntimeError):
     """Приложению нужен доступ, который программа сама не выдаёт."""
 
 
+# Свой экран приложения «разрешите доступ к камере и микрофону» (Instagram
+# показывает его, когда системное окно уже закрыли отказом или ни разу не
+# давали доступ). Кнопка на нём ведёт к выдаче доступа — её не жмём.
+ACCESS_BUTTONS = ("allow access", "enable access", "разрешить доступ", "открыть доступ",
+                  "предоставить доступ")
+CAMERA_WORDS = ("camera", "камер")
+MIC_WORDS = ("microphone", "микрофон")
+
+
+def access_screen(nodes):
+    """Текст своего экрана приложения «нужен доступ к камере» или None."""
+    texts = [(n.text or n.desc) for n in nodes or [] if (n.text or n.desc)]
+    joined = " ".join(texts).lower()
+    button = any(t.lower() in ACCESS_BUTTONS for t in texts)
+    asks = any(w in joined for w in CAMERA_WORDS) and any(w in joined for w in MIC_WORDS)
+    if button or (asks and ("allow" in joined or "разреш" in joined or "доступ" in joined)):
+        return next((t for t in texts if any(w in t.lower() for w in CAMERA_WORDS)), texts[0])
+    return None
+
+
 def permission_dialog(nodes):
     """(вопрос, кнопка отказа) системного окна разрешения или (None, None)."""
     question, deny = None, None
@@ -323,6 +343,13 @@ def handle_permission(nodes=None, strict=False):
     nodes = nodes if nodes is not None else dump(retries=2, tolerant=True)
     question, deny = permission_dialog(nodes)
     if question is None and deny is None:
+        screen = access_screen(nodes) if strict else None
+        if screen:
+            raise NeedsPermission(
+                f"приложение просит доступ к камере и микрофону («{screen[:80]}»). "
+                "Сам доступ я не выдаю. Открой на телефоне камеру Reels в Instagram "
+                "и нажми «Allow access» → «While using the app» для камеры и "
+                "микрофона — один раз, потом публикация пойдёт сама")
         return False
     if question and any(w in question.lower() for w in MEDIA_WORDS):
         if not strict:

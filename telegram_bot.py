@@ -74,15 +74,35 @@ def load_settings():
         with open(settings_path(), encoding="utf-8") as f:
             saved = json.load(f)
         data["token"] = str(saved.get("token") or data["token"]).strip()
+        # Токен, сохранённый с мусором прежней версией, чистим и при чтении:
+        # после обновления бот оживает сам, без повторной вставки.
+        data["token"] = clean_token(data["token"]) or data["token"]
         data["owner"] = str(saved.get("owner") or data["owner"]).strip()
     except (OSError, json.JSONDecodeError):
         pass
     return data
 
 
+# Токен Telegram: число, двоеточие и 35 знаков. Ищем его ВНУТРИ того, что
+# вставили: с токеном часто прилетают кавычки, «bot» спереди, пробел или
+# невидимый символ из мессенджера. Telegram на такой адрес отвечает 404, и
+# окно писало «нет связи с Telegram: HTTP Error 404» при рабочем токене
+# (2026-10-14).
+RE_TOKEN = re.compile(r"(\d{5,15}:[A-Za-z0-9_-]{30,50})")
+
+
+def clean_token(raw):
+    """Токен из вставленного текста или "" — если его там нет вовсе."""
+    text = str(raw or "")
+    text = re.sub(r"[\u200b-\u200f\u2060\ufeff\s]", "", text)   # невидимые и пробелы
+    m = RE_TOKEN.search(text)
+    return m.group(1) if m else ""
+
+
 def save_settings(token, owner):
+    token = clean_token(token) if str(token or "").strip() else ""
     with open(settings_path(), "w", encoding="utf-8", newline="\n") as f:
-        json.dump({"token": token.strip(), "owner": str(owner).strip()},
+        json.dump({"token": token, "owner": str(owner).strip()},
                   f, ensure_ascii=False, indent=2)
     return settings_path()
 
@@ -411,6 +431,9 @@ def check():
         return False, "токен не задан"
     res = _call("getMe", timeout=20)
     if not res.get("ok"):
+        why = _why_failed(res)
+        if why in (MALFORMED, REJECTED):
+            return False, why
         return False, f"токен не принят: {str(res.get('error') or res)[:80]}"
     name = res["result"].get("username") or res["result"].get("first_name")
     who = "открыт всем" if config.BOT_OPEN else f"только для {cfg['owner']}"
@@ -948,6 +971,8 @@ CONFLICT = ("бота уже опрашивает другая копия PhoneA
             "или в другом окне. Telegram отдаёт сообщения только одной; закрой "
             "лишнюю или убери токен на втором компьютере")
 REJECTED = "Telegram не принимает токен (401) — вставь его заново во вкладке «Бот»"
+MALFORMED = ("токен вставлен с ошибкой (Telegram его не узнаёт, 404) — скопируй "
+             "его у @BotFather заново и вставь во вкладке «Бот»")
 RETRY_SEC = 5            # пауза перед повтором после неудачного опроса
 
 
@@ -963,6 +988,8 @@ def _why_failed(res):
         return CONFLICT
     if code == 401 or "401" in text or "Unauthorized" in text:
         return REJECTED
+    if code == 404 or "404" in text or "Not Found" in text:
+        return MALFORMED
     return "нет связи с Telegram: " + text[:80]
 
 

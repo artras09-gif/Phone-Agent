@@ -165,6 +165,43 @@ text = json.dumps(reels, ensure_ascii=False)
 say(all(w in text for w in ("New reel", "ideo", "Next", "Write a caption", "Share")),
     "английские подписи Instagram в маршруте")
 
+print("\n--- Instagram: свой экран «доступ к камере и микрофону» ---")
+IG = "com.instagram.android"
+own = [node("Allow access to camera and microphone", pkg=IG, clickable=False),
+       node("This lets you share photos and record videos.", pkg=IG, clickable=False),
+       node("Allow access", pkg=IG)]
+taps.clear()
+try:
+    ui.handle_permission(own, strict=True)
+    say(False, "свой экран доступа — должна быть понятная остановка")
+except ui.NeedsPermission as e:
+    say(not taps and "While using the app" in str(e), f"кнопку доступа не жму, говорю что нажать: {str(e)[:90]}…")
+say(ui.handle_permission(own) is False and not taps, "в ленте (не строго) — не трогаю")
+camera = [node("REEL", pkg=IG), node("STORY", pkg=IG), node("Add audio", pkg=IG)]
+say(ui.access_screen(camera) is None, "обычная камера Instagram за экран доступа не принимается")
+mode = [s for s in reels if s.get("desc", "").startswith("режим камеры")]
+gallery_at = [i for i, s in enumerate(reels) if "галереи" in s.get("desc", "")][0]
+say(mode and mode[0]["op"] == "optional_tap" and reels.index(mode[0]) < gallery_at
+    and {"text": "REEL"} in mode[0]["any"], "перед галереей камера переключается на REEL")
+
+print("\n--- сбой публикации: снимок и экран — в бот ---")
+import scheduler      # noqa: E402
+import telegram_bot   # noqa: E402
+
+fail_dir = tempfile.mkdtemp()
+open(os.path.join(fail_dir, "06_STUCK.png"), "wb").write(b"\x89PNG old")
+open(os.path.join(fail_dir, "99_FAIL.png"), "wb").write(b"\x89PNG last")
+open(os.path.join(fail_dir, "06_screen.txt"), "w", encoding="utf-8").write("'Allow access' id=x clickable")
+poster.LAST_FAIL.update(dir=fail_dir, target="reels")
+got = {}
+telegram_bot.load_settings = lambda: {"token": "t", "owner": "42"}
+telegram_bot.alert = lambda text, image=None: got.update(alert=text, image=image) or True
+telegram_bot.send = lambda text, **kw: got.update(text=text, chat=kw.get("chat_id")) or True
+scheduler._tell_failure("reels", "=== Instagram\nОШИБКА: не нашёл элемент для «галерея»")
+say(got.get("image") == b"\x89PNG last", "в бот ушёл последний снимок экрана")
+say("Instagram Reels" in got.get("alert", "") and "галерея" in got["alert"], f"подпись: {got.get('alert')}")
+say("Allow access" in got.get("text", "") and got.get("chat") == "42", "и список кнопок экрана — владельцу")
+
 print("\n--- новый маршрут доходит до старой установки ---")
 tmp = tempfile.mkdtemp()
 mine = {"shorts": {"package": "x", "steps": [{"op": "old"}], "мой_ключ": 1},

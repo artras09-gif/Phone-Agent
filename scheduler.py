@@ -206,6 +206,31 @@ def scan_watch_dir(targets="tiktok"):
     return added
 
 
+def _tell_failure(target, report):
+    """Публикация сорвалась — снимок экрана и что на нём, владельцу бота.
+
+    Раньше человек фотографировал монитор и телефон, а разбирать причину
+    приходилось по фото (2026-10-14). Теперь бот присылает сам: снимок с
+    телефона и список кнопок экрана — по ним видно, какой подписи не нашлось.
+    """
+    try:
+        import telegram_bot
+
+        if not telegram_bot.load_settings()["token"]:
+            return
+        shot, screen = poster.failure_files(poster.LAST_FAIL.get("dir", ""))
+        title = postspec.TITLES.get(target, target)
+        error = next((line for line in str(report).splitlines() if "ОШИБКА" in line),
+                     "не опубликовал")
+        telegram_bot.alert(f"❌ {title}: {error[:900]}", image=shot)
+        if screen:
+            owner = telegram_bot.load_settings()["owner"]
+            telegram_bot.send(f"Что было на экране ({title}):\n{screen[:3500]}",
+                              preview=False, chat_id=owner)
+    except Exception:
+        pass                         # отчёт о сбое не должен ронять публикацию
+
+
 def normalize_targets(value):
     """Список соцсетей из окна («tiktok,reels» или список) -> «tiktok,reels».
 
@@ -279,6 +304,8 @@ def run_post_job(notify=None, job_id=None):
         results.append(report)
         if notify:
             notify(report)
+        if not ok:
+            _tell_failure(target, report)
 
     jobs.mark(job["id"], "done" if ok_all else "failed", "\n\n".join(results))
     return "\n\n".join(results)
