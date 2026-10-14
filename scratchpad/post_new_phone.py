@@ -158,9 +158,8 @@ except ui.NeedsPermission as e:
 say(ui.handle_permission(media) is False and not taps, "в ленте (не строго) — просто не трогаю")
 
 reels = recipes["reels"]["steps"]
-ops = [s["op"] for s in reels]
-say(ops.index("permissions") < [i for i, s in enumerate(reels) if "галереи" in s.get("desc", "")][0],
-    "в маршруте Instagram окна разрешений закрываются ДО тапа по галерее")
+say(reels[0]["op"] == "reel_gallery" and recipes["reels"]["rev"] >= 4,
+    "маршрут Instagram начинается с пути к галерее Reels (без камеры, если можно)")
 text = json.dumps(reels, ensure_ascii=False)
 say(all(w in text for w in ("New reel", "ideo", "Next", "Write a caption", "Share")),
     "английские подписи Instagram в маршруте")
@@ -179,10 +178,148 @@ except ui.NeedsPermission as e:
 say(ui.handle_permission(own) is False and not taps, "в ленте (не строго) — не трогаю")
 camera = [node("REEL", pkg=IG), node("STORY", pkg=IG), node("Add audio", pkg=IG)]
 say(ui.access_screen(camera) is None, "обычная камера Instagram за экран доступа не принимается")
-mode = [s for s in reels if s.get("desc", "").startswith("режим камеры")]
-gallery_at = [i for i, s in enumerate(reels) if "галереи" in s.get("desc", "")][0]
-say(mode and mode[0]["op"] == "optional_tap" and reels.index(mode[0]) < gallery_at
-    and {"text": "REEL"} in mode[0]["any"], "перед галереей камера переключается на REEL")
+print("\n--- Instagram: к галерее Reels ---")
+import device   # noqa: E402
+
+W, H = 1280, 2772
+poster.adb.screen_size = lambda: (W, H)
+device.stop_app = lambda pkg: None
+device.open_uri = lambda uri, pkg=None: ig.go("reels_feed")
+device.open_app = lambda pkg: ig.go("home")
+
+
+class Insta:
+    """Instagram нового образца: «+» на главной -> «New post» -> REEL -> галерея."""
+
+    def __init__(self, create=True, reel_opens_camera=False):
+        self.screen, self.create, self.cam = "off", create, reel_opens_camera
+        self.log = []
+
+    def go(self, screen):
+        self.screen = screen
+        self.log.append(screen)
+
+    def dump(self, retries=1, tolerant=True):
+        s = self.screen
+        if s == "home":
+            out = [node("", desc="Home", pkg=IG, bounds=(0, 2650, 256, 2772)),
+                   node("", desc="Your story", pkg=IG, bounds=(20, 300, 200, 480)),
+                   node("", desc="Create story", pkg=IG, bounds=(200, 300, 380, 480))]
+            if self.create:
+                out.append(node("", desc="Create", pkg=IG, bounds=(20, 120, 140, 230)))
+            return out
+        if s == "new_post":
+            return [node("New post", rid="gallery_title_text", pkg=IG, clickable=False),
+                    node("POST", pkg=IG, bounds=(300, 2600, 450, 2700)),
+                    node("REEL", pkg=IG, bounds=(546, 2567, 733, 2678))]
+        if s == "camera":
+            return [node("STORY", pkg=IG, bounds=(350, 2567, 530, 2678)),
+                    node("REEL", pkg=IG, bounds=(546, 2567, 733, 2678)),
+                    node("", desc="Close", pkg=IG, bounds=(20, 120, 140, 230))]
+        if s == "reel_gallery":
+            return [node("New reel", rid="gallery_title_text", pkg=IG, clickable=False),
+                    node("", rid="gallery_grid_item_thumbnail", desc="Video thumbnail", pkg=IG)]
+        return []                                   # играющая лента — дерева нет
+
+    def tap_node(self, n):
+        label = n.text or n.desc
+        self.log.append("tap " + label)
+        if label == "Create":
+            self.go("new_post")
+        elif label == "REEL" and self.screen == "new_post":
+            self.go("camera" if self.cam else "reel_gallery")
+        elif label in ("Your story", "Create story"):
+            raise AssertionError("тест ушёл в историю!")
+
+    def tap_xy(self, x, y):
+        self.log.append(f"xy {x},{y}")
+        if self.screen == "reels_feed" and y < 300:
+            self.go("camera")
+        elif self.screen == "camera" and x < 200 and 2567 <= y <= 2678:
+            self.go("reel_gallery")                    # миниатюра в ряду REEL
+
+
+step_ig = reels[0]
+poster._snap = lambda *a: None
+poster._vision_note = lambda *a: ""
+fast = [0.0]
+real_clock = poster.time.time
+poster.time.time = lambda: fast.__setitem__(0, fast[0] + 0.5) or fast[0]
+for name, kw, want_camera in (("«+» на главной", {}, False),
+                              ("«+», но REEL открыл камеру", {"reel_opens_camera": True}, True),
+                              ("на главной нет «+» — камера", {"create": False}, True)):
+    ig = Insta(**kw)
+    ui.dump, ui.tap_node, poster.adb.tap = ig.dump, ig.tap_node, ig.tap_xy
+    try:
+        res = poster._reel_gallery(step_ig, {}, tempfile.mkdtemp(), 1)
+        good = ig.screen == "reel_gallery" and (("camera" in ig.log) == want_camera)
+    except poster.StepFailed as e:
+        res, good = str(e), False
+    say(good, f"{name}: {res}")
+poster.time.time = real_clock
+say("tap Create story" not in ig.log and "tap Your story" not in ig.log,
+    "кнопки историй не нажимались («Create» — только точным совпадением)")
+
+print("\n--- YouTube: экран обрезки без дерева — кнопка по снимку ---")
+
+
+class Blind(Phone):
+    """Под играющим видео дерево не снимается: на обрезке и в редакторе пусто."""
+
+    def dump(self, retries=1, tolerant=True):
+        return [] if self.screen in ("trim", "editor") else Phone.dump(self)
+
+
+yt = Blind(42)
+ui.dump = yt.dump
+seen_prompts = []
+
+
+def fake_sight(prompt):
+    seen_prompts.append(prompt)
+    if "длительности" in prompt:
+        return (1150, 160, f"{yt.length}s") if yt.screen == "trim" else None
+    if yt.screen == "trim":
+        return (1110, 2530, "Done")
+    if yt.screen == "editor":
+        return (1110, 2550, "Next")
+    return None
+
+
+def blind_tap(x, y):
+    if yt.screen == "trim" and y < 300:
+        yt.tap(node(f"{yt.length}s", rid="duration_chip"))
+    elif yt.screen == "trim":
+        yt.tap(node("Done"))
+    elif yt.screen == "editor":
+        yt.tap(node("Next"))
+
+
+poster._vision_point = fake_sight
+poster.adb.tap = blind_tap
+real_time = poster.time.time
+clock = [0.0]
+poster.time.time = lambda: clock.__setitem__(0, clock[0] + 1.0) or clock[0]
+try:
+    res = poster._advance_until(dict(step, timeout=200), {"video": fake_mp4(42)}, tempfile.mkdtemp(), 2)
+    good = yt.screen == "details" and yt.done_length == 60 and "по снимку" in res
+except poster.StepFailed as e:
+    res, good = str(e), False
+poster.time.time = real_time
+say(good, f"дерева нет — «Done» и «Next» найдены по снимку, длина 60 с: {res[:120]}")
+say(any("длительности" in p for p in seen_prompts), "длину по снимку проверяли")
+
+yt = Blind(42)
+ui.dump = yt.dump
+poster._vision_point = lambda prompt: (1110, 2530, "Upload Short")
+clock[0] = 0.0
+poster.time.time = lambda: clock.__setitem__(0, clock[0] + 1.0) or clock[0]
+try:
+    poster._advance_until(dict(step, timeout=60), {"video": fake_mp4(42)}, tempfile.mkdtemp(), 2)
+    say(False, "модель назвала «Upload» — должна быть остановка")
+except poster.StepFailed as e:
+    say(yt.screen == "trim" and "не жму" in str(e), "модель назвала «Upload Short» — не жму, честная остановка")
+poster.time.time = real_time
 
 print("\n--- сбой публикации: снимок и экран — в бот ---")
 import scheduler      # noqa: E402
@@ -201,6 +338,10 @@ scheduler._tell_failure("reels", "=== Instagram\nОШИБКА: не нашёл �
 say(got.get("image") == b"\x89PNG last", "в бот ушёл последний снимок экрана")
 say("Instagram Reels" in got.get("alert", "") and "галерея" in got["alert"], f"подпись: {got.get('alert')}")
 say("Allow access" in got.get("text", "") and got.get("chat") == "42", "и список кнопок экрана — владельцу")
+got.clear()
+scheduler._tell_failure("tiktok", "=== TikTok : 2.mp4\nне смог разблокировать телефон")
+say("разблокировать" in got.get("alert", ""),
+    f"нет строки «ОШИБКА» — в бот уходит настоящая причина, а не «не опубликовал»: {got.get('alert')}")
 
 print("\n--- новый маршрут доходит до старой установки ---")
 tmp = tempfile.mkdtemp()

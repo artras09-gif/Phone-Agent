@@ -178,6 +178,9 @@ def run_step(step, ctx, log_path, index):
     if op == "advance_until":
         return _advance_until(step, ctx, log_path, index)
 
+    if op == "reel_gallery":
+        return _reel_gallery(step, ctx, log_path, index)
+
     if op in ("tap", "optional_tap", "wait", "publish"):
         node, nodes = ui.wait_any(selectors, timeout=timeout)
 
@@ -220,6 +223,134 @@ def run_step(step, ctx, log_path, index):
         return f"введён текст ({len(value)} символов)"
 
     raise StepFailed(f"неизвестная операция: {op}")
+
+
+# --------------------------------------------- Instagram: к галерее Reels
+
+def _is_reel_gallery(nodes, gallery):
+    """Галерея именно Reels (а не «Новая публикация» или «История»)."""
+    for n in nodes:
+        label = (n.text or n.desc).lower()
+        if n.rid.endswith("gallery_title_text") and "reel" in label:
+            return True
+    return ui.find_any(nodes, [s for s in gallery if "rid" not in s]) is not None
+
+
+def _exact(nodes, words):
+    """Кликабельный узел, чья подпись (desc или text) — РОВНО одно из слов.
+
+    Не вхождением: «Create» как кусок «Create story» или «Add to story» увёл
+    бы в историю."""
+    wanted = [w.lower() for w in words]
+    for word in wanted:
+        for n in nodes:
+            if n.clickable and n.area > 0 and (n.desc or n.text).strip().lower() == word:
+                return n
+    return None
+
+
+def _reel_gallery(step, ctx, log_path, index):
+    """Открыть галерею «New reel» — по возможности БЕЗ камеры.
+
+    Просьба 2026-10-14: «можно другим путём, чтобы он не открывал камеру»
+    (на новом телефоне открывалась фронталка). Путь 1 — «+» («Создать») на
+    главной: открывает галерею, камера не нужна. Путь 2 (запасной, как
+    раньше) — камера из вкладки Reels и миниатюра галереи; на новом телефоне
+    миниатюра стоит в одном ряду с переключателем STORY/REEL, поэтому место
+    считается от этого ряда, а старое место — последним.
+    """
+    package = step.get("package", "com.instagram.android")
+    gallery = step["gallery"]
+    reel_tab = step.get("reel_tab", [])
+    tried = []
+
+    def settle(seconds=6):
+        """Дерево экрана, закрыв окна разрешений и «черновик с прошлого раза»."""
+        end, nodes = time.time() + seconds, []
+        while time.time() < end:
+            ui.handle_permission(strict=True)
+            nodes = ui.dump(retries=1, tolerant=True)
+            draft = ui.find_any(nodes, step.get("new_draft", []))
+            if draft is not None:
+                ui.tap_node(draft)
+                human.pause(1.0, 1.6)
+                continue
+            if _is_reel_gallery(nodes, gallery):
+                return nodes, True
+            time.sleep(0.7)
+        return nodes, False
+
+    def from_camera(nodes):
+        """Камера Reels открыта: режим REEL и миниатюра галереи."""
+        tab = ui.find_any(nodes, reel_tab)
+        if tab is not None and not tab.selected:
+            ui.tap_node(tab)
+            human.pause(1.0, 1.6)
+            nodes = ui.dump(retries=1, tolerant=True) or nodes
+            tab = ui.find_any(nodes, reel_tab) or tab
+        w, h = adb.screen_size()
+        spots = []
+        if tab is not None:
+            spots.append((int(w * step.get("thumb_x", 0.1)), tab.center[1], "в ряду REEL"))
+        tx, ty = step.get("thumb_xy", (0.09, 0.885))
+        spots.append((int(w * tx), int(h * ty), "старое место"))
+        for x, y, where in spots:
+            adb.tap(x, y)
+            human.pause(1.5, 2.2)
+            nodes, ok = settle(8)
+            tried.append(f"миниатюра {where} {x},{y}")
+            if ok:
+                return nodes, True
+        return nodes, False
+
+    # Путь 1: «+» на главной.
+    device.stop_app(package)
+    human.pause(0.8, 1.4)
+    device.open_app(package)
+    nodes, ok = [], False
+    end = time.time() + 15
+    create = None
+    while time.time() < end and create is None:
+        ui.handle_permission(strict=True)
+        nodes = ui.dump(retries=1, tolerant=True)
+        create = _exact(nodes, step.get("create_words", []))
+        if create is None:
+            time.sleep(0.8)
+    if create is not None:
+        ui.tap_node(create)
+        human.pause(1.5, 2.5)
+        tried.append("«+» на главной")
+        nodes, ok = settle(6)
+        if not ok and ui.find_any(nodes, reel_tab) is not None:
+            tab = ui.find_any(nodes, reel_tab)
+            ui.tap_node(tab)
+            human.pause(1.5, 2.2)
+            tried.append("вкладка REEL")
+            nodes, ok = settle(8)
+            if not ok and ui.find_any(nodes, reel_tab) is not None:
+                nodes, ok = from_camera(nodes)       # REEL открыл камеру
+        if ok:
+            return "галерея Reels: " + " -> ".join(tried)
+
+    # Путь 2: камера из вкладки Reels (как раньше).
+    device.open_uri(step.get("reels_uri", "instagram://reels_home"), package)
+    human.pause(3.0, 5.0)
+    cx, cy = step.get("camera_xy", (0.061, 0.071))
+    w, h = adb.screen_size()
+    adb.tap(int(w * cx), int(h * cy))
+    human.pause(3.0, 4.5)
+    tried.append("камера из Reels")
+    nodes, ok = settle(6)
+    if not ok:
+        nodes, ok = from_camera(nodes)
+    if ok:
+        return "галерея Reels: " + " -> ".join(tried)
+    _snap(log_path, index, "STUCK")
+    with open(os.path.join(log_path, f"{index:02d}_screen.txt"), "w", encoding="utf-8") as f:
+        f.write(ui.describe(nodes, limit=80))
+    raise StepFailed("не открылась галерея Reels (пробовал: " + "; ".join(tried)
+                     + f"). Дерево экрана сохранено в {log_path}"
+                     + _vision_note(log_path, index, "галерея Reels"))
 
 
 # ---------------------------------------------- промежуточные экраны
@@ -319,6 +450,95 @@ def _set_length(nodes, ctx, notes):
     return nodes
 
 
+# Где кнопка «вперёд», если дерево экрана не снимается (под играющим видео
+# uiautomator молчит). Только для кнопок перехода — «Готово»/«Далее»; что
+# модель назвала, сверяется со списком, публикующие отбрасываются.
+ASK_BUTTON_AT = """Снимок экрана телефона, {w}x{h} пикселей. Есть ли на нём кнопка
+с надписью {labels}? Если есть — ответь {{"x": число, "y": число, "надпись":
+"как написано на кнопке"}}: центр кнопки в пикселях этого снимка. Нет такой
+кнопки — {{"нет": true}}."""
+
+ASK_LENGTH_AT = """Снимок экрана телефона, {w}x{h} пикселей. Вверху экрана есть
+кнопка выбора длительности ролика с надписью вроде «15s», «60s» или «3m»?
+Если есть — ответь {{"x": число, "y": число, "надпись": "как написано"}}:
+центр кнопки в пикселях этого снимка. Нет — {{"нет": true}}."""
+
+
+def _vision_point(prompt):
+    """(x, y на экране, надпись) по снимку или None. Меткость — как у рук."""
+    import escape
+
+    png, iw, ih = escape._full_shot()
+    if png is None:
+        return None
+    way = escape.hands_ready(iw, ih)
+    if way is None:
+        return None
+    try:
+        raw = vision.ask(png, prompt.format(w=iw, h=ih), system=escape.SYSTEM,
+                         max_tokens=escape.ANSWER_TOKENS, temperature=0.1, shrink=1,
+                         think=escape.THINK)
+    except vision.VisionError:
+        return None
+    data = vision._json_from(raw)
+    if isinstance(data, dict) and data.get("нет") in (True, "true", "да"):
+        return None
+    got = escape._point_of(raw)
+    if not got:
+        return None
+    label = str((data or {}).get("надпись", "") if isinstance(data, dict) else "").strip()
+    x, y = escape._to_image(got[0], got[1], way, iw, ih)
+    w, h = adb.screen_size()
+    return int(x * w / iw), int(y * h / ih), label
+
+
+def _advance_by_sight(advance, ctx, notes):
+    """Нажать «вперёд», найдя её по снимку. Надпись (или None, если не нашли)."""
+    words = []
+    for sel in advance:
+        word = sel.get("text") or sel.get("desc")
+        if word and word not in words:
+            words.append(word)
+    hit = _vision_point(ASK_BUTTON_AT.replace("{labels}", " или ".join(f"«{w}»" for w in words)))
+    if hit is None:
+        return None
+    x, y, label = hit
+    low = label.lower()
+    if not label or any(w in low for w in NEVER_ADVANCE) \
+            or not any(w.lower() in low for w in words):
+        notes.append(f"по снимку модель назвала «{label}» — не жму")
+        return None
+    if low in ("done", "готово") and ctx.get("video"):
+        _length_by_sight(ctx, notes)
+    adb.tap(x, y)
+    return label
+
+
+def _length_by_sight(ctx, notes):
+    """Кнопка длины по снимку: дотянуть до длины видео, как `_set_length`."""
+    want = ctx.get("seconds")
+    if want is None:
+        want = ctx["seconds"] = mp4_seconds(ctx["video"])
+    if want is None:
+        return
+    seen = []
+    for _ in range(4):
+        hit = _vision_point(ASK_LENGTH_AT)
+        have = _length_of(hit[2]) if hit else None
+        if have is None:
+            notes.append("кнопку длины по снимку не нашёл — длину не проверить")
+            return
+        if have >= want - 0.5:
+            notes.append(f"длина {have} с (по снимку) — видео {want:.0f} с влезает")
+            return
+        if have in seen:
+            notes.append(f"[!] видео {want:.0f} с длиннее, чем YouTube даёт ({max(seen)} с)")
+            return
+        seen.append(have)
+        adb.tap(hit[0], hit[1])
+        human.pause(1.0, 1.6)
+
+
 def _advance_until(step, ctx, log_path, index):
     """Пройти промежуточные экраны («Done», «Next»), пока не появится цель.
 
@@ -334,6 +554,8 @@ def _advance_until(step, ctx, log_path, index):
     label = step.get("desc", "advance_until")
     done, notes, nodes = [], [], []
     last_tap = None
+    started = time.time()
+    sight_at = 0.0
     while time.time() < deadline:
         if abort.requested():
             raise StepFailed("остановлено")
@@ -349,6 +571,17 @@ def _advance_until(step, ctx, log_path, index):
                 node = hits[-1]          # нижняя — кнопка, а не заголовок
                 break
         if node is None:
+            # Ни цели, ни кнопки в дереве дольше `vision_after` секунд — экран
+            # не читается (видео играет) или подписи другие. Ищем по снимку.
+            waited = time.time() - started
+            if step.get("vision_after") and waited > step["vision_after"] \
+                    and time.time() - sight_at > 8:
+                sight_at = time.time()
+                pressed = _advance_by_sight(advance, ctx, notes)
+                if pressed:
+                    done.append(f"«{pressed}» (по снимку)")
+                    human.pause(1.5, 2.5)
+                    continue
             time.sleep(0.8)
             continue
         if step.get("length_chip"):
@@ -368,8 +601,10 @@ def _advance_until(step, ctx, log_path, index):
     with open(os.path.join(log_path, f"{index:02d}_screen.txt"), "w", encoding="utf-8") as f:
         f.write(ui.describe(nodes, limit=80))
     raise StepFailed(
-        f"не дошёл до «{label}» (нажато: {', '.join(done) or 'ничего'}). "
-        f"Дерево экрана сохранено в {log_path}"
+        f"не дошёл до «{label}» (нажато: {', '.join(done) or 'ничего'}"
+        + (f"; дерево экрана {'пустое' if not nodes else 'без нужных кнопок'}") + "). "
+        + ("; ".join(notes) + ". " if notes else "")
+        + f"Дерево экрана сохранено в {log_path}"
         + _vision_note(log_path, index, label))
 
 

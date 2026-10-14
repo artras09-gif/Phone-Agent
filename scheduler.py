@@ -220,8 +220,13 @@ def _tell_failure(target, report):
             return
         shot, screen = poster.failure_files(poster.LAST_FAIL.get("dir", ""))
         title = postspec.TITLES.get(target, target)
-        error = next((line for line in str(report).splitlines() if "ОШИБКА" in line),
-                     "не опубликовал")
+        # Причина словами: строка «ОШИБКА», иначе — последняя содержательная
+        # («не смог разблокировать телефон», «сбой публикации: …»). Раньше в
+        # бот приходило голое «не опубликовал» — понять по нему нечего.
+        lines = [ln.strip() for ln in str(report).splitlines() if ln.strip()]
+        error = next((ln for ln in lines if "ОШИБКА" in ln), None) \
+            or next((ln for ln in reversed(lines) if not ln.startswith("===")
+                     and "приложение закрыто" not in ln), "не опубликовал")
         telegram_bot.alert(f"❌ {title}: {error[:900]}", image=shot)
         if screen:
             owner = telegram_bot.load_settings()["owner"]
