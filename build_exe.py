@@ -143,6 +143,23 @@ def run_pyinstaller():
         if os.path.exists(path):
             extra += data(path, "tools/platform-tools")
 
+    # Свой сервер Telegram Bot API (видео до 2 ГБ) — собран из официальных
+    # исходников, лежит в ~/tools/telegram-bot-api. Нет — бот работает через
+    # облако, как раньше (до 20 МБ).
+    tgapi = next((os.path.join(r, "telegram-bot-api", "telegram-bot-api.exe")
+                  for r in TOOL_ROOTS
+                  if os.path.exists(os.path.join(r, "telegram-bot-api", "telegram-bot-api.exe"))),
+                 None)
+    if tgapi:
+        # Вся папка: рядом с сервером лежат msvcp140/vcruntime140 — на чужом
+        # ПК без пакета Visual C++ сервер без них не запустится.
+        folder = os.path.dirname(tgapi)
+        for entry in sorted(os.listdir(folder)):
+            if entry.lower().endswith((".exe", ".dll")):
+                extra += data(os.path.join(folder, entry), "tools/telegram-bot-api")
+    else:
+        print("  [!] нет telegram-bot-api.exe — бот будет брать видео только до 20 МБ")
+
     scrcpy = find_tool("scrcpy")
     if scrcpy:
         extra += data(scrcpy, f"tools/{os.path.basename(scrcpy)}")

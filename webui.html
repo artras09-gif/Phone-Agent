@@ -623,6 +623,24 @@ pre.report{
           </label>
           <button class="btn accent" id="b-bot" style="align-self:flex-end">Сохранить и запустить</button>
         </div>
+        <div class="row" style="margin-top:14px">
+          <label class="field" style="width:150px">
+            api_id
+            <input type="text" id="bot-api-id" placeholder="1234567">
+          </label>
+          <label class="field" style="flex:1;min-width:240px">
+            api_hash
+            <input type="text" id="bot-api-hash" placeholder="0123abcd…">
+          </label>
+          <button class="btn" id="b-bot-api" style="align-self:flex-end">Сохранить ключи</button>
+        </div>
+        <p class="hint" style="margin:8px 0 0" id="bot-big">…</p>
+        <p class="hint" style="margin:6px 0 0">
+          Без ключей Telegram отдаёт боту видео только до 20 МБ. С ключами бот
+          работает через свой сервер Telegram прямо на этом ПК — до 2 ГБ.
+          Ключи — на my.telegram.org → API development tools (вход по номеру
+          телефона). Сервер запускается и закрывается вместе с программой сам.
+        </p>
         <p class="hint" style="margin:12px 0 0">
           Владельца бот запоминает сам: после запуска напиши ему любое
           сообщение — туда он будет слать подборку ссылок, тревоги и отчёты.
@@ -908,6 +926,7 @@ function renderBot(s){
     : (b.running ? (b.owner ? "работает" : "работает, ждёт первое сообщение")
                  : "остановлен");
   $("bot-when").textContent = "";
+  $("bot-big").textContent = b.big || "";
 }
 
 /* Какую ленту смотреть. Выбор запоминается: агент обычно живёт в одной. */
@@ -1483,6 +1502,16 @@ $("s-key").addEventListener("keydown", e => {
 $("s-provider").onchange = () => send("settings", {
   vision_provider: $("s-provider").value,
 });
+
+$("b-bot-api").onclick = () => {
+  const id = $("bot-api-id").value.trim(), hash = $("bot-api-hash").value.trim();
+  if(!/^\d{3,12}$/.test(id) || !/^[0-9a-fA-F]{32}$/.test(hash)){
+    toast("api_id — число, api_hash — 32 знака 0-9 a-f (с my.telegram.org)", "bad");
+    return;
+  }
+  send("telegram", {api_id: id, api_hash: hash});
+  $("bot-api-id").value = ""; $("bot-api-hash").value = "";
+};
 
 $("b-bot").onclick = () => {
   const token = $("bot-token").value.trim();

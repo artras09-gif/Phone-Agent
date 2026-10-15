@@ -561,8 +561,18 @@ def _bot_state():
     trouble = telegram_bot.trouble()
     if _BOT_ELSEWHERE["yes"] and not telegram_bot.running():
         trouble = "бота ведёт служба телефона в другом процессе этой программы"
+    import tgserver
+
+    api_id, api_hash = telegram_bot.api_keys()
+    if tgserver.url():
+        big = "свой сервер Telegram на этом ПК: видео до 2 ГБ"
+    elif api_id and api_hash:
+        big = "свой сервер не поднялся: " + (tgserver.why() or "ещё запускается…")
+    else:
+        big = "видео до 20 МБ (облако Telegram) — впиши api_id и api_hash, чтобы до 2 ГБ"
     return {"token": bool(cfg["token"]), "owner": cfg["owner"],
-            "running": telegram_bot.running(), "trouble": trouble}
+            "running": telegram_bot.running(), "trouble": trouble,
+            "api": bool(api_id and api_hash), "big": big}
 
 
 def _tell(text):
@@ -1249,10 +1259,11 @@ def _cmd_telegram(body):
             and not telegram_bot.clean_token(body["token"]):
         return {"ok": False, "error": "это не похоже на токен бота — он выглядит "
                                       "так: 1234567890:AAH… (число, двоеточие, 35 знаков)"}
-    if "token" in body or "owner" in body:
+    if "token" in body or "owner" in body or "api_id" in body or "api_hash" in body:
         current = telegram_bot.load_settings()
         telegram_bot.save_settings(body.get("token", current["token"]),
-                                   body.get("owner", current["owner"]))
+                                   body.get("owner", current["owner"]),
+                                   api_id=body.get("api_id"), api_hash=body.get("api_hash"))
         # Новый токен — новый опрос с нуля, не дожидаясь, пока старый
         # долгий запрос (до 50 с) вернётся со старым токеном.
         telegram_bot.restart()

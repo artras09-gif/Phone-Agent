@@ -254,6 +254,10 @@ def _stop_everything(base, started):
     for pid in left:                     # не ушёл сам — завершаем
         subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True,
                        creationflags=NO_WINDOW)
+    # Свой сервер Telegram Bot API — дочерний процесс программы; если её
+    # закрыли принудительно, он мог остаться и держать файлы в папке данных.
+    subprocess.run(["taskkill", "/F", "/IM", "telegram-bot-api.exe"], capture_output=True,
+                   creationflags=NO_WINDOW)
     adb = os.path.join(base, "tools", "platform-tools", "adb.exe")
     if os.path.exists(adb):
         try:

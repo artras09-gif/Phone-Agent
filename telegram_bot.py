@@ -99,12 +99,97 @@ def clean_token(raw):
     return m.group(1) if m else ""
 
 
-def save_settings(token, owner):
+def save_settings(token, owner, api_id=None, api_hash=None):
+    """Сохранить. api_id / api_hash — None: оставить, что было (их вписывают
+    отдельно от токена, и сохранение токена не должно их стирать)."""
     token = clean_token(token) if str(token or "").strip() else ""
+    try:
+        with open(settings_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    data.update(token=token, owner=str(owner).strip())
+    if api_id is not None:
+        data["api_id"] = re.sub(r"\D", "", str(api_id))
+    if api_hash is not None:
+        data["api_hash"] = re.sub(r"[^0-9a-fA-F]", "", str(api_hash)).lower()
     with open(settings_path(), "w", encoding="utf-8", newline="\n") as f:
-        json.dump({"token": token, "owner": str(owner).strip()},
-                  f, ensure_ascii=False, indent=2)
+        json.dump(data, f, ensure_ascii=False, indent=2)
     return settings_path()
+
+
+def _saved():
+    try:
+        with open(settings_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def api_keys():
+    """(api_id, api_hash) с my.telegram.org — для своего сервера. Нет — ("", "")."""
+    data = _saved()
+    return str(data.get("api_id") or ""), str(data.get("api_hash") or "")
+
+
+def api_base():
+    """Куда ходит бот: свой сервер (файлы до 2 ГБ) или облако (до 20 МБ)."""
+    import tgserver
+    return tgserver.url() or API
+
+
+def max_download_mb():
+    import tgserver
+    return 2000 if tgserver.url() else MAX_DOWNLOAD_MB
+
+
+def _token_mark(token):
+    import hashlib
+    return hashlib.sha1(str(token).encode()).hexdigest()[:12]
+
+
+def setup_server():
+    """Включить свой сервер Bot API, если вписаны api_id и api_hash.
+
+    Перед первой работой через свой сервер бота нужно один раз «выписать»
+    из облака (logOut) — иначе Telegram не обещает доставлять ему сообщения.
+    Отметка (не сам токен) хранится в telegram.json, чтобы не делать это
+    на каждом запуске. Не вышло поднять сервер — бот остаётся в облаке, как
+    раньше: из-за него ничего не ломается.
+    """
+    import tgserver
+
+    cfg = load_settings()
+    api_id, api_hash = api_keys()
+    if not (api_id and api_hash and cfg["token"]):
+        tgserver.stop()
+        return ""
+    local = tgserver.start(api_id, api_hash, token=cfg["token"])
+    if not local:
+        print(f"[бот] свой сервер Telegram не поднялся: {tgserver.why()} — работаю через облако",
+              flush=True)
+        return ""
+    mark = _token_mark(cfg["token"])
+    data = _saved()
+    if data.get("cloud_logged_out") != mark:
+        try:
+            req = urllib.request.Request(f"{API}/bot{cfg['token']}/logOut", data=b"")
+            with urllib.request.urlopen(req, timeout=20) as r:
+                r.read()
+        except urllib.error.HTTPError:
+            pass                    # уже выписан — тоже годится
+        except Exception as e:
+            print(f"[бот] не смог выписать бота из облака ({e}) — пробую так", flush=True)
+            data = None
+        if data is not None:
+            data["cloud_logged_out"] = mark
+            with open(settings_path(), "w", encoding="utf-8", newline="\n") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+    print("[бот] свой сервер Telegram на этом ПК: видео до 2 ГБ", flush=True)
+    return local
 
 
 # --------------------------------------------------------------- разбор
@@ -181,7 +266,7 @@ KEYBOARD = json.dumps({
 
 def _call(method, params=None, timeout=70):
     token = load_settings()["token"]
-    url = f"{API}/bot{token}/{method}"
+    url = f"{api_base()}/bot{token}/{method}"
     data = urllib.parse.urlencode(params or {}).encode()
     try:
         with urllib.request.urlopen(url, data=data, timeout=timeout) as r:
@@ -265,7 +350,7 @@ def send_photo(image, caption="", chat_id=None):
                f'filename="screen.{kind}"\r\nContent-Type: image/{kind}\r\n\r\n').encode()
             + bytes(image) + f"\r\n--{boundary}--\r\n".encode())
     req = urllib.request.Request(
-        f"{API}/bot{cfg['token']}/sendPhoto", data=body,
+        f"{api_base()}/bot{cfg['token']}/sendPhoto", data=body,
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
     try:
         with urllib.request.urlopen(req, timeout=40) as r:
@@ -450,9 +535,17 @@ def _download(file_id, dest_dir):
         return None
     path = info["result"]["file_path"]
     token = load_settings()["token"]
-    url = f"{API}/file/bot{token}/{path}"
     name = f"{int(time.time())}_{os.path.basename(path)}"
     dest = os.path.join(dest_dir, name)
+    # Свой сервер (--local) отдаёт не адрес, а путь к уже скачанному файлу на
+    # этом же ПК — просто переносим его к себе.
+    if os.path.isabs(path) and os.path.isfile(path):
+        try:
+            shutil.move(path, dest)
+            return dest
+        except OSError:
+            return None
+    url = f"{api_base()}/file/bot{token}/{path}"
     # Не `urlretrieve`: у него нет таймаута вовсе. Зависшая отдача с той
     # стороны — и поток бота стоит навсегда, бот перестаёт отвечать на всё,
     # включая /stop. Здесь таймаут на каждое чтение и чистка обрывка.
@@ -637,11 +730,15 @@ def _handle(msg):
         return
 
     size_mb = (video.get("file_size") or 0) / 1024 / 1024
-    if size_mb > MAX_DOWNLOAD_MB:
-        send(f"Файл {size_mb:.0f} МБ, а Telegram отдаёт боту только до "
-             f"{MAX_DOWNLOAD_MB} МБ — это его ограничение. Сожми видео "
-             "(или пришли его как видео, а не файлом) — или положи файл "
-             "в папку watch программы.")
+    if size_mb > max_download_mb():
+        if max_download_mb() >= 2000:
+            send(f"Файл {size_mb:.0f} МБ — больше 2 ГБ Telegram не отдаёт даже своему серверу.")
+        else:
+            send(f"Видео {size_mb:.0f} МБ, а через облако Telegram отдаёт боту только до "
+                 f"{MAX_DOWNLOAD_MB} МБ. Чтобы бот брал видео до 2 ГБ, впиши api_id и "
+                 "api_hash с my.telegram.org во вкладке «Бот» программы. А пока — "
+                 "перетащи файл в окно программы (вкладка «Очередь»), там размер "
+                 "не ограничен.")
         return
 
     import postspec
@@ -1019,6 +1116,12 @@ def poll_forever(generation=0):
     """
     if not load_settings()["token"]:
         return
+    # Свой сервер Bot API (видео до 2 ГБ), если вписаны api_id и api_hash.
+    # Здесь, в потоке: сервер поднимается до 20 с, и окно ждать не должно.
+    try:
+        setup_server()
+    except Exception as e:
+        print(f"[бот] свой сервер: {type(e).__name__}: {e} — работаю через облако", flush=True)
     # Здесь, в потоке, а не при старте окна: без связи getMe ждёт 20 с.
     ok, info = check()
     print(f"[бот] {'запущен: ' + info if ok else info}", flush=True)
