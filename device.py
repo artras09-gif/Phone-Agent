@@ -321,6 +321,28 @@ def open_uri(uri, package=None):
     human.pause(1.5, 2.5)
 
 
+def has_storage_access(package):
+    """Может ли приложение читать файлы телефона (видео по file://).
+
+    True / False / None (не узнать). Android 12 и ниже — READ_EXTERNAL_STORAGE,
+    13+ — READ_MEDIA_VIDEO.
+    """
+    try:
+        out = adb.shell(f"dumpsys package {package}", check=False, timeout=20)
+    except adb.AdbError:
+        return None
+    seen = False
+    for line in out.splitlines():
+        line = line.strip()
+        for perm in ("android.permission.READ_EXTERNAL_STORAGE:",
+                     "android.permission.READ_MEDIA_VIDEO:"):
+            if line.startswith(perm) and "granted=" in line:
+                seen = True
+                if "granted=true" in line:
+                    return True
+    return False if seen else None
+
+
 def open_app(package):
     adb.shell(f"monkey -p {package} -c android.intent.category.LAUNCHER 1", check=False)
     human.pause(2.0, 3.5)

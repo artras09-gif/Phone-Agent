@@ -181,6 +181,9 @@ def run_step(step, ctx, log_path, index):
     if op == "reel_gallery":
         return _reel_gallery(step, ctx, log_path, index)
 
+    if op == "yt_audience":
+        return _yt_audience(step, log_path, index)
+
     if op == "publish_more":
         # Instagram 451 подписал кнопку экрана подписи «Далее» (share_button,
         # живьём 2026-10-15). Публикует ли она сразу или ведёт на ещё один
@@ -225,9 +228,29 @@ def run_step(step, ctx, log_path, index):
         if op == "wait":
             return f"дождались «{label}» -> {node}"
 
+        if op == "publish" and not node.enabled:
+            # Серая кнопка: нажатие ничего не сделает, а отчёт сказал бы
+            # «готово» (так было с YouTube: аудитория не выбрана, видео не
+            # прочитано). Ждём, пока оживёт, — иначе честная ошибка.
+            end = time.time() + step.get("enabled_timeout", 30)
+            while time.time() < end and not node.enabled:
+                time.sleep(1.5)
+                nodes = ui.dump(retries=1, tolerant=True)
+                node = ui.find_any(nodes, selectors) or node
+            if not node.enabled:
+                _snap(log_path, index, "STUCK")
+                with open(os.path.join(log_path, f"{index:02d}_screen.txt"),
+                          "w", encoding="utf-8") as f:
+                    f.write(ui.describe(nodes, limit=80))
+                raise StepFailed(
+                    f"кнопка «{node.text or node.desc}» неактивна — приложение не готово "
+                    "публиковать (не выбрана аудитория, видео не прочитано или нет "
+                    f"названия). Дерево экрана сохранено в {log_path}"
+                    + _vision_note(log_path, index, label))
+
         if op == "publish" and config.DRY_RUN:
             _snap(log_path, index, "DRYRUN_publish")
-            return f"СУХОЙ ПРОГОН: не нажимаю «{label}» -> {node}"
+            return f"СУХОЙ ПРОГОН: не нажимаю «{label}» (активна) -> {node}"
 
         ui.tap_node(node)
         human.pause(0.8, 1.8)
@@ -243,6 +266,54 @@ def run_step(step, ctx, log_path, index):
         return f"введён текст ({len(value)} символов)"
 
     raise StepFailed(f"неизвестная операция: {op}")
+
+
+# ------------------------------------------------- YouTube: аудитория
+
+def _full_rows(nodes, w, top=0, bottom=10 ** 6):
+    """Кликабельные строки во всю ширину экрана — сверху вниз."""
+    rows = [n for n in nodes if n.clickable and n.bounds[0] <= 2 and n.bounds[2] >= w - 2
+            and 100 < n.bounds[3] - n.bounds[1] < 360 and top <= n.bounds[1] < bottom]
+    return sorted(rows, key=lambda n: n.bounds[1])
+
+
+def _yt_audience(step, log_path, index):
+    """«Это видео предназначено для детей?» — «Видео не для детей».
+
+    Без ответа YouTube держит «Загрузить» серой (живьём 2026-10-16, новый
+    канал). Подписей у строк в дереве нет (ни «Доступ», ни «Аудитория», ни
+    вариантов) — только кликабельные строки во всю ширину, поэтому по
+    порядку: на экране информации под полем названия две строки — «Доступ» и
+    «Аудитория»; на экране аудитории первая — «для детей», вторая — «не для
+    детей». Канал уже отвечал раньше (кнопка живая) — шаг ничего не делает.
+    """
+    nodes = ui.dump(retries=2, tolerant=True)
+    up = ui.find_any(nodes, step.get("upload", []))
+    if up is not None and up.enabled:
+        return "аудитория уже выбрана (кнопка загрузки активна)"
+    w, _ = adb.screen_size()
+    title = ui.find_any(nodes, step.get("title", []))
+    expand = ui.find_any(nodes, step.get("expand", []))
+    top = title.bounds[3] if title is not None else 0
+    bottom = expand.bounds[1] if expand is not None else 10 ** 6
+    rows = _full_rows(nodes, w, top, bottom)
+    if len(rows) < 2:
+        return f"строки «Аудитория» не нашёл (строк под названием: {len(rows)}) — пропускаю"
+    ui.tap_node(rows[1])
+    human.pause(1.5, 2.5)
+    nodes = ui.dump(retries=2, tolerant=True)
+    options = _full_rows(nodes, w)
+    back = ui.find_any(nodes, step.get("back", []))
+    still = ui.find_any(nodes, step.get("upload", [])) is not None
+    if len(options) < 2 or back is None or still:
+        _snap(log_path, index, "STUCK")
+        raise StepFailed("экран «Укажите аудиторию» не открылся или не узнан: вариантов "
+                         f"{len(options)}, «Назад» {'есть' if back else 'нет'}")
+    ui.tap_node(options[1])                      # «Видео не для детей»
+    human.pause(1.0, 1.6)
+    ui.tap_node(back)
+    human.pause(1.5, 2.5)
+    return "аудитория: «Видео не для детей»"
 
 
 # --------------------------------------------- Instagram: к галерее Reels
@@ -694,6 +765,15 @@ def post(video_path, caption, target, recipes=None):
         # Соседние видеоприложения умеют висеть поверх «картинкой в картинке»
         # и перехватывать тапы. Убираем их до начала маршрута.
         device.close_overlays(known_packages(recipes), keep=package)
+
+        if recipe.get("needs_storage") and device.has_storage_access(package) is False:
+            # Видео уходит по file://, и без доступа к файлам приложение его не
+            # прочтёт: экран откроется, превью — заглушка, кнопка — серая.
+            raise ui.NeedsPermission(
+                f"у {recipe.get('title', target)} нет доступа к файлам телефона — "
+                "видео ему не прочитать. На телефоне: Настройки → Приложения → "
+                f"{recipe.get('title', target).split()[0]} → Разрешения → «Файлы и медиа» "
+                "(или «Фото и видео») → Разрешить. Один раз")
 
         remote = device.push_video(video_path)
         report.append(f"залито: {remote}")
