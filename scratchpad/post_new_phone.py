@@ -205,8 +205,7 @@ class Insta:
             out = [node("", desc="Home", pkg=IG, bounds=(0, 2650, 256, 2772)),
                    node("", desc="Your story", pkg=IG, bounds=(20, 300, 200, 480)),
                    node("", desc="Create story", pkg=IG, bounds=(200, 300, 380, 480))]
-            if self.create:
-                out.append(node("", desc="Create", pkg=IG, bounds=(20, 120, 140, 230)))
+            # «+» в дереве главной нет (живьём 2026-10-15) — только по месту.
             return out
         if s == "new_post":
             return [node("New post", rid="gallery_title_text", pkg=IG, clickable=False),
@@ -233,7 +232,9 @@ class Insta:
 
     def tap_xy(self, x, y):
         self.log.append(f"xy {x},{y}")
-        if self.screen == "reels_feed" and y < 300:
+        if self.screen == "home" and y < 300 and self.create:
+            self.go("new_post")
+        elif self.screen == "reels_feed" and y < 300:
             self.go("camera")
         elif self.screen == "camera" and x < 200 and 2567 <= y <= 2678:
             self.go("reel_gallery")                    # миниатюра в ряду REEL
@@ -245,7 +246,7 @@ poster._vision_note = lambda *a: ""
 fast = [0.0]
 real_clock = poster.time.time
 poster.time.time = lambda: fast.__setitem__(0, fast[0] + 0.5) or fast[0]
-for name, kw, want_camera in (("«+» на главной", {}, False),
+for name, kw, want_camera in (("«+» на главной (по месту)", {}, False),
                               ("«+», но REEL открыл камеру", {"reel_opens_camera": True}, True),
                               ("на главной нет «+» — камера", {"create": False}, True)):
     ig = Insta(**kw)
@@ -320,6 +321,33 @@ try:
 except poster.StepFailed as e:
     say(yt.screen == "trim" and "не жму" in str(e), "модель назвала «Upload Short» — не жму, честная остановка")
 poster.time.time = real_time
+
+print("\n--- Instagram: второй экран «Поделиться» и защита от двойного поста ---")
+import config   # noqa: E402
+
+more = [s for s in recipes["reels"]["steps"] if s["op"] == "publish_more"][0]
+say(recipes["reels"]["steps"][-1] is more, "проверка второго экрана — последним шагом маршрута")
+pressed = []
+ui.tap_node = lambda n: pressed.append(n.text or n.rid)
+caption_screen = [node("", rid="caption_input_text_view", pkg=IG),
+                  node("Далее", rid="share_button", pkg=IG)]
+second_screen = [node("Поделиться", rid="share_button", pkg=IG)]
+assert config.DRY_RUN is False
+ui.wait_any = lambda sels, timeout=20, interval=0.7: (ui.find_any(screen_now, sels), screen_now)
+screen_now = caption_screen
+res = poster.run_step(more, {}, tempfile.mkdtemp(), 12)
+say(not pressed and "не жму" in res, f"экран подписи ещё на месте — второй раз не жму: {res}")
+screen_now = second_screen
+res = poster.run_step(more, {}, tempfile.mkdtemp(), 12)
+say(pressed == ["Поделиться"], f"появился второй экран — «Поделиться» нажат: {res}")
+screen_now, pressed[:] = [], []
+res = poster.run_step(more, {}, tempfile.mkdtemp(), 12)
+say(not pressed and "второго экрана нет" in res, f"второго экрана нет — ничего не жму: {res}")
+config.DRY_RUN = True
+screen_now = second_screen
+res = poster.run_step(more, {}, tempfile.mkdtemp(), 12)
+say(not pressed and "СУХОЙ ПРОГОН" in res, "в сухом прогоне второй экран не трогается")
+config.DRY_RUN = False
 
 print("\n--- сбой публикации: снимок и экран — в бот ---")
 import scheduler      # noqa: E402

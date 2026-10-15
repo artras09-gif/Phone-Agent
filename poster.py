@@ -181,6 +181,26 @@ def run_step(step, ctx, log_path, index):
     if op == "reel_gallery":
         return _reel_gallery(step, ctx, log_path, index)
 
+    if op == "publish_more":
+        # Instagram 451 подписал кнопку экрана подписи «Далее» (share_button,
+        # живьём 2026-10-15). Публикует ли она сразу или ведёт на ещё один
+        # экран с «Поделиться» — без настоящей публикации не узнать. Поэтому
+        # после финальной кнопки смотрим: появился второй экран — жмём и его.
+        # Не появился — значит, первая и была публикацией.
+        if config.DRY_RUN:
+            return f"СУХОЙ ПРОГОН: второй экран публикации не проверяю ({label})"
+        human.pause(2.5, 3.5)
+        node, nodes = ui.wait_any(selectors, timeout=timeout)
+        if node is None:
+            return f"второго экрана нет — опубликовано первой кнопкой ({label})"
+        # Тот же экран подписи ещё на месте (первая кнопка не успела увести) —
+        # второй раз НЕ жмём: это был бы второй такой же пост.
+        if ui.find_any(nodes, step.get("unless", [])) is not None:
+            return f"экран подписи ещё на месте — второй раз не жму ({label})"
+        ui.tap_node(node)
+        human.pause(1.5, 2.5)
+        return f"второй экран публикации: тап «{label}» -> {node}"
+
     if op in ("tap", "optional_tap", "wait", "publish"):
         node, nodes = ui.wait_any(selectors, timeout=timeout)
 
@@ -264,12 +284,16 @@ def _reel_gallery(step, ctx, log_path, index):
     reel_tab = step.get("reel_tab", [])
     tried = []
 
-    def settle(seconds=6):
+    def settle(seconds=15):
         """Дерево экрана, закрыв окна разрешений и «черновик с прошлого раза»."""
+        # Одно чтение экрана за круг: на Redmi оно занимает ~4 с, и с двумя
+        # чтениями (окна разрешений + сам экран) в 6 с не помещался даже один
+        # круг — вопрос о черновике оставался неотвеченным (живьём 2026-10-15).
         end, nodes = time.time() + seconds, []
         while time.time() < end:
-            ui.handle_permission(strict=True)
             nodes = ui.dump(retries=1, tolerant=True)
+            if ui.handle_permission(nodes, strict=True):
+                continue
             draft = ui.find_any(nodes, step.get("new_draft", []))
             if draft is not None:
                 ui.tap_node(draft)
@@ -297,36 +321,43 @@ def _reel_gallery(step, ctx, log_path, index):
         for x, y, where in spots:
             adb.tap(x, y)
             human.pause(1.5, 2.2)
-            nodes, ok = settle(8)
+            nodes, ok = settle(12)
             tried.append(f"миниатюра {where} {x},{y}")
             if ok:
                 return nodes, True
         return nodes, False
 
-    # Путь 1: «+» на главной.
+    # Путь 1: «+» на главной. В дереве его НЕТ (живьём 2026-10-15, Instagram
+    # 451: верхняя панель главной в дерево не попадает, а само дерево под
+    # автовоспроизведением ленты снимается через раз) — поэтому, не найдя
+    # подписи, жмём по месту. Что открылось — проверяем: «Новая публикация»
+    # с вкладками ПУБЛИКАЦИЯ / ИСТОРИЯ / REELS (cam_dest_*) внизу. Если вместо
+    # главной была вкладка Reels, на том же месте камера — её разбирает
+    # `from_camera`, как запасной путь.
     device.stop_app(package)
     human.pause(0.8, 1.4)
     device.open_app(package)
-    nodes, ok = [], False
-    end = time.time() + 15
-    create = None
-    while time.time() < end and create is None:
-        ui.handle_permission(strict=True)
-        nodes = ui.dump(retries=1, tolerant=True)
-        create = _exact(nodes, step.get("create_words", []))
-        if create is None:
-            time.sleep(0.8)
+    human.pause(3.0, 4.5)
+    ui.handle_permission(strict=True)
+    nodes, ok = ui.dump(retries=1, tolerant=True), False
+    create = _exact(nodes, step.get("create_words", []))
     if create is not None:
         ui.tap_node(create)
-        human.pause(1.5, 2.5)
         tried.append("«+» на главной")
-        nodes, ok = settle(6)
+    else:
+        w, h = adb.screen_size()
+        px, py = step.get("plus_xy", (0.06, 0.071))
+        adb.tap(int(w * px), int(h * py))
+        tried.append("«+» на главной (по месту)")
+    human.pause(2.0, 3.0)
+    if True:
+        nodes, ok = settle(15)
         if not ok and ui.find_any(nodes, reel_tab) is not None:
             tab = ui.find_any(nodes, reel_tab)
             ui.tap_node(tab)
             human.pause(1.5, 2.2)
             tried.append("вкладка REEL")
-            nodes, ok = settle(8)
+            nodes, ok = settle(12)
             if not ok and ui.find_any(nodes, reel_tab) is not None:
                 nodes, ok = from_camera(nodes)       # REEL открыл камеру
         if ok:
@@ -340,7 +371,7 @@ def _reel_gallery(step, ctx, log_path, index):
     adb.tap(int(w * cx), int(h * cy))
     human.pause(3.0, 4.5)
     tried.append("камера из Reels")
-    nodes, ok = settle(6)
+    nodes, ok = settle(15)
     if not ok:
         nodes, ok = from_camera(nodes)
     if ok:
