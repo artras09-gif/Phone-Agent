@@ -662,6 +662,18 @@ def _handle(msg):
     if not path:
         send("Не смог скачать файл.")
         return
+    # То же видео, что уже ждёт или публикуется, — не ставим второй раз.
+    fp = jobs.video_fingerprint(path)
+    twin = jobs.duplicate_of(fp)
+    if twin is not None and twin["status"] != "done":
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        what = {"running": "публикуется прямо сейчас", "draft": "ждёт выбора времени"}.get(
+            twin["status"], "уже в очереди")
+        send(f"Это видео {what} — задача #{twin['id']}. Второй раз не ставлю.")
+        return
 
     # Скачалось не то или не до конца: публиковать такое нельзя — агент
     # честно донесёт обрывок до редактора и застрянет там.

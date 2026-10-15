@@ -40,7 +40,9 @@ bot._call = lambda method, params=None, timeout=70: (calls.append((method, dict(
 bot.send = lambda text, **kw: sent.append(text) or True
 bot.load_settings = lambda: {"token": "t", "owner": "1"}
 video = os.path.join(config.QUEUE_DIR, "v.mp4")
-bot._download = lambda file_id, dest: (open(video, "wb").write(b"x") and video)
+# Каждое «видео» — своё содержимое: одинаковые байты программа теперь
+# справедливо считает повтором того же видео (post_dupes).
+bot._download = lambda file_id, dest: (open(video, "wb").write(os.urandom(64)) and video)
 scheduler.looks_like_video = lambda path: ""
 bot._run = lambda title, work: started.append(title)
 

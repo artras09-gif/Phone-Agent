@@ -993,11 +993,15 @@ function renderQueue(items){
     row.querySelector("b").textContent = it.name;
     row.querySelector("span").textContent =
       it.targets + " · " + it.when + (it.caption ? " · «" + it.caption + "»" : " · без описания");
-    const del = document.createElement("button");
-    del.className = "btn small danger";
-    del.textContent = "Убрать";
-    del.onclick = () => send("job-remove", {id: it.id});
-    row.append(del);
+    // Публикуемую сейчас убрать нельзя: раньше её удаляли посреди поста, а
+    // следом стоящая копия того же видео выходила второй раз.
+    if(!it.running){
+      const del = document.createElement("button");
+      del.className = "btn small danger";
+      del.textContent = "Убрать";
+      del.onclick = () => send("job-remove", {id: it.id});
+      row.append(del);
+    }
     box.append(row);
   }
 }

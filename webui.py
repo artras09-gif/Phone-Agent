@@ -323,7 +323,7 @@ class Keeper:
                 self.runner.start(
                     f"сессия {app}",
                     lambda a=app, sec=seconds, k=keep: scheduler.run_session(
-                        a, sec, notify=_tell, keep_open=k))
+                        a, sec, notify=None, keep_open=k))
             return                      # одно действие за раз, остальное подождёт
 
 
@@ -367,6 +367,9 @@ class Dispatcher:
                     pass
                 continue
             try:
+                # Телефон свободен, а задача «публикуется» — её публикацию
+                # оборвали (программа закрылась). Повторять сами не будем.
+                jobs.interrupt_running()
                 scheduler.scan_watch_dir()          # видео, брошенные в watch/
                 if jobs.due() is None:
                     continue
@@ -602,6 +605,14 @@ def _chosen():
 
 def _queue():
     rows = []
+    for r in jobs.running():
+        rows.append({
+            "id": r["id"], "running": True,
+            "name": os.path.basename(r["video_path"]),
+            "caption": r["caption"] or "",
+            "targets": r["targets"],
+            "when": "публикуется сейчас",
+        })
     for r in jobs.pending():
         rows.append({
             "id": r["id"],
@@ -978,6 +989,10 @@ def _cmd_job_add(body):
     targets = scheduler.normalize_targets(body.get("targets") or body.get("target") or "")
     if not targets:
         raise ValueError("отметь хотя бы одну соцсеть в «Куда»")
+    twin = jobs.duplicate_of(jobs.video_fingerprint(path), targets)
+    if twin is not None:
+        raise ValueError(f"это видео уже есть: задача #{twin['id']} ({twin['status']}) — "
+                         "второй раз не ставлю")
     job_id = jobs.add(os.path.abspath(path), body.get("caption", ""), targets)
     return {"ok": True, "message": f"задача #{job_id} добавлена"}
 
@@ -1384,7 +1399,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 name = _save_upload((query.get("name") or [""])[0], raw)
             except (ValueError, OSError) as e:
                 return self._json(400, {"ok": False, "error": str(e)})
+            scheduler.DUPLICATES.clear()
             added = scheduler.scan_watch_dir(targets)
+            if not added and scheduler.DUPLICATES:
+                _n, twin_id, twin_status = scheduler.DUPLICATES[-1]
+                what = {"done": "уже опубликовано", "running": "публикуется прямо сейчас"}.get(
+                    twin_status, "уже в очереди")
+                return self._json(200, {"ok": False,
+                                        "error": f"это видео {what} (задача #{twin_id}) — "
+                                                 "второй раз не ставлю"})
             return self._json(200, {"ok": True,
                                     "message": f"{name} — в очереди"
                                     if added else f"{name} принят"})

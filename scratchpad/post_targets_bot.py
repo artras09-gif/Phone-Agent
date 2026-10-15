@@ -84,28 +84,33 @@ def last_job():
 
 
 res = post("/api/upload?name=clip1.mp4&targets=" + urllib.parse.quote("tiktok,reels,shorts"),
-           b"\x00" * 2048, "application/octet-stream")
+           os.urandom(2048), "application/octet-stream")
 row = last_job()
 say(res.get("ok") and row and set(row["targets"].split(",")) == {"tiktok", "reels", "shorts"},
     f"перетащенное видео — во все три отмеченные: {row['targets'] if row else res}")
 
-res = post("/api/upload?name=clip2.mp4&targets=reels", b"\x00" * 2048, "application/octet-stream")
+res = post("/api/upload?name=clip2.mp4&targets=reels", os.urandom(2048), "application/octet-stream")
 row = last_job()
 say(row and row["targets"] == "reels", f"только Reels — только Reels: {row['targets'] if row else res}")
 
 before = last_job()["id"]
-res = post("/api/upload?name=clip3.mp4&targets=", b"\x00" * 2048, "application/octet-stream")
+res = post("/api/upload?name=clip3.mp4&targets=", os.urandom(2048), "application/octet-stream")
 say(res.get("ok") is False and last_job()["id"] == before,
     f"ничего не отмечено — файл не принят и задачи нет: {res.get('error')}")
 
 video = os.path.join(tmp, "ready.mp4")
-open(video, "wb").write(b"\x00" * 2048)
+open(video, "wb").write(os.urandom(2048))
 res = post("/api/job-add", json.dumps({"path": video, "caption": "x",
                                        "targets": "shorts,tiktok"}).encode())
 row = last_job()
 say(res.get("ok") and row["targets"] == "tiktok,shorts",
     f"файл с диска — в отмеченные: {row['targets']}")
 res = post("/api/job-add", json.dumps({"path": video, "target": "reels"}).encode())
+say(res.get("ok") is False and "второй раз не ставлю" in res.get("error", ""),
+    "тот же файл, пока прежняя задача ждёт, — повтор, не ставится")
+video2 = os.path.join(tmp, "ready2.mp4")
+open(video2, "wb").write(os.urandom(2048))
+res = post("/api/job-add", json.dumps({"path": video2, "target": "reels"}).encode())
 say(res.get("ok") and last_job()["targets"] == "reels", "старое поле target тоже понимается")
 
 page = open(os.path.join(LIVE_BASE, "webui.html"), encoding="utf-8").read()

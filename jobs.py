@@ -79,7 +79,11 @@ MIGRATIONS = {
     # exact — время названо явно: ради него сессия приостанавливается
     # (см. `postspec`, 2026-10-11).
     "jobs": [("device", "TEXT DEFAULT ''"), ("captions", "TEXT DEFAULT ''"),
-             ("exact", "INTEGER DEFAULT 0")],
+             ("exact", "INTEGER DEFAULT 0"),
+             # Отпечаток видео (размер + начало и конец файла): одно и то же
+             # видео не ставится второй раз, пока прежняя задача ждёт или идёт
+             # (живьём 2026-10-16: одно видео вышло в Instagram дважды).
+             ("fingerprint", "TEXT DEFAULT ''")],
     "events": [("device", "TEXT DEFAULT ''")],
     "links": [("sent", "REAL DEFAULT 0")],
 }
@@ -180,17 +184,94 @@ def recategorize(con):
     return moved
 
 
+def video_fingerprint(path):
+    """Отпечаток видеофайла: размер + sha1 первого и последнего мегабайта.
+
+    Весь файл не читаем — видео бывают по сотне мегабайт, а совпадение
+    размера и обоих краёв у разных роликов не встречается.
+    """
+    import hashlib
+
+    try:
+        size = os.path.getsize(path)
+        h = hashlib.sha1(str(size).encode())
+        with open(path, "rb") as f:
+            h.update(f.read(1 << 20))
+            if size > 2 << 20:
+                f.seek(-(1 << 20), os.SEEK_END)
+                h.update(f.read(1 << 20))
+        return h.hexdigest()
+    except OSError:
+        return ""
+
+
+# Сколько после публикации то же видео в те же сети считается повтором.
+DUPLICATE_DONE_HOURS = 6
+
+
+def duplicate_of(fp, targets=None, now=None):
+    """Задача с тем же видео, из-за которой новую ставить нельзя, или None.
+
+    Повтор — если прежняя ещё ждёт, черновик или публикуется; или уже вышла
+    в ЭТИ ЖЕ сети за последние DUPLICATE_DONE_HOURS часов. В другие сети то
+    же видео ставить можно: сначала TikTok, потом Reels — обычное дело.
+    """
+    if not fp:
+        return None
+    now = now or time.time()
+    wanted = {t for t in str(targets or "").split(",") if t}
+    with connect() as con:
+        rows = con.execute(
+            "SELECT * FROM jobs WHERE fingerprint=? AND status IN "
+            "('pending', 'draft', 'running', 'done') ORDER BY id DESC", (fp,)).fetchall()
+    for row in rows:
+        if row["status"] != "done":
+            return row
+        recent = (row["done_at"] or 0) > now - DUPLICATE_DONE_HOURS * 3600
+        same = not wanted or wanted & {t for t in row["targets"].split(",") if t}
+        if recent and same:
+            return row
+    return None
+
+
+def set_status(job_id, status):
+    with connect() as con:
+        con.execute("UPDATE jobs SET status=? WHERE id=?", (status, job_id))
+
+
+def running():
+    with connect() as con:
+        where, args = _mine()
+        return con.execute("SELECT * FROM jobs WHERE status='running'" + where, args).fetchall()
+
+
+def interrupt_running():
+    """Задачи, оставшиеся «публикуется» после обрыва программы, — в «сбой».
+
+    Повторять их сами нельзя: пост мог уже выйти, и второй раз — дубль.
+    """
+    with connect() as con:
+        where, args = _mine()
+        cur = con.execute(
+            "UPDATE jobs SET status='failed', result='прервано: программа закрылась "
+            "посреди публикации — проверь, вышел ли пост', done_at=? "
+            "WHERE status='running'" + where, (time.time(),) + args)
+        return cur.rowcount
+
+
 def add(video_path, caption="", targets="tiktok", run_at=None, captions=None,
-        exact=False, status="pending"):
+        exact=False, status="pending", fingerprint=""):
     """Задача в очередь. status="draft" — черновик из бота: видео скачано, но
     сети и время человек ещё выбирает кнопками; публиковать его нельзя."""
+    if not fingerprint and os.path.isfile(video_path):
+        fingerprint = video_fingerprint(video_path)
     with connect() as con:
         cur = con.execute(
             "INSERT INTO jobs (video_path, caption, targets, run_at, created_at,"
-            " device, captions, exact, status) VALUES (?,?,?,?,?,?,?,?,?)",
+            " device, captions, exact, status, fingerprint) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (video_path, caption, targets, run_at or time.time(), time.time(),
              DEVICE, json.dumps(captions or {}, ensure_ascii=False),
-             1 if exact else 0, status),
+             1 if exact else 0, status, fingerprint),
         )
         return cur.lastrowid
 

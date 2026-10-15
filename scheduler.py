@@ -191,19 +191,47 @@ def scan_watch_dir(targets="tiktok"):
                 runlog.Log(f"не беру «{name}»: {e}")
                 continue
 
+        # То же видео второй раз — не ставим (живьём 2026-10-16: видео
+        # попало в очередь дважды и вышло в Instagram два раза).
+        fp = jobs.video_fingerprint(src)
+        want = targets if spec is None else ",".join(spec["targets"])
+        twin = jobs.duplicate_of(fp, want)
+        if twin is not None:
+            try:
+                os.remove(src)
+                if os.path.exists(txt):
+                    os.remove(txt)
+            except OSError:
+                pass
+            DUPLICATES.append((name, twin["id"], twin["status"]))
+            runlog.Log(f"«{name}» уже есть: задача #{twin['id']} ({twin['status']}) "
+                       "— второй раз не ставлю")
+            continue
+
+        # Одинаковое имя не затирает файл задачи, которая ещё ждёт.
         dst = os.path.join(config.QUEUE_DIR, name)
+        stem, ext = os.path.splitext(dst)
+        n = 2
+        while os.path.exists(dst):
+            dst, n = f"{stem} ({n}){ext}", n + 1
         os.replace(src, dst)
         if os.path.exists(txt):
             os.remove(txt)
 
         if spec is None:
-            job_id = jobs.add(dst, caption, targets=targets)
+            job_id = jobs.add(dst, caption, targets=targets, fingerprint=fp)
         else:
             job_id = jobs.add(dst, spec["caption"], targets=",".join(spec["targets"]),
                               run_at=spec["when"].timestamp() if spec["when"] else None,
-                              captions=spec["captions"], exact=spec["exact"])
+                              captions=spec["captions"], exact=spec["exact"],
+                              fingerprint=fp)
         added.append((job_id, name))
     return added
+
+
+# Видео, не поставленные как повтор: (имя, номер прежней задачи, её статус).
+# Окно забирает отсюда, чтобы сказать человеку, почему файл не встал.
+DUPLICATES = []
 
 
 def _tell_failure(target, report):
@@ -282,6 +310,10 @@ def run_post_job(notify=None, job_id=None):
         if notify:
             notify(msg)
         return msg
+
+    # «Публикуется»: в очереди её уже нет, удалить посреди публикации нельзя,
+    # сторож не возьмёт второй раз (раньше задача весь пост висела «ждёт»).
+    jobs.set_status(job["id"], "running")
 
     late = time.time() - (job["run_at"] or time.time())
     if job["exact"] and late > 15 * 60 and notify:
