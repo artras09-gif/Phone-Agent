@@ -302,7 +302,7 @@ real_time = poster.time.time
 clock = [0.0]
 poster.time.time = lambda: clock.__setitem__(0, clock[0] + 1.0) or clock[0]
 try:
-    res = poster._advance_until(dict(step, timeout=200), {"video": fake_mp4(42)}, tempfile.mkdtemp(), 2)
+    res = poster._advance_until(dict(step, timeout=200, pause_xy=None), {"video": fake_mp4(42)}, tempfile.mkdtemp(), 2)
     good = yt.screen == "details" and yt.done_length == 60 and "по снимку" in res
 except poster.StepFailed as e:
     res, good = str(e), False
@@ -316,7 +316,7 @@ poster._vision_point = lambda prompt: (1110, 2530, "Upload Short")
 clock[0] = 0.0
 poster.time.time = lambda: clock.__setitem__(0, clock[0] + 1.0) or clock[0]
 try:
-    poster._advance_until(dict(step, timeout=60), {"video": fake_mp4(42)}, tempfile.mkdtemp(), 2)
+    poster._advance_until(dict(step, timeout=60, pause_xy=None), {"video": fake_mp4(42)}, tempfile.mkdtemp(), 2)
     say(False, "модель назвала «Upload» — должна быть остановка")
 except poster.StepFailed as e:
     say(yt.screen == "trim" and "не жму" in str(e), "модель назвала «Upload Short» — не жму, честная остановка")

@@ -144,8 +144,60 @@ say(recipes["shorts"]["steps"].index(aud) < recipes["shorts"]["steps"].index(ste
     "аудитория выбирается до финальной кнопки")
 res = poster.run_step(aud, {}, tempfile.mkdtemp(), 8)
 say(state["kids"] is False and state["screen"] == "info", f"выбрано «не для детей», вернулись: {res}")
+state["kids"] = None
+state["screen"] = "info"
+real_screen = screen
+
+
+def screen_upload_alive():
+    nodes = real_screen()
+    for n in nodes:
+        if n.rid.endswith("upload_bottom_button"):
+            n.enabled = True                    # новая раскладка: живая и без аудитории
+    return nodes
+
+
+ui.dump = lambda retries=1, tolerant=True: screen_upload_alive()
 res = poster.run_step(aud, {}, tempfile.mkdtemp(), 8)
-say("уже выбрана" in res, f"второй раз — ничего не трогаю: {res}")
+say(state["kids"] is False, f"«Загрузить» живая, а аудитория не выбрана — всё равно выбираю: {res}")
+
+print("\n--- экран не читается, пока играет видео: нажатие на видео (пауза) ---")
+adv = [s for s in recipes["shorts"]["steps"] if s["op"] == "advance_until"][0]
+say(adv.get("pause_xy") and adv.get("vision_after", 0) > adv.get("pause_after", 0),
+    "в маршруте: сначала пауза, по снимку — позже")
+yt = {"screen": "trim", "playing": True}
+taps_xy = []
+
+
+def yt_dump(retries=1, tolerant=True):
+    if yt["playing"]:
+        return []                               # дерево под играющим видео не снимается
+    if yt["screen"] == "trim":
+        return [node("Далее", bounds=(800, 2100, 1060, 2240))]
+    return [node("", desc="Добавьте название", bounds=(302, 284, 1047, 388))]
+
+
+def yt_tap_node(n):
+    if n.text == "Далее":
+        yt["screen"], yt["playing"] = "details", False
+
+
+def yt_tap(x, y):
+    taps_xy.append((x, y))
+    yt["playing"] = False                       # нажатие на видео — пауза
+
+
+ui.dump, ui.tap_node, adb.tap = yt_dump, yt_tap_node, yt_tap
+poster._vision_point = lambda prompt: (_ for _ in ()).throw(AssertionError("по снимку не нужно"))
+clock[0] = 0.0
+poster.time.time = lambda: clock.__setitem__(0, clock[0] + 1.0) or clock[0]
+res = poster._advance_until(dict(adv, timeout=120), {}, tempfile.mkdtemp(), 2)
+poster.time.time = real
+say(yt["screen"] == "details" and len(taps_xy) == 1 and "пауза" in res,
+    f"одно нажатие на видео — дерево прочиталось, «Далее» по дереву: {res[:90]}")
+cx, cy = taps_xy[0]
+say(abs(cx - W * adv["pause_xy"][0]) < 2 and abs(cy - 2400 * adv["pause_xy"][1]) < 2,
+    f"нажатие в центр видео ({cx},{cy}), не по кнопкам")
 
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)

@@ -287,10 +287,11 @@ def _yt_audience(step, log_path, index):
     «Аудитория»; на экране аудитории первая — «для детей», вторая — «не для
     детей». Канал уже отвечал раньше (кнопка живая) — шаг ничего не делает.
     """
+    # Выбираем ВСЕГДА, даже при живой «Загрузить»: в новой раскладке (YouTube
+    # 21.40, живьём 2026-10-16) кнопка активна и без аудитории, а что YouTube
+    # спросит после нажатия — без настоящей загрузки не узнать. Выбор того же
+    # варианта повторно ничего не портит.
     nodes = ui.dump(retries=2, tolerant=True)
-    up = ui.find_any(nodes, step.get("upload", []))
-    if up is not None and up.enabled:
-        return "аудитория уже выбрана (кнопка загрузки активна)"
     w, _ = adb.screen_size()
     title = ui.find_any(nodes, step.get("title", []))
     expand = ui.find_any(nodes, step.get("expand", []))
@@ -658,6 +659,7 @@ def _advance_until(step, ctx, log_path, index):
     last_tap = None
     started = time.time()
     sight_at = 0.0
+    blind_since, paused = None, False
     while time.time() < deadline:
         if abort.requested():
             raise StepFailed("остановлено")
@@ -673,9 +675,26 @@ def _advance_until(step, ctx, log_path, index):
                 node = hits[-1]          # нижняя — кнопка, а не заголовок
                 break
         if node is None:
-            # Ни цели, ни кнопки в дереве дольше `vision_after` секунд — экран
-            # не читается (видео играет) или подписи другие. Ищем по снимку.
-            waited = time.time() - started
+            # Дерево пустое — экран не читается, пока играет видео (живьём
+            # 2026-10-16: обрезка YouTube). Случайное нажатие по видео ставило
+            # его на паузу, и дерево сразу читалось. Поэтому сначала ОДНО
+            # нажатие в центр (на видео) — пауза; по снимку — только потом:
+            # модель промахивалась по «Далее» на 15% масштаба.
+            if nodes:
+                blind_since, paused = None, False
+            elif blind_since is None:
+                blind_since = time.time()
+            blind = time.time() - blind_since if blind_since is not None else 0.0
+            pause_xy = step.get("pause_xy")
+            if pause_xy and not paused and blind > step.get("pause_after", 6):
+                w, h = adb.screen_size()
+                adb.tap(int(w * pause_xy[0]), int(h * pause_xy[1]))
+                paused = True
+                notes.append("экран не читался — нажал на видео (пауза)")
+                human.pause(1.0, 1.6)
+                continue
+            # Ни цели, ни кнопки дольше `vision_after` секунд — ищем по снимку.
+            waited = blind if pause_xy else time.time() - started
             if step.get("vision_after") and waited > step["vision_after"] \
                     and time.time() - sight_at > 8:
                 sight_at = time.time()
