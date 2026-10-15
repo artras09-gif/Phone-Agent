@@ -175,7 +175,8 @@
       "rev 5 (живьём на Redmi, IG 451): «+» на главной в дереве нет — жмётся по месту",
       "(0.06, 0.071), открывает «Новая публикация» без камеры; вкладка REELS = rid",
       "cam_dest_clips; кнопка экрана подписи — share_button «Далее»; после неё",
-      "publish_more жмёт второй экран «Поделиться», если он есть."
+      "publish_more жмёт второй экран «Поделиться», если он есть.",
+      "rev 6 (живьём 2026-10-16): после «Далее» окно «О Reels» с кнопкой «Поделиться» ПОВЕРХ экрана подписи — жмётся (не share_button), затем ждём ухода экрана подписи; нет ни окна, ни ухода — ошибка."
     ],
     "open_uri": "instagram://reels_home",
     "steps": [
@@ -371,7 +372,7 @@
       },
       {
         "op": "publish_more",
-        "timeout": 10,
+        "timeout": 15,
         "any": [
           {
             "text": "Поделиться"
@@ -380,7 +381,10 @@
             "text": "Share"
           },
           {
-            "rid": "share_button"
+            "text": "Share now"
+          },
+          {
+            "text": "Опубликовать"
           }
         ],
         "unless": [
@@ -391,10 +395,12 @@
             "rid": "save_draft_button"
           }
         ],
-        "desc": "второй экран «Поделиться», если Instagram его показал"
+        "desc": "второй экран «Поделиться», если Instagram его показал",
+        "first_rid": "share_button",
+        "leave_timeout": 20
       }
     ],
-    "rev": 5
+    "rev": 6
   },
   "shorts": {
     "package": "com.google.android.youtube",

@@ -185,24 +185,46 @@ def run_step(step, ctx, log_path, index):
         return _yt_audience(step, log_path, index)
 
     if op == "publish_more":
-        # Instagram 451 подписал кнопку экрана подписи «Далее» (share_button,
-        # живьём 2026-10-15). Публикует ли она сразу или ведёт на ещё один
-        # экран с «Поделиться» — без настоящей публикации не узнать. Поэтому
-        # после финальной кнопки смотрим: появился второй экран — жмём и его.
-        # Не появился — значит, первая и была публикацией.
+        # Instagram 451: кнопка экрана подписи — «Далее» (share_button), за
+        # ней окно «О Reels» со СВОЕЙ кнопкой «Поделиться» (живьём 2026-10-16:
+        # пост не уходил — окно лежит ПОВЕРХ экрана подписи, и прежняя защита
+        # «экран подписи на месте — второй раз не жму» срабатывала на нём и
+        # отчитывалась «готово», оставив открытую живую кнопку).
+        #
+        # Теперь: жмём только кнопку, которая НЕ share_button (не та же самая,
+        # что уже нажата, — так двойного поста не бывает), и ждём, что экран
+        # подписи уйдёт. Нет ни окна, ни ухода — честная ошибка.
         if config.DRY_RUN:
             return f"СУХОЙ ПРОГОН: второй экран публикации не проверяю ({label})"
-        human.pause(2.5, 3.5)
-        node, nodes = ui.wait_any(selectors, timeout=timeout)
-        if node is None:
-            return f"второго экрана нет — опубликовано первой кнопкой ({label})"
-        # Тот же экран подписи ещё на месте (первая кнопка не успела увести) —
-        # второй раз НЕ жмём: это был бы второй такой же пост.
-        if ui.find_any(nodes, step.get("unless", [])) is not None:
-            return f"экран подписи ещё на месте — второй раз не жму ({label})"
-        ui.tap_node(node)
-        human.pause(1.5, 2.5)
-        return f"второй экран публикации: тап «{label}» -> {node}"
+        unless = step.get("unless", [])
+        first = step.get("first_rid", "share_button")
+        human.pause(2.0, 3.0)
+        end = time.time() + timeout
+        while time.time() < end:
+            nodes = ui.dump(retries=1, tolerant=True)
+            sheet = [n for sel in selectors for n in ui.find(nodes, **sel)
+                     if n.area > 0 and n.enabled and n.rid.split("/")[-1] != first]
+            if sheet:
+                ui.tap_node(sheet[0])
+                human.pause(1.5, 2.5)
+                gone = time.time() + step.get("leave_timeout", 20)
+                while time.time() < gone:
+                    nodes = ui.dump(retries=1, tolerant=True)
+                    if nodes and ui.find_any(nodes, unless) is None:
+                        return f"второй экран: тап «{sheet[0].text or sheet[0].desc}» — опубликовано"
+                    time.sleep(1.0)
+                _snap(log_path, index, "STUCK")
+                raise StepFailed("нажал «Поделиться» во втором окне, но экран подписи "
+                                 "не ушёл — проверь, вышел ли пост")
+            if nodes and ui.find_any(nodes, unless) is None:
+                return f"второго окна нет — опубликовано первой кнопкой ({label})"
+            time.sleep(1.0)
+        _snap(log_path, index, "STUCK")
+        with open(os.path.join(log_path, f"{index:02d}_screen.txt"), "w", encoding="utf-8") as f:
+            f.write(ui.describe(nodes, limit=80))
+        raise StepFailed("после финальной кнопки экран подписи остался, а кнопки «Поделиться» "
+                         f"не появилось — пост не ушёл. Дерево экрана сохранено в {log_path}"
+                         + _vision_note(log_path, index, label))
 
     if op in ("tap", "optional_tap", "wait", "publish"):
         node, nodes = ui.wait_any(selectors, timeout=timeout)

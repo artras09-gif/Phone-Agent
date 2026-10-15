@@ -333,18 +333,46 @@ caption_screen = [node("", rid="caption_input_text_view", pkg=IG),
                   node("Далее", rid="share_button", pkg=IG)]
 second_screen = [node("Поделиться", rid="share_button", pkg=IG)]
 assert config.DRY_RUN is False
-ui.wait_any = lambda sels, timeout=20, interval=0.7: (ui.find_any(screen_now, sels), screen_now)
-screen_now = caption_screen
+fast2 = [0.0]
+real_clock2 = poster.time.time
+poster.time.time = lambda: fast2.__setitem__(0, fast2[0] + 1.0) or fast2[0]
+# Живьём 2026-10-16: окно «О Reels» лежит ПОВЕРХ экрана подписи — в дереве
+# и поле подписи, и share_button «Далее», и «Поделиться» окна.
+sheet_over = caption_screen + [node("Поделиться", rid="igds_button", pkg=IG),
+                               node("Отмена", pkg=IG)]
+state_ig = {"screen": sheet_over}
+ui.dump = lambda retries=1, tolerant=True: state_ig["screen"]
+
+
+def tap_sheet(n):
+    pressed.append(n.text or n.rid)
+    if n.text == "Поделиться" and not n.rid.endswith("share_button"):
+        state_ig["screen"] = [node("", desc="Дом", pkg=IG)]          # ушли в ленту — пост пошёл
+
+
+ui.tap_node = tap_sheet
 res = poster.run_step(more, {}, tempfile.mkdtemp(), 12)
-say(not pressed and "не жму" in res, f"экран подписи ещё на месте — второй раз не жму: {res}")
-screen_now = second_screen
+say(pressed == ["Поделиться"] and "опубликовано" in res,
+    f"окно «О Reels» поверх подписи — «Поделиться» нажат, экран ушёл: {res}")
+
+pressed.clear()
+state_ig["screen"] = [node("", desc="Дом", pkg=IG)]
 res = poster.run_step(more, {}, tempfile.mkdtemp(), 12)
-say(pressed == ["Поделиться"], f"появился второй экран — «Поделиться» нажат: {res}")
-screen_now, pressed[:] = [], []
-res = poster.run_step(more, {}, tempfile.mkdtemp(), 12)
-say(not pressed and "второго экрана нет" in res, f"второго экрана нет — ничего не жму: {res}")
+say(not pressed and "первой кнопкой" in res, f"окна нет и экран ушёл — опубликовано первой: {res}")
+
+pressed.clear()
+old_ig = [node("", rid="caption_input_text_view", pkg=IG),
+          node("Поделиться", rid="share_button", pkg=IG)]          # старый Instagram: та же кнопка
+state_ig["screen"] = old_ig
+try:
+    poster.run_step(more, {}, tempfile.mkdtemp(), 12)
+    say(False, "экран подписи остался — должна быть ошибка, а не «готово»")
+except poster.StepFailed as e:
+    say(not pressed and "не ушёл" in str(e),
+        f"та же share_button «Поделиться» повторно НЕ жмётся, честная ошибка: {str(e)[:70]}…")
+poster.time.time = real_clock2
 config.DRY_RUN = True
-screen_now = second_screen
+state_ig["screen"] = sheet_over
 res = poster.run_step(more, {}, tempfile.mkdtemp(), 12)
 say(not pressed and "СУХОЙ ПРОГОН" in res, "в сухом прогоне второй экран не трогается")
 config.DRY_RUN = False
