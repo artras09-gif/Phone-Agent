@@ -700,6 +700,88 @@ gen = last_text(GROUP, m, "В очереди")
 say(gen and not gen.get("message_thread_id"), "и в «Общей» снова отвечает")
 jobs.cancel(early_job["id"])
 
+print("\n--- три темы: видео, ссылки, статистика ---")
+POSTS, LINKS, STATS, OTHER = 10, 20, 30, 40
+m = FAKE.mark()
+say_to(GROUP, OWNER, "/here видео", thread=POSTS, topic_name="Постинг")
+say_to(GROUP, OWNER, "/here ссылки", thread=LINKS, topic_name="Ссылки")
+say_to(GROUP, OWNER, f"/here@{BOTNAME} статистика", thread=STATS, topic_name="Статистика")
+last = last_text(GROUP, m, "тема «Статистика» — статистика")
+say(last and str(last.get("message_thread_id")) == str(STATS)
+    and "видео на постинг → «Постинг»" in last["text"] and "ссылки → «Ссылки»" in last["text"],
+    "три команды /here … — темы привязаны, бот сказал, что куда")
+say(bot.role_topic(GROUP, "posts") == POSTS and bot.role_topic(GROUP, "links") == LINKS
+    and bot.role_topic(GROUP, "stats") == STATS, "в настройках: видео 10, ссылки 20, статистика 30")
+say("видео на постинг → «Постинг»" in " ".join(webui._bot_state()["groups"]),
+    f"окно: {webui._bot_state()['groups']}")
+
+m = FAKE.mark()
+say_to(GROUP, FRIEND, "видео не туда", media=video(), thread=LINKS)
+say_to(GROUP, FRIEND, "https://www.tiktok.com/@x/video/7500000000000000077", thread=POSTS)
+say_to(GROUP, FRIEND, f"/stats@{BOTNAME}", thread=POSTS)
+say_to(GROUP, FRIEND, f"/status@{BOTNAME}", thread=OTHER)
+say_to(GROUP, FRIEND, f"/links@{BOTNAME}", thread=STATS)
+time.sleep(1.2)
+say(not texts(GROUP, m), "видео в теме ссылок, ссылка в теме видео, /stats не в той теме, "
+    "чужая тема — ни слова")
+say(job_by_caption("видео не туда") is None, "видео из темы ссылок не взято")
+
+m = FAKE.mark()
+say_to(GROUP, FRIEND, "в постинг", media=video(), thread=POSTS)
+pd = draft_of(GROUP, m)
+say(pd and str(pd.get("message_thread_id")) == str(POSTS), "видео в «Постинг» — черновик там")
+pj = job_by_caption("в постинг")
+press(pd, f"w:{pj['id']}:now", FRIEND)
+pr = last_text(GROUP, m, "опубликовано")
+say(pr and str(pr.get("message_thread_id")) == str(POSTS), "отчёт о публикации — в «Постинг»")
+idle()
+
+m = FAKE.mark()
+say_to(GROUP, FRIEND, "глянь https://www.tiktok.com/@x/video/7500000000000000078", thread=LINKS)
+lk = last_text(GROUP, m, "Сохранил")
+say(lk and str(lk.get("message_thread_id")) == str(LINKS), "ссылка в «Ссылки» — сохранена, ответ там")
+m = FAKE.mark()
+say(bot.digest(force=True), "подборка по расписанию ушла")
+dg = last_text(GROUP, m, "Понравилось")
+say(dg and str(dg.get("message_thread_id")) == str(LINKS) and not texts(OWNER, m),
+    "вечерняя подборка — в «Ссылки», не в личку")
+
+m = FAKE.mark()
+scheduler.session.browse = lambda app, seconds=None, keep_open=False: (
+    "сессия в tiktok, план 1.0 мин\n  заглянул в комментарии (протяжек: 2)\n"
+    "итог: 30 видео, 4 лайков, 1 ссылок сохранено")
+scheduler.run_session("tiktok", 60, manual=True)
+ss = last_text(GROUP, m, "📊 Сессия TikTok")
+say(ss and str(ss.get("message_thread_id")) == str(STATS) and "роликов 30" in ss["text"]
+    and "лайков 4" in ss["text"], "после сессии — цифры в «Статистика»")
+say(not texts(OWNER, m) and len(texts(GROUP, m)) == 1, "больше никуда — ни в личку, ни в другие темы")
+m = FAKE.mark()
+import datetime as _dt  # noqa: E402
+late = _dt.datetime.combine(_dt.date.today(), _dt.time(22, 1))
+said = scheduler.maybe_day_stats(late)
+day = last_text(GROUP, m, "Итог дня")
+say(said and day and str(day.get("message_thread_id")) == str(STATS), "в 22:00 — итог дня в «Статистика»")
+say(day and "Сессий: 1" in day["text"] and "Роликов: 30" in day["text"] and "Постов:" in day["text"],
+    "в итоге дня — сессии, ролики, посты: " + repr(day and day["text"][:120]))
+say(not scheduler.maybe_day_stats(late), "второй раз за день — не шлёт")
+say(not scheduler.maybe_day_stats(late.replace(hour=21)), "до 22:00 — не шлёт")
+m = FAKE.mark()
+say_to(GROUP, FRIEND, "/stats", thread=STATS)
+say(last_text(GROUP, m, "Итог дня"), "/stats в «Статистика» — итог за сегодня")
+say_to(GROUP, FRIEND, "/status", thread=LINKS)
+st = last_text(GROUP, m, "В очереди")
+say(st and str(st.get("message_thread_id")) == str(LINKS), "/status в любой из тем бота — ответ там же")
+
+m = FAKE.mark()
+say_to(GROUP, OWNER, "/everywhere ссылки", thread=LINKS)
+say(last_text(GROUP, m, "снова в любой теме") and bot.role_topic(GROUP, "links") is None
+    and bot.role_topic(GROUP, "posts") == POSTS, "/everywhere ссылки — отвязаны только ссылки")
+say_to(GROUP, FRIEND, "https://www.tiktok.com/@x/video/7500000000000000079", thread=OTHER)
+lo = last_text(GROUP, m, "Сохранил")
+say(lo and str(lo.get("message_thread_id")) == str(OTHER), "ссылки снова принимаются в любой теме")
+say_to(GROUP, OWNER, "/everywhere")
+say(wait(lambda: not bot._roles(GROUP)), "/everywhere — всё отвязано")
+
 print("\n--- чужая группа ---")
 m = FAKE.mark()
 FAKE.push({"my_chat_member": {"chat": {"id": ALIEN_GROUP, "type": "supergroup", "title": "Левые"},

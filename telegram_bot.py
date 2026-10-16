@@ -310,6 +310,7 @@ def set_reply(chat_id, thread=None, group=False):
     _REPLY.chat = str(chat_id) if chat_id else None
     _REPLY.thread = thread if chat_id else None
     _REPLY.group = bool(group) if chat_id else False
+    _REPLY.role = None
 
 
 def current_chat():
@@ -325,14 +326,16 @@ def reply_address():
     return f"{chat}:{thread}" if thread else chat
 
 
-def reply_to(address):
+def reply_to(address, role="posts"):
     """Обратно из строки задачи. Пустая — владельцу, как раньше.
 
-    У групп Telegram отрицательные номера, у людей — положительные.
+    У групп Telegram отрицательные номера, у людей — положительные. Задачи —
+    это публикации, поэтому по умолчанию ответы идут в тему видео.
     """
     chat, _, thread = str(address or "").partition(":")
     set_reply(chat or None, thread=int(thread) if thread.isdigit() else None,
               group=chat.startswith("-"))
+    _REPLY.role = role
 
 
 def current_thread():
@@ -393,46 +396,135 @@ def drop_group(chat_id):
         _write_groups(left)
 
 
-# Тема группы, в которой бот работает (просьба 2026-10-16: «в группе несколько
-# чатиков, хочу, чтобы он только в один конкретный писал»). Номер темы или
-# GENERAL — «Общая» (у неё номера в сообщениях нет). None — во всех темах.
+# Темы группы и что в какой делать (просьбы 2026-10-16: «хочу, чтобы он
+# только в один конкретный писал», потом — «из одной темы брал видео на
+# постинг, в другую отправлял ссылки, в третью постил статистику»).
+#
+# У каждого дела своя тема: posts — видео, черновики, отчёты о публикациях;
+# links — присланные ссылки и подборка; stats — статистика после сессий и
+# итог дня. Дело привязано к теме — работает только в ней и пишет только
+# туда; не привязано — работает в любой теме, как раньше. Тема — номер или
+# GENERAL («Общая»: у её сообщений номера нет).
 GENERAL = "general"
+ROLES = ("posts", "links", "stats")
+ROLE_WORDS = {
+    "posts": ("posts", "post", "video", "видео", "посты", "пост", "постинг"),
+    "links": ("links", "link", "ссылки", "ссылка", "ссылок"),
+    "stats": ("stats", "stat", "статистика", "стата", "статистику"),
+}
+ROLE_TITLES = {"posts": "видео на постинг", "links": "ссылки", "stats": "статистика"}
+
+
+def _roles(chat_id):
+    """{дело: {"topic": номер|GENERAL, "name": название}} — что куда привязано."""
+    for g in _groups():
+        if g["id"] == str(chat_id):
+            roles = {r: v for r, v in (g.get("roles") or {}).items()
+                     if r in ROLES and isinstance(v, dict) and v.get("topic")}
+            if not roles and g.get("topic"):
+                # v2026.10.16.9: «/here» сажал всё в одну тему.
+                roles = {r: {"topic": g["topic"], "name": g.get("topic_name", "")}
+                         for r in ROLES}
+            return roles
+    return {}
+
+
+def role_topic(chat_id, role):
+    bound = _roles(chat_id).get(role)
+    return bound["topic"] if bound else None
 
 
 def group_topic(chat_id):
-    for g in _groups():
-        if g["id"] == str(chat_id):
-            return g.get("topic") or None
-    return None
+    """Тема видео (для совместимости: так звалась единственная тема)."""
+    return role_topic(chat_id, "posts")
 
 
-def set_group_topic(chat_id, topic, name=""):
+def set_roles(chat_id, roles, topic, name=""):
+    """Привязать дела к теме. topic=None — отвязать эти дела."""
     groups = _groups()
     for g in groups:
-        if g["id"] == str(chat_id):
-            g.pop("topic", None)
-            g.pop("topic_name", None)
+        if g["id"] != str(chat_id):
+            continue
+        current = _roles(chat_id)
+        g.pop("topic", None)
+        g.pop("topic_name", None)
+        for role in roles:
             if topic:
-                g["topic"] = topic
-                g["topic_name"] = name
+                current[role] = {"topic": topic, "name": name}
+            else:
+                current.pop(role, None)
+        g["roles"] = current
     _write_groups(groups)
 
 
+def set_group_topic(chat_id, topic, name=""):
+    """Всё в одну тему (или отовсюду, topic=None)."""
+    set_roles(chat_id, ROLES, topic, name)
+
+
 def groups_text():
-    """Для окна: «Команда (только тема «Постинг»)»."""
+    """Для окна: «Команда: видео → «Постинг», ссылки → «Ссылки»»."""
     out = []
     for g in _groups():
         name = g.get("title") or g["id"]
-        if g.get("topic"):
-            name += f" (только тема «{g.get('topic_name') or 'Общая'}»)"
+        roles = _roles(g["id"])
+        if roles:
+            topics = {v["topic"] for v in roles.values()}
+            if len(roles) == len(ROLES) and len(topics) == 1:
+                one = next(iter(roles.values()))
+                name += f" (только тема «{one['name'] or 'Общая'}»)"
+            else:
+                name += ": " + ", ".join(
+                    f"{ROLE_TITLES[r]} → «{roles[r]['name'] or 'Общая'}»"
+                    for r in ROLES if r in roles)
         out.append(name)
     return out
 
 
-def _thread_for(target):
-    """В какую тему слать в этот чат: привязанную — всегда, иначе — откуда спросили."""
-    if str(target).startswith("-"):
-        bound = group_topic(target)
+def destinations(role):
+    """Куда слать неспрошенное этого дела: [(чат, тема)] по всем группам."""
+    out = []
+    for g in _groups():
+        topic = role_topic(g["id"], role)
+        if topic:
+            out.append((g["id"], topic))
+    return out
+
+
+def post_stats(text):
+    """Статистика — в темы статистики, если они привязаны. True — ушла."""
+    if not text or not load_settings()["token"]:
+        return False
+    sent = False
+    for chat, topic in destinations("stats"):
+        sent = send(text, preview=False, chat_id=chat, thread=topic) or sent
+    return sent
+
+
+def day_stats(slot=""):
+    """Итог дня в темы статистики. Один раз на день и слот (отметка в events)."""
+    if not destinations("stats"):
+        return ""
+    import daystats
+
+    mark = f"{dt.date.today().isoformat()} {slot}".strip()
+    with jobs.connect() as con:
+        if con.execute("SELECT 1 FROM events WHERE kind='stats_day' AND payload=?",
+                       (mark,)).fetchone():
+            return ""
+    if not post_stats(daystats.day_text()):
+        return ""
+    jobs.log_event("stats_day", mark)
+    return "итог дня отправлен в тему статистики"
+
+
+def _thread_for(target, thread=None):
+    """В какую тему слать: явно названную, тему дела, иначе — откуда спросили."""
+    if thread:
+        return None if thread == GENERAL else thread
+    role = getattr(_REPLY, "role", None)
+    if str(target).startswith("-") and role:
+        bound = role_topic(target, role)
         if bound == GENERAL:
             return None
         if bound:
@@ -482,8 +574,9 @@ GROUP_HELLO = ("Работаю в этом чате — как в личке:\n"
                "«без ютуба» — пропустить сеть)\n"
                "• ССЫЛКУ — сохраню в подборку\n"
                "• /queue, /cancel 5, /status, /stop, /links\n"
-               "• /here — в группе с темами: работать только в этой теме "
-               "(/everywhere — снова во всех)\n\n"
+               "• Темы: /here — всё в этой теме; /here видео, /here ссылки, "
+               "/here статистика — одно дело сюда; /everywhere — во всех темах\n"
+               "• /stats — статистика за сегодня\n\n"
                "Публиковать может любой участник этого чата.")
 PRIVACY_HINT = ("\n\n⚠ Сейчас я вижу в этом чате только команды и ответы на мои сообщения. "
                 "Чтобы видел все видео и ссылки: сделай меня администратором чата — или в "
@@ -524,7 +617,7 @@ def _membership(update):
              chat_id=owner)
 
 
-def send(text, preview=True, chat_id=None, keyboard=False):
+def send(text, preview=True, chat_id=None, keyboard=False, thread=None):
     """Отправить ответ. Возвращает True, если Telegram принял ВСЁ.
 
     Адрес выбирается по очереди: явный `chat_id` -> тот, кого сейчас
@@ -551,9 +644,9 @@ def send(text, preview=True, chat_id=None, keyboard=False):
             "text": chunk,
             "disable_web_page_preview": "true" if not preview else "false",
         }
-        thread = _thread_for(target)
-        if thread:
-            params["message_thread_id"] = thread
+        topic = _thread_for(target, thread)
+        if topic:
+            params["message_thread_id"] = topic
         # Клавиатуру вешаем на ПОСЛЕДНИЙ кусок: длинная подборка режется на
         # части, и приклей её к первому — кнопки оказались бы в середине.
         # В группе — не вешаем: она вылезла бы у всех участников.
@@ -654,7 +747,7 @@ def _link_block(row):
     return "\n".join(block)
 
 
-def _send_links(rows, title, mark):
+def _send_links(rows, title, mark, to=None):
     """Отправить подборку пачками по 3500 знаков, не разрывая ссылки.
 
     Резать по знакам, как это делает `send`, здесь нельзя: разрыв посреди
@@ -680,8 +773,9 @@ def _send_links(rows, title, mark):
         parts.append("\n\n".join(buf))
 
     ok = True
-    for part in parts:
-        ok = send(part, preview=False) and ok
+    for chat, thread in (to or [(None, None)]):
+        for part in parts:
+            ok = send(part, preview=False, chat_id=chat, thread=thread) and ok
     if ok and mark:
         jobs.mark_links_sent([row["id"] for row in rows])
     return ok
@@ -740,7 +834,9 @@ def digest(force=False):
     if not force and len(rows) < max(1, config.LINKS_DIGEST_MIN):
         return ""
     day = dt.datetime.now().strftime("%d.%m")
-    if not _send_links(rows, f"Понравилось ({day})", mark=True):
+    # Есть тема для ссылок — подборка туда (во все такие группы), а не в личку.
+    if not _send_links(rows, f"Понравилось ({day})", mark=True,
+                       to=destinations("links") or None):
         return ""
     return f"подборка ссылок отправлена: {len(rows)}"
 
@@ -928,15 +1024,22 @@ def _handle(msg):
         text, addressed, other_bot = _for_me(text, msg)
         if other_bot:
             return                                # команда другому боту
-        here = thread or GENERAL
         if text.startswith(("/here", "/everywhere")):
             _cmd_topic(text, chat, msg, sender, cfg)
             return
-        bound = group_topic(chat_id)
-        if bound and here != bound:
-            return                                # не та тема — молчим
 
     video = msg.get("video") or msg.get("document") or msg.get("animation")
+    role = _role_of(text, msg, video, chat_id, sender, addressed)
+    if group:
+        roles = _roles(chat_id)
+        here = thread or GENERAL
+        if role and role in roles and roles[role]["topic"] != here:
+            return                                # у этого дела своя тема
+        if not role and roles and len(roles) == len(ROLES) \
+                and here not in {v["topic"] for v in roles.values()}:
+            return                                # тема не наша вовсе — молчим
+    _REPLY.role = role
+
     # Команды — только в ТЕКСТЕ. Подпись к видео — это описание поста:
     # «Ссылки на рецепт в профиле» или «Отмена встречи — разбор» должны уйти
     # в публикацию, а не выдать подборку и не отменять задачу.
@@ -1001,29 +1104,70 @@ def _handle(msg):
 VIDEO_EXT = (".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".3gp")
 
 
+def _role_of(text, msg, video, chat_id, sender, addressed):
+    """Какое это дело: posts, links, stats или None — общее (/status, /start)."""
+    low = text.lower()
+    if video:
+        return "posts"
+    if text.startswith(("/links", "/ссылки")) or text == BTN_LINKS \
+            or (addressed and low.startswith("ссылки")):
+        return "links"
+    if text.startswith("/stats") or (addressed and low.startswith("статистика")):
+        return "stats"
+    if text.startswith(("/queue", "/cancel", "/template")) or text == BTN_POST \
+            or (addressed and (low == "очередь" or low.startswith("отмена")
+                               or low in ("шаблон", "/шаблон"))):
+        return "posts"
+    if f"{chat_id}:{sender}" in _ASK_TIME:
+        return "posts"                            # ждём «своё время» — ответ про пост
+    if weblink.find_urls(text, msg.get("entities") or msg.get("caption_entities")):
+        return "links"
+    return None
+
+
 def _cmd_topic(text, chat, msg, sender, cfg):
-    """/here — работать только в этой теме, /everywhere — во всех.
+    """/here — всё в этой теме; /here видео|ссылки|статистика — одно дело;
+    /everywhere — во всех темах (или /everywhere ссылки — одно дело).
 
     Только владелец: иначе любой участник мог бы увести бота в свою тему.
     """
     chat_id = str(chat.get("id"))
     thread = msg.get("message_thread_id") if msg.get("is_topic_message") else None
+    roles = _roles(chat_id)
     if sender != str(cfg["owner"]):
-        bound = group_topic(chat_id)
-        if not bound or (thread or GENERAL) == bound:   # в чужой теме — молчим
+        here = thread or GENERAL
+        if not roles or here in {v["topic"] for v in roles.values()}:
             send("Выбрать тему для бота может только его владелец.")
+        return                                      # в чужой теме — молчим
+    word = text.split(maxsplit=1)[1].strip().lower() if " " in text.strip() else ""
+    picked = [r for r in ROLES if any(word.startswith(w) for w in ROLE_WORDS[r])] \
+        if word else list(ROLES)
+    if word and not picked:
+        send("Не понял, какое дело. Так: /here видео, /here ссылки, /here статистика "
+             "или просто /here — всё сюда.")
         return
     if text.startswith("/everywhere"):
-        set_group_topic(chat_id, None)
-        send("Работаю во всех темах этого чата.")
+        set_roles(chat_id, picked, None)
+        what = "Работаю во всех темах этого чата." if not word else \
+            f"{ROLE_TITLES[picked[0]].capitalize()} — снова в любой теме."
+        send(what)
         return
     if not thread and not chat.get("is_forum"):
         send("В этом чате нет тем — я и так пишу только сюда.")
         return
     name = _topic_name(msg)
-    set_group_topic(chat_id, thread or GENERAL, name)
-    send(f"Готово: работаю только в теме «{name}». В других темах молчу, "
-         "отчёты о публикациях — сюда же. Вернуть во все темы — /everywhere.")
+    set_roles(chat_id, picked, thread or GENERAL, name)
+    if not word:
+        send(f"Готово: работаю только в теме «{name}». В других темах молчу, "
+             "отчёты о публикациях — сюда же. Вернуть во все темы — /everywhere.")
+        return
+    jobs_here = {"posts": "Видео отсюда беру на постинг, черновики и отчёты о публикациях — сюда.",
+                 "links": "Ссылки отсюда сохраняю, подборку присылаю сюда.",
+                 "stats": "Статистику после каждой сессии и итог дня пишу сюда."}[picked[0]]
+    others = [f"{ROLE_TITLES[r]} → «{v['name'] or 'Общая'}»"
+              for r, v in _roles(chat_id).items() if r != picked[0]]
+    send(f"Готово: тема «{name}» — {ROLE_TITLES[picked[0]]}. {jobs_here}"
+         + ("\nОстальное: " + ", ".join(others) if others else ""))
 
 
 def _is_video(msg, video):
@@ -1062,7 +1206,7 @@ def _command(text, addressed, chat_id, sender):
              "Можно несколько сразу и с припиской — она станет заметкой.\n\n"
              f"/links — подборка (сама приходит: {when})\n"
              "/links 20 — последние 20, даже если уже присылал\n"
-             "/status — что происходит\n"
+             "/status — что происходит, /stats — статистика за сегодня\n"
              "/stop — прервать текущее действие", keyboard=True)
         return True
     if text.startswith("/status"):
@@ -1082,6 +1226,10 @@ def _command(text, addressed, chat_id, sender):
     if text.startswith("/template"):
         import postspec
         send(postspec.TEMPLATE_HELP)
+        return True
+    if text.startswith("/stats") or (addressed and low.startswith("статистика")):
+        import daystats
+        send(daystats.day_text())
         return True
     if text.startswith("/cancel"):
         _cmd_cancel(text)
@@ -1187,9 +1335,10 @@ def _later(fn):
     import queue
 
     address = reply_address()
+    role = getattr(_REPLY, "role", None) or "posts"
 
     def job():
-        reply_to(address)
+        reply_to(address, role)
         try:
             fn()
         except Exception as e:
@@ -1388,7 +1537,8 @@ def _handle_callback(cq):
         _call("answerCallbackQuery", {"callback_query_id": cq.get("id", ""),
                                       "text": "этот чат не подключён"}, timeout=10)
         return
-    bound = group_topic(chat_id) if group else None
+    bound = role_topic(chat_id, "posts") if group else None
+    _REPLY.role = "posts"
     if bound and (thread or GENERAL) != bound:
         # Старый черновик в теме, где бот больше не работает: всплывашка, а
         # не сообщение — писать бот должен только в своей теме.

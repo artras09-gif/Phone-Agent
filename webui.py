@@ -199,6 +199,7 @@ class Keeper:
         self.running = None      # какой пункт плана сейчас идёт
         self.running_since = 0.0   # когда он начался — для досмотра остатка
         self.running_seconds = 0.0
+        self._stats_lock = threading.Lock()
 
     def rules(self):
         """Сколько включённых правил в расписании. Ноль — сторожить нечего."""
@@ -254,6 +255,25 @@ class Keeper:
             scheduler._publish(self.day, self.schedule, self.done)
             self.runner.log(f"остаток блока отменён: {skipped} сесс.")
 
+    def _digest(self):
+        try:
+            import telegram_bot
+
+            said = telegram_bot.digest()
+            if said:
+                self.runner.log(said)
+        except Exception as e:
+            self.runner.log(f"подборка ссылок: {type(e).__name__}: {e}")
+
+    def _day_stats(self, now):
+        if not self._stats_lock.acquire(blocking=False):
+            return                      # прошлый круг ещё шлёт — не дублировать
+        try:
+            for said in scheduler.maybe_day_stats(now):
+                self.runner.log(said)
+        finally:
+            self._stats_lock.release()
+
     def _loop(self):
         while True:
             self._wake.wait(self.EVERY)
@@ -288,6 +308,17 @@ class Keeper:
             self.running = running[0] if running else None
             scheduler._publish(self.day, self.schedule, self.done)
 
+        # Подборка ссылок и итог дня телефона не касаются: идут и посреди
+        # сессии. Раньше пункт «подборка ссылок» доходил до разбора сессии
+        # (`app, seconds = arg` при arg=None) и падал — в окне вечерняя
+        # подборка не приходила вовсе (поймано 2026-10-16).
+        for i, (when, kind, arg) in enumerate(self.schedule):
+            if kind == "links" and i not in self.done and now >= when:
+                self.done.add(i)
+                scheduler._publish(self.day, self.schedule, self.done)
+                threading.Thread(target=self._digest, daemon=True).start()
+        threading.Thread(target=self._day_stats, args=(now,), daemon=True).start()
+
         if config.stop_requested() or self.runner.busy():
             return
         # Подошла публикация — телефон сначала ей: она ждёт точного времени,
@@ -296,7 +327,7 @@ class Keeper:
             return
 
         for i, (when, kind, arg) in enumerate(self.schedule):
-            if i in self.done or now < when:
+            if i in self.done or now < when or kind == "links":
                 continue
             self.done.add(i)
             if kind == "session" and arg and arg[1]:

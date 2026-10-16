@@ -64,6 +64,7 @@ TESTS = [
     ("scratchpad/tg_local.py", "свой сервер Telegram: видео до 2 ГБ, без ключей — облако"),
     ("scratchpad/bot_groups.py", "бот в групповом чате: всё как в личке, чужие чаты — молча"),
     ("scratchpad/bot_fake_telegram.py", "бот целиком против поддельного Telegram: HTTP, кнопки, беды связи"),
+    ("scratchpad/keeper_links.py", "окно: подборка ссылок и итог дня по расписанию, и посреди сессии"),
     ("scratchpad/post_dupes.py", "одно видео — одна публикация; бот без журнала сессий"),
     ("scratchpad/post_youtube.py", "YouTube: доступ к файлам, аудитория, серая кнопка — не «готово»"),
     ("scratchpad/post_new_phone.py", "новый телефон: обрезка YouTube, окно микрофона Instagram"),

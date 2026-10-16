@@ -440,11 +440,49 @@ def run_session(app, seconds=None, notify=None, manual=False, keep_open=False):
     if not manual and seconds is None \
             and jobs.sessions_today() >= config.MAX_SESSIONS_PER_DAY:
         return "дневной лимит сессий исчерпан"
+    started = time.time()
     report = session.browse(app, seconds, keep_open=keep_open)
-    jobs.log_event("session", report)
+    took = (time.time() - started) / 60
+    # Длительность — для статистики дня: в самом отчёте только план.
+    jobs.log_event("session", f"{report}\nдлилась: {took:.0f} мин")
+    _tell_stats(report, took)
     if notify:
         notify(report)
     return report
+
+
+def _tell_stats(report, minutes):
+    """Коротко о сессии — в тему статистики группы, если она привязана."""
+    try:
+        import daystats
+        import telegram_bot
+
+        telegram_bot.post_stats(daystats.session_text(report, minutes))
+    except Exception:
+        pass                      # статистика не должна ронять сессию
+
+
+def maybe_day_stats(now=None):
+    """Пора итога дня — отправить (сам `day_stats` не шлёт дважды).
+
+    Не через расписание дня: тему статистики могут привязать посреди дня, а
+    план дня уже разыгран. И не задним числом за вчера: открыли программу
+    утром — вчерашний итог уже не новость.
+    """
+    now = now or dt.datetime.now()
+    said = []
+    for hhmm in config.STATS_TIMES:
+        h, m = map(int, hhmm.split(":"))
+        if now >= dt.datetime.combine(now.date(), dt.time(h, m)):
+            try:
+                import telegram_bot
+
+                done = telegram_bot.day_stats(hhmm)
+                if done:
+                    said.append(done)
+            except Exception as e:
+                jobs.log_event("error", f"итог дня: {e}")
+    return said
 
 
 def _maybe_watch(watch, record, tag):
@@ -536,6 +574,10 @@ def serve(notify=None, watch=False, record=False, should_stop=None):
                 jobs.log_event("error", msg)
                 if notify:
                     notify(msg)
+
+        for said in maybe_day_stats(now):
+            if notify:
+                notify(said)
 
         # Очередь смотрим саму по себе, не только в часы POST_TIMES.
         # Иначе задача с назначенным временем («в 18:30» в подписи боту) не
