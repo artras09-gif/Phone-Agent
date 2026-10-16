@@ -279,10 +279,12 @@ def video(data=None, size_field=None, name=None, mime="video/mp4", kind="video")
     return kind, obj
 
 
-def say_to(chat, sender, text=None, media=None, thread=None, reply_to=None, **extra):
+def say_to(chat, sender, text=None, media=None, thread=None, reply_to=None, topic_name=None,
+           **extra):
     _msg_id[0] += 1
     msg = {"message_id": _msg_id[0], "date": int(time.time()),
-           "chat": {"id": chat, "type": CHAT_TYPE[chat], **({"title": "Команда"} if chat < 0 else {})},
+           "chat": {"id": chat, "type": CHAT_TYPE[chat],
+                    **({"title": "Команда", "is_forum": True} if chat < 0 else {})},
            "from": {"id": sender, "is_bot": False, "first_name": "U"}, **extra}
     if media:
         msg[media[0]] = media[1]
@@ -295,6 +297,8 @@ def say_to(chat, sender, text=None, media=None, thread=None, reply_to=None, **ex
                                 "length": len(text.split()[0])}]
     if thread:
         msg.update(is_topic_message=True, message_thread_id=thread)
+    if topic_name:
+        msg["reply_to_message"] = {"message_id": thread, "forum_topic_created": {"name": topic_name}}
     if reply_to:
         msg["reply_to_message"] = {"message_id": reply_to, "from": {"id": 7000000001,
                                                                      "is_bot": True,
@@ -637,6 +641,64 @@ say_to(GROUP, FRIEND, "21:45", reply_to=ask["_id"])
 say(wait(lambda: jobs.by_id(gj3["id"])["status"] == "pending"), "время ответом — поставлено")
 say(jobs.by_id(gj3["id"])["chat"] == str(GROUP), "задача помнит группу")
 jobs.cancel(gj3["id"])
+
+print("\n--- бот только в одной теме группы ---")
+m = FAKE.mark()
+say_to(GROUP, FRIEND, "черновик до темы", media=video(), reply_to=hello["_id"])
+early = draft_of(GROUP, m)
+early_job = job_by_caption("черновик до темы")
+m = FAKE.mark()
+say_to(GROUP, FRIEND, f"/here@{BOTNAME}", thread=42, topic_name="Постинг")
+say(last_text(GROUP, m, "может только его владелец") and bot.group_topic(GROUP) is None,
+    "участник не может выбрать тему — только владелец")
+m = FAKE.mark()
+say_to(GROUP, OWNER, f"/here@{BOTNAME}", thread=42, topic_name="Постинг")
+bound = last_text(GROUP, m, "только в теме «Постинг»")
+say(bound and str(bound.get("message_thread_id")) == "42", "/here в теме «Постинг» — привязан, ответ туда")
+say(bot.group_topic(GROUP) == 42, "привязка записана")
+m = FAKE.mark()
+say_to(GROUP, FRIEND, "/status", thread=7)
+say_to(GROUP, FRIEND, f"/status@{BOTNAME}")
+say_to(GROUP, FRIEND, "в другую тему", media=video(), thread=7)
+say_to(GROUP, FRIEND, "/here", thread=7)
+time.sleep(1.2)
+say(not texts(GROUP, m), "в других темах и в «Общей» — ни слова (и на чужой /here тоже)")
+say(job_by_caption("в другую тему") is None and bot.group_topic(GROUP) == 42,
+    "видео из другой темы не взято, привязка не сдвинута")
+press(early, f"w:{early_job['id']}:now", FRIEND)
+alert = wait(lambda: [p for _, p in FAKE.calls("answerCallbackQuery", m) if p.get("text")])
+say(alert and "другой теме" in alert[-1]["text"] and not texts(GROUP, m)
+    and jobs.by_id(early_job["id"])["status"] == "draft",
+    "кнопка старого черновика из «Общей» — всплывашка, в чат ни слова")
+m = FAKE.mark()
+say_to(GROUP, FRIEND, "/status", thread=42)
+st = last_text(GROUP, m, "В очереди")
+say(st and str(st.get("message_thread_id")) == "42", "в своей теме — отвечает туда")
+say_to(GROUP, FRIEND, "в нужную тему", media=video(), thread=42)
+td = draft_of(GROUP, m)
+say(td and str(td.get("message_thread_id")) == "42", "видео в своей теме — черновик там же")
+tj = job_by_caption("в нужную тему")
+press(td, f"w:{tj['id']}:now", FRIEND)
+rep_ = last_text(GROUP, m, "опубликовано")
+say(rep_ and str(rep_.get("message_thread_id")) == "42", "отчёт о публикации — в тему «Постинг»")
+idle()
+m = FAKE.mark()
+old_order = jobs.add(job_by_caption("в нужную тему")["video_path"], "заказ из Общей",
+                     "tiktok", exact=True, chat=str(GROUP), fingerprint="old-order")
+rep2 = last_text(GROUP, m, "опубликовано", )
+say(rep2 and str(rep2.get("message_thread_id")) == "42",
+    "пост, заказанный ещё в «Общей», отчитался в «Постинг»")
+idle()
+say("только тема «Постинг»" in " ".join(webui._bot_state()["groups"]),
+    f"окно: {webui._bot_state()['groups']}")
+m = FAKE.mark()
+say_to(GROUP, OWNER, "/everywhere", thread=42)
+say(last_text(GROUP, m, "во всех темах") and bot.group_topic(GROUP) is None,
+    "/everywhere — снова во всех темах")
+say_to(GROUP, FRIEND, f"/status@{BOTNAME}")
+gen = last_text(GROUP, m, "В очереди")
+say(gen and not gen.get("message_thread_id"), "и в «Общей» снова отвечает")
+jobs.cancel(early_job["id"])
 
 print("\n--- чужая группа ---")
 m = FAKE.mark()

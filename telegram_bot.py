@@ -363,29 +363,92 @@ def _me():
     return _ME
 
 
+def _groups():
+    return [dict(g, id=str(g["id"])) for g in _saved().get("groups", [])
+            if isinstance(g, dict) and g.get("id")]
+
+
 def allowed_groups():
-    return {str(g.get("id")): g.get("title", "") for g in _saved().get("groups", [])
-            if isinstance(g, dict) and g.get("id")}
+    return {g["id"]: g.get("title", "") for g in _groups()}
 
 
-def _set_groups(groups):
+def _write_groups(groups):
     data = _saved()
-    data["groups"] = [{"id": k, "title": v} for k, v in groups.items()]
+    data["groups"] = groups
     with open(settings_path(), "w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def allow_group(chat_id, title=""):
-    groups = allowed_groups()
-    if str(chat_id) not in groups:
-        groups[str(chat_id)] = title
-        _set_groups(groups)
+    groups = _groups()
+    if not any(g["id"] == str(chat_id) for g in groups):
+        groups.append({"id": str(chat_id), "title": title})
+        _write_groups(groups)
 
 
 def drop_group(chat_id):
-    groups = allowed_groups()
-    if groups.pop(str(chat_id), None) is not None:
-        _set_groups(groups)
+    groups = _groups()
+    left = [g for g in groups if g["id"] != str(chat_id)]
+    if len(left) != len(groups):
+        _write_groups(left)
+
+
+# Тема группы, в которой бот работает (просьба 2026-10-16: «в группе несколько
+# чатиков, хочу, чтобы он только в один конкретный писал»). Номер темы или
+# GENERAL — «Общая» (у неё номера в сообщениях нет). None — во всех темах.
+GENERAL = "general"
+
+
+def group_topic(chat_id):
+    for g in _groups():
+        if g["id"] == str(chat_id):
+            return g.get("topic") or None
+    return None
+
+
+def set_group_topic(chat_id, topic, name=""):
+    groups = _groups()
+    for g in groups:
+        if g["id"] == str(chat_id):
+            g.pop("topic", None)
+            g.pop("topic_name", None)
+            if topic:
+                g["topic"] = topic
+                g["topic_name"] = name
+    _write_groups(groups)
+
+
+def groups_text():
+    """Для окна: «Команда (только тема «Постинг»)»."""
+    out = []
+    for g in _groups():
+        name = g.get("title") or g["id"]
+        if g.get("topic"):
+            name += f" (только тема «{g.get('topic_name') or 'Общая'}»)"
+        out.append(name)
+    return out
+
+
+def _thread_for(target):
+    """В какую тему слать в этот чат: привязанную — всегда, иначе — откуда спросили."""
+    if str(target).startswith("-"):
+        bound = group_topic(target)
+        if bound == GENERAL:
+            return None
+        if bound:
+            return bound
+    if current_thread() and str(target) == str(current_chat()):
+        return current_thread()
+    return None
+
+
+def _topic_name(msg):
+    """Название темы — из служебного сообщения о её создании, если оно есть."""
+    created = (msg.get("reply_to_message") or {}).get("forum_topic_created") or {}
+    if created.get("name"):
+        return created["name"]
+    thread = msg.get("message_thread_id")
+    return f"тема №{thread}" if thread else "Общая"
 
 
 def _for_me(text, msg):
@@ -418,7 +481,9 @@ GROUP_HELLO = ("Работаю в этом чате — как в личке:\n"
                "• ВИДЕО с подписью — опубликую (подпись = описание; сети и время — кнопками; "
                "«без ютуба» — пропустить сеть)\n"
                "• ССЫЛКУ — сохраню в подборку\n"
-               "• /queue, /cancel 5, /status, /stop, /links\n\n"
+               "• /queue, /cancel 5, /status, /stop, /links\n"
+               "• /here — в группе с темами: работать только в этой теме "
+               "(/everywhere — снова во всех)\n\n"
                "Публиковать может любой участник этого чата.")
 PRIVACY_HINT = ("\n\n⚠ Сейчас я вижу в этом чате только команды и ответы на мои сообщения. "
                 "Чтобы видел все видео и ссылки: сделай меня администратором чата — или в "
@@ -486,8 +551,9 @@ def send(text, preview=True, chat_id=None, keyboard=False):
             "text": chunk,
             "disable_web_page_preview": "true" if not preview else "false",
         }
-        if current_thread() and str(target) == str(current_chat()):
-            params["message_thread_id"] = current_thread()
+        thread = _thread_for(target)
+        if thread:
+            params["message_thread_id"] = thread
         # Клавиатуру вешаем на ПОСЛЕДНИЙ кусок: длинная подборка режется на
         # части, и приклей её к первому — кнопки оказались бы в середине.
         # В группе — не вешаем: она вылезла бы у всех участников.
@@ -862,6 +928,13 @@ def _handle(msg):
         text, addressed, other_bot = _for_me(text, msg)
         if other_bot:
             return                                # команда другому боту
+        here = thread or GENERAL
+        if text.startswith(("/here", "/everywhere")):
+            _cmd_topic(text, chat, msg, sender, cfg)
+            return
+        bound = group_topic(chat_id)
+        if bound and here != bound:
+            return                                # не та тема — молчим
 
     video = msg.get("video") or msg.get("document") or msg.get("animation")
     # Команды — только в ТЕКСТЕ. Подпись к видео — это описание поста:
@@ -926,6 +999,31 @@ def _handle(msg):
 
 
 VIDEO_EXT = (".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".3gp")
+
+
+def _cmd_topic(text, chat, msg, sender, cfg):
+    """/here — работать только в этой теме, /everywhere — во всех.
+
+    Только владелец: иначе любой участник мог бы увести бота в свою тему.
+    """
+    chat_id = str(chat.get("id"))
+    thread = msg.get("message_thread_id") if msg.get("is_topic_message") else None
+    if sender != str(cfg["owner"]):
+        bound = group_topic(chat_id)
+        if not bound or (thread or GENERAL) == bound:   # в чужой теме — молчим
+            send("Выбрать тему для бота может только его владелец.")
+        return
+    if text.startswith("/everywhere"):
+        set_group_topic(chat_id, None)
+        send("Работаю во всех темах этого чата.")
+        return
+    if not thread and not chat.get("is_forum"):
+        send("В этом чате нет тем — я и так пишу только сюда.")
+        return
+    name = _topic_name(msg)
+    set_group_topic(chat_id, thread or GENERAL, name)
+    send(f"Готово: работаю только в теме «{name}». В других темах молчу, "
+         "отчёты о публикациях — сюда же. Вернуть во все темы — /everywhere.")
 
 
 def _is_video(msg, video):
@@ -1209,8 +1307,9 @@ def _send_draft(job_id):
     cfg = load_settings()
     target = current_chat() or cfg["owner"]
     params = {"chat_id": target, "text": _draft_text(job), "reply_markup": _draft_markup(job)}
-    if current_thread() and str(target) == str(current_chat()):
-        params["message_thread_id"] = current_thread()
+    thread = _thread_for(target)
+    if thread:
+        params["message_thread_id"] = thread
     _call("sendMessage", params, timeout=20)
 
 
@@ -1288,6 +1387,14 @@ def _handle_callback(cq):
         # Кнопки под старым сообщением в чате, откуда бота уже убрали.
         _call("answerCallbackQuery", {"callback_query_id": cq.get("id", ""),
                                       "text": "этот чат не подключён"}, timeout=10)
+        return
+    bound = group_topic(chat_id) if group else None
+    if bound and (thread or GENERAL) != bound:
+        # Старый черновик в теме, где бот больше не работает: всплывашка, а
+        # не сообщение — писать бот должен только в своей теме.
+        _call("answerCallbackQuery", {"callback_query_id": cq.get("id", ""),
+                                      "text": "я теперь работаю в другой теме — пришли видео туда",
+                                      "show_alert": "true"}, timeout=10)
         return
     note = ""
     try:

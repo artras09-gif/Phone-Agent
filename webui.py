@@ -573,7 +573,7 @@ def _bot_state():
     return {"token": bool(cfg["token"]), "owner": cfg["owner"],
             "running": telegram_bot.running(), "trouble": trouble,
             "api": bool(api_id and api_hash), "big": big,
-            "groups": [t or k for k, t in telegram_bot.allowed_groups().items()]}
+            "groups": telegram_bot.groups_text()}
 
 
 def _tell(text):
