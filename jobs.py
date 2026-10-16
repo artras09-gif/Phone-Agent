@@ -83,7 +83,10 @@ MIGRATIONS = {
              # Отпечаток видео (размер + начало и конец файла): одно и то же
              # видео не ставится второй раз, пока прежняя задача ждёт или идёт
              # (живьём 2026-10-16: одно видео вышло в Instagram дважды).
-             ("fingerprint", "TEXT DEFAULT ''")],
+             ("fingerprint", "TEXT DEFAULT ''"),
+             # Откуда заказали из бота («чат» или «чат:тема»): отчёт о посте,
+             # вышедшем по времени, идёт туда же — в группу, а не в личку.
+             ("chat", "TEXT DEFAULT ''")],
     "events": [("device", "TEXT DEFAULT ''")],
     "links": [("sent", "REAL DEFAULT 0")],
 }
@@ -260,7 +263,7 @@ def interrupt_running():
 
 
 def add(video_path, caption="", targets="tiktok", run_at=None, captions=None,
-        exact=False, status="pending", fingerprint=""):
+        exact=False, status="pending", fingerprint="", chat=""):
     """Задача в очередь. status="draft" — черновик из бота: видео скачано, но
     сети и время человек ещё выбирает кнопками; публиковать его нельзя."""
     if not fingerprint and os.path.isfile(video_path):
@@ -268,10 +271,11 @@ def add(video_path, caption="", targets="tiktok", run_at=None, captions=None,
     with connect() as con:
         cur = con.execute(
             "INSERT INTO jobs (video_path, caption, targets, run_at, created_at,"
-            " device, captions, exact, status, fingerprint) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            " device, captions, exact, status, fingerprint, chat)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (video_path, caption, targets, run_at or time.time(), time.time(),
              DEVICE, json.dumps(captions or {}, ensure_ascii=False),
-             1 if exact else 0, status, fingerprint),
+             1 if exact else 0, status, fingerprint, chat or ""),
         )
         return cur.lastrowid
 

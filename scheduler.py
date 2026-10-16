@@ -297,6 +297,34 @@ def run_post_job(notify=None, job_id=None):
     if job is None:
         return f"задачи #{job_id} нет" if job_id is not None else "очередь пуста"
 
+    # Отчёты — туда, откуда заказали (группа и её тема). Пост, вышедший по
+    # времени, публикует сторож окна: без этого отчёт ушёл бы владельцу.
+    restore = _reply_from(job)
+    try:
+        return _post_job(job, notify)
+    finally:
+        restore()
+
+
+def _reply_from(job):
+    """Направить ответы бота в чат задачи; вернуть, как было."""
+    try:
+        chat = job["chat"]
+    except (IndexError, KeyError):
+        chat = ""
+    if not chat:
+        return lambda: None
+    import telegram_bot
+
+    if chat.startswith("-") and chat.partition(":")[0] not in telegram_bot.allowed_groups():
+        return lambda: None          # бота из чата убрали — отчёт владельцу
+    was = (telegram_bot.current_chat(), telegram_bot.current_thread(),
+           telegram_bot.in_group())
+    telegram_bot.reply_to(chat)
+    return lambda: telegram_bot.set_reply(was[0], thread=was[1], group=was[2])
+
+
+def _post_job(job, notify):
     # Дневной лимит — против разгона, а не против человека: пост с ЯВНО
     # названным временем («когда: 18:30») выходит всегда. Остальное, упёршись
     # в лимит, переносится на завтра в то же время — и человеку об этом

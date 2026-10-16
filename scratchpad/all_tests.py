@@ -62,6 +62,7 @@ TESTS = [
     ("scratchpad/post_buttons.py", "пост кнопками: подпись = описание, сети и время кнопками"),
     ("scratchpad/unpack_tools.py", "раскладка инструментов из exe: повтор, доложить недостающее"),
     ("scratchpad/tg_local.py", "свой сервер Telegram: видео до 2 ГБ, без ключей — облако"),
+    ("scratchpad/bot_groups.py", "бот в групповом чате: всё как в личке, чужие чаты — молча"),
     ("scratchpad/post_dupes.py", "одно видео — одна публикация; бот без журнала сессий"),
     ("scratchpad/post_youtube.py", "YouTube: доступ к файлам, аудитория, серая кнопка — не «готово»"),
     ("scratchpad/post_new_phone.py", "новый телефон: обрезка YouTube, окно микрофона Instagram"),

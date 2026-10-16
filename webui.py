@@ -572,7 +572,8 @@ def _bot_state():
         big = "видео до 20 МБ (облако Telegram) — впиши api_id и api_hash, чтобы до 2 ГБ"
     return {"token": bool(cfg["token"]), "owner": cfg["owner"],
             "running": telegram_bot.running(), "trouble": trouble,
-            "api": bool(api_id and api_hash), "big": big}
+            "api": bool(api_id and api_hash), "big": big,
+            "groups": [t or k for k, t in telegram_bot.allowed_groups().items()]}
 
 
 def _tell(text):

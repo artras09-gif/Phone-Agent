@@ -635,6 +635,7 @@ pre.report{
           <button class="btn" id="b-bot-api" style="align-self:flex-end">Сохранить ключи</button>
         </div>
         <p class="hint" style="margin:8px 0 0" id="bot-big">…</p>
+        <p class="hint" style="margin:6px 0 0" id="bot-groups"></p>
         <p class="hint" style="margin:6px 0 0">
           Без ключей Telegram отдаёт боту видео только до 20 МБ. С ключами бот
           работает через свой сервер Telegram прямо на этом ПК — до 2 ГБ.
@@ -927,6 +928,9 @@ function renderBot(s){
                  : "остановлен");
   $("bot-when").textContent = "";
   $("bot-big").textContent = b.big || "";
+  $("bot-groups").textContent = (b.groups && b.groups.length)
+    ? "Работает в чатах: " + b.groups.join(", ")
+    : "В чатах: добавь бота в группу — он заработает там так же, как в личке.";
 }
 
 /* Какую ленту смотреть. Выбор запоминается: агент обычно живёт в одной. */

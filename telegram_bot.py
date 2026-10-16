@@ -283,13 +283,161 @@ def _call(method, params=None, timeout=70):
 _REPLY = threading.local()
 
 
-def set_reply(chat_id):
-    """Кому уйдут следующие `send` в ЭТОМ потоке. None — снова владельцу."""
+def set_reply(chat_id, thread=None, group=False):
+    """Кому уйдут следующие `send` в ЭТОМ потоке. None — снова владельцу.
+
+    `thread` — тема в группе с темами (ответ — в ту же тему), `group` — чат
+    групповой: там не вешаем клавиатуру внизу (она вылезла бы у всех).
+    """
     _REPLY.chat = str(chat_id) if chat_id else None
+    _REPLY.thread = thread if chat_id else None
+    _REPLY.group = bool(group) if chat_id else False
 
 
 def current_chat():
     return getattr(_REPLY, "chat", None)
+
+
+def reply_address():
+    """Куда отвечать — строкой для задачи: «чат» или «чат:тема»."""
+    chat = current_chat()
+    if not chat:
+        return ""
+    thread = current_thread()
+    return f"{chat}:{thread}" if thread else chat
+
+
+def reply_to(address):
+    """Обратно из строки задачи. Пустая — владельцу, как раньше.
+
+    У групп Telegram отрицательные номера, у людей — положительные.
+    """
+    chat, _, thread = str(address or "").partition(":")
+    set_reply(chat or None, thread=int(thread) if thread.isdigit() else None,
+              group=chat.startswith("-"))
+
+
+def current_thread():
+    return getattr(_REPLY, "thread", None)
+
+
+def in_group():
+    return getattr(_REPLY, "group", False)
+
+
+# --------------------------------------------------------- группы
+#
+# Бот в групповом чате — тот же функционал, что в личке (просьба 2026-10-16).
+# Работает только в чатах, куда его добавил владелец (или где владелец сам ему
+# написал): бот открыт, и иначе любой, кто добавит его в свой чат, мог бы
+# публиковать в аккаунты владельца. Список — в telegram.json, «groups».
+
+GROUP_TYPES = ("group", "supergroup")
+_ME = {}
+
+
+def _me():
+    """getMe — имя бота и «видит ли он все сообщения группы». Кэш."""
+    if not _ME.get("username"):
+        res = _call("getMe", timeout=20)
+        if res.get("ok"):
+            _ME.update(res["result"])
+    return _ME
+
+
+def allowed_groups():
+    return {str(g.get("id")): g.get("title", "") for g in _saved().get("groups", [])
+            if isinstance(g, dict) and g.get("id")}
+
+
+def _set_groups(groups):
+    data = _saved()
+    data["groups"] = [{"id": k, "title": v} for k, v in groups.items()]
+    with open(settings_path(), "w", encoding="utf-8", newline="\n") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def allow_group(chat_id, title=""):
+    groups = allowed_groups()
+    if str(chat_id) not in groups:
+        groups[str(chat_id)] = title
+        _set_groups(groups)
+
+
+def drop_group(chat_id):
+    groups = allowed_groups()
+    if groups.pop(str(chat_id), None) is not None:
+        _set_groups(groups)
+
+
+def _for_me(text, msg):
+    """Текст из группы: (без «@бот», обращались ли к боту, адресовано ДРУГОМУ боту).
+
+    «/status@Videopost23bot» — команда нам, «/status@другой_бот» — не нам.
+    Упоминание «@бот» вырезаем: в подписи к видео оно стало бы описанием поста.
+    """
+    name = str(_me().get("username") or "").lower()
+    addressed = False
+    if text.startswith("/"):
+        cmd, _, rest = text.partition(" ")
+        if "@" in cmd:
+            base, _, at = cmd.partition("@")
+            if name and at.lower() != name:
+                return text, False, True
+            text = base + (" " + rest if rest else "")
+        addressed = True
+    if name and f"@{name}" in text.lower():
+        text = re.sub(rf"@{re.escape(name)}\b", "", text, flags=re.I)
+        text = re.sub(r"[ \t]{2,}", " ", text).strip()
+        addressed = True
+    reply = (msg.get("reply_to_message") or {}).get("from") or {}
+    if name and str(reply.get("username") or "").lower() == name:
+        addressed = True
+    return text.strip(), addressed, False
+
+
+GROUP_HELLO = ("Работаю в этом чате — как в личке:\n"
+               "• ВИДЕО с подписью — опубликую (подпись = описание; сети и время — кнопками; "
+               "«без ютуба» — пропустить сеть)\n"
+               "• ССЫЛКУ — сохраню в подборку\n"
+               "• /queue, /cancel 5, /status, /stop, /links\n\n"
+               "Публиковать может любой участник этого чата.")
+PRIVACY_HINT = ("\n\n⚠ Сейчас я вижу в этом чате только команды. Чтобы видел видео и ссылки: "
+                "сделай меня администратором чата — или в @BotFather: /setprivacy → "
+                "выбери меня → Disable, потом убери и снова добавь меня в чат.")
+
+
+def _membership(update):
+    """Бота добавили в чат или убрали из него."""
+    chat = update.get("chat") or {}
+    if chat.get("type") not in GROUP_TYPES:
+        return
+    chat_id = str(chat.get("id"))
+    status = (update.get("new_chat_member") or {}).get("status", "")
+    by = str((update.get("from") or {}).get("id", ""))
+    owner = str(load_settings()["owner"])
+    if status in ("left", "kicked"):
+        drop_group(chat_id)
+        return
+    if status not in ("member", "administrator"):
+        return
+    title = chat.get("title", "")
+    was = (update.get("old_chat_member") or {}).get("status", "")
+    if was in ("member", "administrator", "restricted") and chat_id in allowed_groups():
+        # Уже в чате — права поменяли (сделали админом). Второе приветствие
+        # ни к чему, достаточно сказать, что теперь видно всё.
+        if status == "administrator" and was != "administrator":
+            send("Теперь я админ — вижу в чате видео и ссылки.", chat_id=chat_id)
+        return
+    if owner and by == owner:
+        allow_group(chat_id, title)
+        hint = "" if status == "administrator" or _me().get("can_read_all_group_messages") \
+            else PRIVACY_HINT
+        send(GROUP_HELLO + hint, chat_id=chat_id)
+    elif owner:
+        send(f"Меня добавили в чат «{title}», но не ты — там я молчу. Если это твой чат, "
+             "напиши там любую команду, например /start, — и я начну в нём работать.",
+             chat_id=owner)
 
 
 def send(text, preview=True, chat_id=None, keyboard=False):
@@ -319,9 +467,12 @@ def send(text, preview=True, chat_id=None, keyboard=False):
             "text": chunk,
             "disable_web_page_preview": "true" if not preview else "false",
         }
+        if current_thread() and str(target) == str(current_chat()):
+            params["message_thread_id"] = current_thread()
         # Клавиатуру вешаем на ПОСЛЕДНИЙ кусок: длинная подборка режется на
         # части, и приклей её к первому — кнопки оказались бы в середине.
-        if keyboard and n == len(chunks) - 1:
+        # В группе — не вешаем: она вылезла бы у всех участников.
+        if keyboard and n == len(chunks) - 1 and not (in_group() and str(target) == str(current_chat())):
             params["reply_markup"] = KEYBOARD
         res = _call("sendMessage", params, timeout=20)
         ok = ok and bool(res.get("ok"))
@@ -579,10 +730,10 @@ def _run(title, work):
     # живёт в переменной потока — там его уже не будет. Поэтому чат
     # запоминается здесь и восстанавливается на той стороне: иначе отчёт о
     # публикации ушёл бы владельцу, а не тому, кто прислал видео.
-    chat = current_chat()
+    address = reply_address()
 
     def in_thread():
-        set_reply(chat)
+        reply_to(address)
         try:
             work()
         finally:
@@ -643,29 +794,59 @@ def _save_incoming(urls, note=""):
 
 def _handle(msg):
     cfg = load_settings()
-    chat_id = str(msg.get("chat", {}).get("id", ""))
+    chat = msg.get("chat", {}) or {}
+    chat_id = str(chat.get("id", ""))
+    group = chat.get("type") in GROUP_TYPES
+    sender = str((msg.get("from") or {}).get("id", "") or chat_id)
+    thread = msg.get("message_thread_id") if msg.get("is_topic_message") else None
 
-    # Отвечаем в ТОТ ЖЕ чат, откуда пришло. Ставится до первого `send` и
-    # снимается в `poll_forever`, иначе следующее сообщение от другого
-    # человека уехало бы предыдущему.
-    set_reply(chat_id)
+    # Отвечаем в ТОТ ЖЕ чат (и в ту же тему), откуда пришло. Ставится до
+    # первого `send` и снимается в `poll_forever`, иначе следующее сообщение
+    # от другого человека уехало бы предыдущему.
+    set_reply(chat_id, thread=thread, group=group)
 
     # Первый написавший запоминается как адрес для НЕСПРОШЕННОГО (вечерняя
-    # подборка, отчёты из окна) — им отвечать некуда. Доступ это не даёт и не
-    # ограничивает: при `config.BOT_OPEN` пишет кто угодно.
+    # подборка, отчёты из окна) — им отвечать некуда. Это человек, а не
+    # группа: тревоги со снимком телефона — только ему лично.
     if not cfg["owner"]:
-        save_settings(cfg["token"], chat_id)
+        save_settings(cfg["token"], sender)
         cfg = load_settings()
-    if not config.BOT_OPEN and chat_id != str(cfg["owner"]):
+    if group:
+        # Группа стала супергруппой (включили темы и т.п.) — у чата новый
+        # номер. Разрешение переезжает вместе с ним, иначе бот замолчал бы.
+        moved = str(msg.get("migrate_to_chat_id") or "")
+        if moved and chat_id in allowed_groups():
+            allow_group(moved, chat.get("title", ""))
+            drop_group(chat_id)
+            return
+        old_id = str(msg.get("migrate_from_chat_id") or "")
+        if old_id and old_id in allowed_groups():
+            allow_group(chat_id, chat.get("title", ""))
+            drop_group(old_id)
+            return
+        # Только чаты владельца: бота может добавить к себе кто угодно.
+        if chat_id not in allowed_groups():
+            if sender != str(cfg["owner"]):
+                return                            # чужой чат — молчим
+            allow_group(chat_id, chat.get("title", ""))
+    elif not config.BOT_OPEN and chat_id != str(cfg["owner"]):
         return                                    # чужие игнорируются молча
 
     text = (msg.get("text") or msg.get("caption") or "").strip()
+    addressed = not group
+    if group:
+        text, addressed, other_bot = _for_me(text, msg)
+        if other_bot:
+            return                                # команда другому боту
 
     if text.startswith("/stop"):
         # Останавливаем то, что идёт сейчас, а не запрещаем будущее: режимов
         # в программе больше нет, всё остальное работает штатно.
         abort.request()
         send("Останавливаю текущее действие.")
+        return
+    if text.startswith("/start") and group:
+        send(GROUP_HELLO + ("" if _me().get("can_read_all_group_messages") else PRIVACY_HINT))
         return
     if text.startswith("/start"):
         when = ", ".join(config.LINKS_DIGEST_TIMES) or "только по команде"
@@ -711,7 +892,7 @@ def _handle(msg):
         _cmd_links(text)
         return
     if text and not (msg.get("video") or msg.get("document") or msg.get("animation")) \
-            and _take_time_answer(chat_id, text):
+            and _take_time_answer(chat_id, text, sender):
         return
 
     # Ссылки принимаем до видео: сообщение со ссылкой — это не публикация,
@@ -724,7 +905,8 @@ def _handle(msg):
 
     video = msg.get("video") or msg.get("document") or msg.get("animation")
     if not video:
-        if text:
+        # В группе на обычную болтовню не отвечаем — только если обратились.
+        if text and addressed:
             send("Пришли видео файлом — опубликую, или ссылку — сохраню.",
                  keyboard=True)
         return
@@ -799,13 +981,14 @@ def _handle(msg):
                 pass
             return
         job_id = jobs.add(path, caption=caption, targets=",".join(targets),
-                          status="draft")
+                          status="draft", chat=reply_address())
         _send_draft(job_id)
         return
 
     job_id = jobs.add(path, caption=spec["caption"], targets=",".join(spec["targets"]),
                       run_at=spec["when"].timestamp() if spec["when"] else None,
-                      captions=spec["captions"], exact=spec["exact"])
+                      captions=spec["captions"], exact=spec["exact"],
+                      chat=reply_address())
     send(postspec.describe(spec, job_id) + f"\n\nОтменить: /cancel {job_id}")
     if spec["when"] is None:
         _publish_now(job_id)
@@ -902,8 +1085,10 @@ def _send_draft(job_id):
     job = jobs.by_id(job_id)
     cfg = load_settings()
     target = current_chat() or cfg["owner"]
-    _call("sendMessage", {"chat_id": target, "text": _draft_text(job),
-                          "reply_markup": _draft_markup(job)}, timeout=20)
+    params = {"chat_id": target, "text": _draft_text(job), "reply_markup": _draft_markup(job)}
+    if current_thread() and str(target) == str(current_chat()):
+        params["message_thread_id"] = current_thread()
+    _call("sendMessage", params, timeout=20)
 
 
 def _edit(chat_id, message_id, text, markup=None):
@@ -968,9 +1153,19 @@ def _handle_callback(cq):
     """Нажатие кнопки под сообщением бота."""
     data = str(cq.get("data") or "")
     msg = cq.get("message") or {}
-    chat_id = str((msg.get("chat") or {}).get("id", ""))
+    chat = msg.get("chat") or {}
+    chat_id = str(chat.get("id", ""))
     message_id = msg.get("message_id")
-    set_reply(chat_id)
+    group = chat.get("type") in GROUP_TYPES
+    thread = msg.get("message_thread_id") if msg.get("is_topic_message") else None
+    set_reply(chat_id, thread=thread, group=group)
+    owner = str(load_settings()["owner"])
+    if (chat_id not in allowed_groups()) if group else \
+            (not config.BOT_OPEN and chat_id != owner):
+        # Кнопки под старым сообщением в чате, откуда бота уже убрали.
+        _call("answerCallbackQuery", {"callback_query_id": cq.get("id", ""),
+                                      "text": "этот чат не подключён"}, timeout=10)
+        return
     note = ""
     try:
         kind, jid, *rest = data.split(":")
@@ -1007,7 +1202,8 @@ def _handle_callback(cq):
         if not [t for t in job["targets"].split(",") if t]:
             note = "отметь хотя бы одну сеть"
         elif code == "ask":
-            _ASK_TIME[chat_id] = (job["id"], message_id)
+            who = str((cq.get("from") or {}).get("id", "") or chat_id)
+            _ASK_TIME[f"{chat_id}:{who}"] = (job["id"], message_id)
             send("Напиши время одним сообщением: 18:30, завтра 9:00, 12.10 18:30 или пт 20:00")
         else:
             when, exact = _when_of(code)
@@ -1016,9 +1212,14 @@ def _handle_callback(cq):
                                   "text": note}, timeout=10)
 
 
-def _take_time_answer(chat_id, text):
-    """Ответ на «Своё время». True — сообщение было про время и обработано."""
-    waiting = _ASK_TIME.get(chat_id)
+def _take_time_answer(chat_id, text, sender=None):
+    """Ответ на «Своё время». True — сообщение было про время и обработано.
+
+    Ждём ответа от того, кто нажал кнопку: в группе время пишет он, а не
+    первый, кто что-то сказал в чат.
+    """
+    key = f"{chat_id}:{sender or chat_id}"
+    waiting = _ASK_TIME.get(key)
     if not waiting:
         return False
     import postspec
@@ -1029,7 +1230,7 @@ def _take_time_answer(chat_id, text):
     except postspec.SpecError as e:
         send(f"Не понял: {e}. Ещё раз — например 18:30 или завтра 9:00")
         return True
-    _ASK_TIME.pop(chat_id, None)
+    _ASK_TIME.pop(key, None)
     _schedule(job_id, when, exact, chat_id, message_id)
     return True
 
@@ -1208,6 +1409,14 @@ def _poll_once(offset, generation=None):
                 _handle_callback(upd["callback_query"])
             except Exception as e:
                 send(f"ошибка кнопки: {type(e).__name__}: {e}")
+            finally:
+                set_reply(None)
+            continue
+        if upd.get("my_chat_member"):
+            try:
+                _membership(upd["my_chat_member"])
+            except Exception as e:
+                print(f"[бот] вступление в чат: {type(e).__name__}: {e}", flush=True)
             finally:
                 set_reply(None)
             continue
