@@ -1083,6 +1083,7 @@ REJECTED = "Telegram не принимает токен (401) — вставь �
 MALFORMED = ("токен вставлен с ошибкой (Telegram его не узнаёт, 404) — скопируй "
              "его у @BotFather заново и вставь во вкладке «Бот»")
 RETRY_SEC = 5            # пауза перед повтором после неудачного опроса
+CONFLICT_GRACE_SEC = 75  # 409 короче этого — наш же прежний запрос, не другая копия
 
 
 def trouble():
@@ -1130,6 +1131,7 @@ def poll_forever(generation=0):
     _drop_stale_drafts()
     offset = 0
     said = ""
+    conflict_since = None
     token = load_settings()["token"]
     while True:
         if generation != _GENERATION["n"]:
@@ -1145,8 +1147,20 @@ def poll_forever(generation=0):
             print(f"[бот] новый токен: {'запущен: ' + info if ok else info}", flush=True)
         try:
             offset = _poll_once(offset, generation)
-            said = ""
+            said, conflict_since = "", None
         except _PollFailed as e:
+            if generation != _GENERATION["n"]:
+                return                       # нас уже сменили — молча уходим
+            # «Другая копия» в первую минуту — обычно не другая копия, а наш
+            # же прежний запрос: после перезапуска программы или смены токена
+            # Telegram ещё до 50 с держит старый getUpdates и отвечает 409.
+            # Говорим о конфликте, только если он держится дольше минуты
+            # (жалоба 2026-10-16: сообщение висело сразу после запуска).
+            if str(e) == CONFLICT:
+                conflict_since = conflict_since or time.time()
+                if time.time() - conflict_since < CONFLICT_GRACE_SEC:
+                    time.sleep(RETRY_SEC)
+                    continue
             _TROUBLE["text"] = str(e)
             if str(e) != said:               # в журнал — один раз на беду
                 print(f"[бот] {e}", flush=True)

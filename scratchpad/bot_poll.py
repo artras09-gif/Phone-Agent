@@ -71,6 +71,52 @@ say(handled == ["Привет", "плохое", "третье"], "сбой на 
 say(replies and "ошибка обработки" in replies[-1], "о сбое сказано в чат")
 say(tb.trouble() == "", "связь вернулась — беда снята")
 
+print("\n--- 409 в первую минуту — не тревога (наш же прежний запрос) ---")
+real_time, real_sleep = tb.time.time, tb.time.sleep
+saved = (tb._poll_once, tb.check, tb._drop_stale_drafts, tb.setup_server, tb.load_settings)
+clock = [1000.0]
+tb.time.time = lambda: clock[0]
+tb.time.sleep = lambda s: clock.__setitem__(0, clock[0] + s)
+tb.check = lambda: (True, "@test")
+tb._drop_stale_drafts = lambda: None
+tb.setup_server = lambda: ""
+tb.load_settings = lambda: {"token": "1:x", "owner": "1"}
+seen = []
+
+
+def run(polls):
+    """Прогнать опрос по списку ответов: что было в «беде» после каждого."""
+    seen.clear()
+    tb._TROUBLE["text"] = ""
+    queue = list(polls)
+
+    def one(offset, generation=None):
+        if not queue:
+            tb._GENERATION["n"] += 1         # конец сценария — поток выходит
+            raise tb._PollFailed("стоп")
+        kind = queue.pop(0)
+        if kind == "409":
+            out = tb._PollFailed(tb.CONFLICT)
+            seen.append(None)
+            raise out
+        seen.append(None)
+        return offset
+
+    tb._poll_once = one
+    gen = tb._GENERATION["n"]
+    tb.poll_forever(gen)
+    return tb._TROUBLE["text"]
+
+
+left = run(["409", "409", "ok"])
+say(left == "", "два 409 подряд (10 с), потом связь — тревоги не было")
+tb._GENERATION["n"] += 0
+left = run(["409"] * 20)
+say(left == tb.CONFLICT, "409 дольше минуты — сказано «другая копия»")
+tb.time.time, tb.time.sleep = real_time, real_sleep
+tb._poll_once, tb.check, tb._drop_stale_drafts, tb.setup_server, tb.load_settings = saved
+tb._TROUBLE["text"] = ""
+
 print("\n--- поток не умирает ---")
 import threading  # noqa: E402
 import time  # noqa: E402
@@ -90,7 +136,7 @@ def flaky(method, params=None, timeout=70):
 
 tb._call = flaky
 tb.RETRY_SEC = 0.01
-t = threading.Thread(target=tb.poll_forever, daemon=True)
+t = threading.Thread(target=tb.poll_forever, args=(tb._GENERATION["n"],), daemon=True)
 t.start()
 time.sleep(0.5)
 say(t.is_alive() and calls["n"] > 3, f"неожиданное исключение пережито, опрос идёт (кругов: {calls['n']})")
