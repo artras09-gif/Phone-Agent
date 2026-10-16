@@ -17,6 +17,7 @@
 """
 import os
 import shutil
+import time
 import subprocess
 import sys
 
@@ -346,19 +347,33 @@ def unpack(base):
         stamp = "?"
 
     tools = os.path.join(base, "tools")
-    if _same_build(tools, stamp):
+    # Папки, которой нет совсем (новый инструмент — сервер Telegram), кладём
+    # при любой отметке: иначе однажды сорвавшаяся раскладка оставляла её
+    # недоложенной навсегда (живьём 2026-10-16: сервера не было в tools).
+    entries = sorted(os.listdir(packed_tools))
+    missing = [e for e in entries if not os.path.exists(os.path.join(tools, e))]
+    if _same_build(tools, stamp) and not missing:
         return                      # уже разложено этой версией — не трогаем
 
     _stop_old_adb(tools)
-    for entry in os.listdir(packed_tools):
+    complete = True
+    for entry in entries:
         target = os.path.join(tools, entry)
-        try:
-            if os.path.isdir(target):
-                shutil.rmtree(target)
-            shutil.copytree(os.path.join(packed_tools, entry), target)
-        except OSError:
-            # Не вышло (антивирус держит файл) — старая копия, скорее всего,
-            # рабочая. Отметку не ставим: в следующий раз попробуем ещё.
-            return
-    with open(os.path.join(tools, ".build"), "w", encoding="utf-8") as f:
-        f.write(stamp)
+        if _same_build(tools, stamp) and entry not in missing:
+            continue
+        # Каждая папка — отдельно и с повтором: антивирус проверяет только что
+        # распакованный файл и держит его секунду. Раньше первая же неудача
+        # бросала всю раскладку, и следующие папки не доходили вовсе.
+        for attempt in range(3):
+            try:
+                if os.path.isdir(target):
+                    shutil.rmtree(target)
+                shutil.copytree(os.path.join(packed_tools, entry), target)
+                break
+            except OSError:
+                time.sleep(1.0 + attempt)
+        else:
+            complete = False        # старая копия, скорее всего, рабочая
+    if complete:
+        with open(os.path.join(tools, ".build"), "w", encoding="utf-8") as f:
+            f.write(stamp)
