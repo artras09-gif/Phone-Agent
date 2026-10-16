@@ -514,9 +514,10 @@ def serve(notify=None, watch=False, record=False, should_stop=None):
     done = _already_past(schedule, dt.datetime.now())
     _publish(schedule_day, schedule, done)
 
-    if notify:
-        missed = f"\n(пропущено, время уже прошло: {len(done)})" if done else ""
-        notify("План на сегодня:\n" + _plan_text(schedule) + missed)
+    # План дня — в консоль, не в Telegram: в бот он сыпался каждое утро вместе
+    # с журналами сессий («зачем-то эту хуйню отправляет», 2026-10-16).
+    missed = f"\n(пропущено, время уже прошло: {len(done)})" if done else ""
+    print("План на сегодня:\n" + _plan_text(schedule) + missed, flush=True)
 
     while True:
         if should_stop is not None and should_stop():
@@ -529,8 +530,7 @@ def serve(notify=None, watch=False, record=False, should_stop=None):
             schedule_day = now.date()
             done = _already_past(schedule, now)
             _publish(schedule_day, schedule, done)
-            if notify:
-                notify("План на сегодня:\n" + _plan_text(schedule))
+            print("План на сегодня:\n" + _plan_text(schedule), flush=True)
 
         if config.stop_requested():
             # Спим кусками, а не одним махом: под стоп-краном служба проводит
@@ -567,7 +567,9 @@ def serve(notify=None, watch=False, record=False, should_stop=None):
                         scan_watch_dir()
                         run_post_job(notify)
                     else:
-                        run_session(app, seconds, notify,
+                        # Журнал сессии в бот не шлём — только цифры в тему
+                        # статистики (`_tell_stats`), если она привязана.
+                        run_session(app, seconds, None,
                                     keep_open=chained(schedule, i, now))
             except Exception as e:                     # служба не должна падать
                 msg = f"сбой {kind}: {type(e).__name__}: {e}"

@@ -241,6 +241,19 @@ def _step(started, text):
     print(f"  [{time.time() - started:4.1f} с] {text}", flush=True)
 
 
+def stop_our_tgserver(base):
+    """Погасить сервер Bot API, запущенный ИЗ ПАПКИ программы, — и только его."""
+    ours = os.path.join(base, "tools").replace("'", "''")
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                        "Get-CimInstance Win32_Process -Filter \"Name='telegram-bot-api.exe'\" | "
+                        f"Where-Object {{ $_.ExecutablePath -like '{ours}\\*' }} | "
+                        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
+                       capture_output=True, timeout=30, creationflags=NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def _stop_everything(base, started):
     """Остановить всё программное. Возвращает номера бывших окон браузера."""
     pids = _close_windows(base)
@@ -256,8 +269,10 @@ def _stop_everything(base, started):
                        creationflags=NO_WINDOW)
     # Свой сервер Telegram Bot API — дочерний процесс программы; если её
     # закрыли принудительно, он мог остаться и держать файлы в папке данных.
-    subprocess.run(["taskkill", "/F", "/IM", "telegram-bot-api.exe"], capture_output=True,
-                   creationflags=NO_WINDOW)
+    # Только НАШ — из папки программы. Раньше гасился любой telegram-bot-api,
+    # а у человека бывает свой, поднятый заранее (2026-10-16: «на компе уже
+    # есть телеграм-хост»), — обновление программы ронял бы и его.
+    stop_our_tgserver(base)
     adb = os.path.join(base, "tools", "platform-tools", "adb.exe")
     if os.path.exists(adb):
         try:

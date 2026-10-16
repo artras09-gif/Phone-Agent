@@ -611,11 +611,12 @@ pre.report{
     <section class="page" id="p-bot">
       <div class="card">
         <div class="row between" style="margin-bottom:6px">
-          <h2 style="margin:0">Telegram-бот</h2>
+          <h2 style="margin:0" id="bot-title">Telegram-бот</h2>
           <span class="pill"><i class="dot" id="d-bot"></i><em id="t-bot">…</em></span>
         </div>
-        <p class="hint">Кидаешь боту видео с подписью — оно уходит в публикацию.
-          Подпись становится описанием поста.</p>
+        <p class="hint">Кидаешь боту видео с подписью — оно уходит в публикацию
+          на ЭТОМ телефоне. Подпись становится описанием поста. У каждого телефона
+          может быть свой бот: выбери телефон вверху и вставь токен его бота.</p>
         <div class="row">
           <label class="field" style="flex:1;min-width:280px">
             Токен от @BotFather
@@ -634,13 +635,23 @@ pre.report{
           </label>
           <button class="btn" id="b-bot-api" style="align-self:flex-end">Сохранить ключи</button>
         </div>
+        <div class="row" style="margin-top:14px">
+          <label class="field" style="flex:1;min-width:280px">
+            Адрес уже запущенного сервера Bot API (если не нашёлся сам)
+            <input type="text" id="bot-server" placeholder="http://127.0.0.1:8081">
+          </label>
+          <button class="btn" id="b-bot-server" style="align-self:flex-end">Сохранить адрес</button>
+        </div>
         <p class="hint" style="margin:8px 0 0" id="bot-big">…</p>
         <p class="hint" style="margin:6px 0 0" id="bot-groups"></p>
+        <div id="bot-list" style="margin-top:10px"></div>
         <p class="hint" style="margin:6px 0 0">
-          Без ключей Telegram отдаёт боту видео только до 20 МБ. С ключами бот
-          работает через свой сервер Telegram прямо на этом ПК — до 2 ГБ.
-          Ключи — на my.telegram.org → API development tools (вход по номеру
-          телефона). Сервер запускается и закрывается вместе с программой сам.
+          Через облако Telegram отдаёт боту видео только до 20 МБ. Уже запущенный
+          на этом ПК сервер Bot API (telegram-bot-api, обычно порт 8081) программа
+          находит сама — ключи тогда не нужны. Нет его — впиши ключи с
+          my.telegram.org → API development tools, и программа поднимет свой
+          (до 2 ГБ, запускается и закрывается вместе с ней). Сервер общий для
+          ботов всех телефонов.
         </p>
         <p class="hint" style="margin:12px 0 0">
           Владельца бот запоминает сам: после запуска напиши ему любое
@@ -919,6 +930,27 @@ function renderSetup(s){
 
 function renderBot(s){
   const b = s.bot;
+  $("bot-title").textContent = b.phone
+    ? "Telegram-бот телефона «" + b.phone + "»" + (b.username ? " — @" + b.username : "")
+    : "Telegram-бот" + (b.username ? " — @" + b.username : "");
+  const server = $("bot-server");
+  if(document.activeElement !== server && !server.dataset.dirty) server.value = b.server_url || "";
+  const list = $("bot-list");
+  list.innerHTML = "";
+  if(b.bots && b.bots.length > 1){
+    const head = document.createElement("p");
+    head.className = "hint"; head.style.margin = "0 0 4px";
+    head.textContent = "Боты телефонов:";
+    list.append(head);
+    for(const r of b.bots){
+      const row = document.createElement("div");
+      row.className = "item";
+      row.innerHTML = '<div class="main"><b></b><span></span></div>';
+      row.querySelector("b").textContent = (r.phone || "общий") + " — " + r.bot + (r.current ? " (этот)" : "");
+      row.querySelector("span").textContent = r.where;
+      list.append(row);
+    }
+  }
   dot($("d-bot"), b.running && !b.trouble, b.token);
   // Причину — словами: «бот молчит» из-за второй копии на другом ПК и из-за
   // отвергнутого токена лечатся по-разному, а раньше обе выглядели одинаково.
@@ -1517,6 +1549,11 @@ $("b-bot-api").onclick = () => {
   $("bot-api-id").value = ""; $("bot-api-hash").value = "";
 };
 
+$("bot-server").oninput = () => { $("bot-server").dataset.dirty = "1"; };
+$("b-bot-server").onclick = () => {
+  send("telegram", {server_url: $("bot-server").value.trim()});
+  delete $("bot-server").dataset.dirty;
+};
 $("b-bot").onclick = () => {
   const token = $("bot-token").value.trim();
   send("telegram", token ? {token: token} : {});

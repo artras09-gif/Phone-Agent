@@ -533,26 +533,58 @@ def _start_bot():
     """
     import telegram_bot
 
+    # У каждого телефона свой бот (или общий — у одного телефона). Окно
+    # читает бота ВЫБРАННОГО телефона: пост из него публикуется здесь же, на
+    # этом телефоне. Сменили телефон — сменился и бот (`_switch_bot`).
+    token = telegram_bot.load_settings()["token"]
+    bot = telegram_bot._bot_of(token)
+    if not token:
+        _drop_bot_gate()
+        return
+    if _BOT_GATE["gate"] is not None and _BOT_GATE["bot"] != bot:
+        telegram_bot.stop()
+        _drop_bot_gate()
     if _BOT_GATE["gate"] is None:
-        g = fleet.telegram_gate()
+        g = fleet.telegram_gate(bot)
         try:
             g.acquire(timeout=0.5)
         except gate.Timeout:
-            print("Telegram-бота уже ведёт служба телефона — окно его не поднимает")
+            print("Telegram-бота этого телефона уже читает служба телефона — "
+                  "окно его не поднимает")
             _BOT_ELSEWHERE["yes"] = True
             return
         # Держим ссылку: замок живёт, пока жив объект. И второй раз его не
         # берём — свой же замок второй раз не даётся, и сохранение нового
         # токена раньше кончалось ложным «бота ведёт служба телефона».
-        _BOT_GATE["gate"] = g
+        _BOT_GATE.update(gate=g, bot=bot)
         _BOT_ELSEWHERE["yes"] = False
 
     telegram_bot.set_submit(RUNNER.start)
     telegram_bot.start_background()
 
 
+def _drop_bot_gate():
+    g = _BOT_GATE.get("gate")
+    if g is not None:
+        try:
+            g.release()
+        except Exception:
+            pass
+    _BOT_GATE.update(gate=None, bot="")
+    _BOT_ELSEWHERE["yes"] = False
+
+
+def _switch_bot():
+    """Телефон в окне сменили: бросить бота прежнего, поднять бота нового."""
+    import telegram_bot
+
+    telegram_bot.stop()
+    _drop_bot_gate()
+    _start_bot()
+
+
 _BOT_ELSEWHERE = {"yes": False}
-_BOT_GATE = {"gate": None}
+_BOT_GATE = {"gate": None, "bot": ""}
 
 
 _TUNING = {"at": 0.0, "key": None, "rows": []}
@@ -596,15 +628,46 @@ def _bot_state():
 
     api_id, api_hash = telegram_bot.api_keys()
     if tgserver.url():
-        big = "свой сервер Telegram на этом ПК: видео до 2 ГБ"
+        size = "видео до 2 ГБ" if tgserver.is_local() is not False else \
+            "но он запущен без --local — видео до 20 МБ"
+        big = f"сервер Telegram: {tgserver.source() or 'на этом ПК'} — {size}"
+    elif telegram_bot.server_url():
+        big = (f"сервер по адресу {telegram_bot.server_url()} не отвечает — видео до 20 МБ "
+               "(облако)")
     elif api_id and api_hash:
         big = "свой сервер не поднялся: " + (tgserver.why() or "ещё запускается…")
     else:
-        big = "видео до 20 МБ (облако Telegram) — впиши api_id и api_hash, чтобы до 2 ГБ"
+        big = ("видео до 20 МБ (облако Telegram). Уже запущенный сервер Bot API "
+               "находится сам; нет его — впиши api_id и api_hash, и программа поднимет свой")
     return {"token": bool(cfg["token"]), "owner": cfg["owner"],
             "running": telegram_bot.running(), "trouble": trouble,
             "api": bool(api_id and api_hash), "big": big,
-            "groups": telegram_bot.groups_text()}
+            "groups": telegram_bot.groups_text(),
+            "phone": devices.name_of(config.SERIAL) if config.SERIAL else "",
+            "username": telegram_bot._saved().get("username", ""),
+            "server_url": telegram_bot.server_url(),
+            "bots": _bots_list()}
+
+
+def _bots_list():
+    """Боты всех телефонов: чей, как зовут, кто его сейчас читает."""
+    import telegram_bot
+
+    mine = telegram_bot._bot_of(telegram_bot.load_settings()["token"])
+    rows = []
+    for b in telegram_bot.bots():
+        bot = telegram_bot._bot_of(b["token"])
+        if bot == mine and telegram_bot.running():
+            where = "работает здесь, в окне"
+        elif fleet.bot_busy(bot):
+            where = "работает в службе телефона"
+        else:
+            where = ("не запущен — выбери телефон в окне или запусти его службу во «Флоте»"
+                     if b["serial"] else "ещё ничей — достанется телефону, который его запустит")
+        rows.append({"phone": devices.name_of(b["serial"]) if b["serial"] else "",
+                     "bot": "@" + b["username"] if b["username"] else f"бот {bot}",
+                     "where": where, "current": bot == mine})
+    return rows
 
 
 def _tell(text):
@@ -952,6 +1015,7 @@ def _cmd_device(body):
     prefs.save(serial=serial)
     _plan_changed()
     PROBE.refresh_soon()
+    _switch_bot()
     return {"ok": True, "message": f"открыл телефон: {devices.name_of(serial)}"}
 
 
@@ -1291,14 +1355,26 @@ def _cmd_telegram(body):
             and not telegram_bot.clean_token(body["token"]):
         return {"ok": False, "error": "это не похоже на токен бота — он выглядит "
                                       "так: 1234567890:AAH… (число, двоеточие, 35 знаков)"}
-    if "token" in body or "owner" in body or "api_id" in body or "api_hash" in body:
+    if body.get("token"):
+        # Один бот — один телефон: иначе двое разыгрывали бы одного бота, и
+        # присланное видео уезжало бы на случайный телефон.
+        other = telegram_bot.taken_by(telegram_bot.clean_token(body["token"]))
+        if other:
+            return {"ok": False, "error": f"этот бот уже у телефона «{devices.name_of(other)}». "
+                                          "Для этого телефона создай в @BotFather "
+                                          "отдельного бота (/newbot) и вставь его токен"}
+    if any(k in body for k in ("token", "owner", "api_id", "api_hash", "server_url")):
         current = telegram_bot.load_settings()
         telegram_bot.save_settings(body.get("token", current["token"]),
                                    body.get("owner", current["owner"]),
-                                   api_id=body.get("api_id"), api_hash=body.get("api_hash"))
+                                   api_id=body.get("api_id"), api_hash=body.get("api_hash"),
+                                   server_url=body.get("server_url"))
         # Новый токен — новый опрос с нуля, не дожидаясь, пока старый
-        # долгий запрос (до 50 с) вернётся со старым токеном.
-        telegram_bot.restart()
+        # долгий запрос (до 50 с) вернётся со старым токеном. Сначала бросаем
+        # опрос и замок, потом `_start_bot` берёт замок НОВОГО бота и только
+        # тогда опрашивает: иначе поток успевал бы читать чужого бота.
+        telegram_bot.stop()
+        _drop_bot_gate()
     ok, info = telegram_bot.check()
     if ok or telegram_bot.load_settings()["token"]:
         _start_bot()

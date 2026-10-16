@@ -118,11 +118,11 @@ tb._poll_once, tb.check, tb._drop_stale_drafts, tb.setup_server, tb.load_setting
 tb._TROUBLE["text"] = ""
 
 print("\n--- смена токена: с какого сообщения продолжать ---")
-tb._OFFSET.update(mark="7000000001", n=50)
+tb._OFFSET["7000000001"] = 50
 say(tb._offset_for("7000000001:" + "B" * 35) == 50,
     "перевыпущенный токен того же бота — с того же места (без повторных ответов)")
 say(tb._offset_for("7000000002:" + "C" * 35) == 0, "другой бот — с нуля")
-tb._OFFSET.update(mark="", n=0)
+tb._OFFSET.clear()
 
 print("\n--- поток не умирает ---")
 import threading  # noqa: E402
@@ -142,6 +142,7 @@ def flaky(method, params=None, timeout=70):
 
 
 tb._call = flaky
+tb.setup_server = lambda: ""                # поиск сервера Bot API здесь не проверяем
 tb.RETRY_SEC = 0.01
 t = threading.Thread(target=tb.poll_forever, args=(tb._GENERATION["n"],), daemon=True)
 t.start()

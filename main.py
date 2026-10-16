@@ -624,15 +624,21 @@ def cmd_serve(args):
 
     # Бота поднимает тот, кто успел: у Telegram читатель ровно один,
     # второй получил бы 409 и сломал бы обоих.
-    bot = fleet.telegram_gate()
+    # Свой бот у телефона — свой замок: служба каждого телефона читает
+    # своего бота, а публикует пост из бота сам цикл службы (см.
+    # `telegram_bot.leave_to_scheduler`), не поток бота посреди сессии.
+    token = telegram_bot.load_settings()["token"]
+    bot = fleet.telegram_gate(telegram_bot._bot_of(token))
     try:
         bot.acquire(timeout=0.5)
+        telegram_bot.set_submit(telegram_bot.leave_to_scheduler)
         notify = telegram_bot.start_background()
         if telegram_bot.running():
-            print("Telegram-бот принимает видео в эту очередь")
+            print("Telegram-бот телефона принимает видео в эту очередь")
     except gate.Timeout:
-        notify = lambda text: None      # noqa: E731 — бот уже занят другим
-        print("Telegram-бота ведёт другая служба — здесь он не поднимается")
+        notify = telegram_bot.send if token else (lambda text: None)
+        print("Telegram-бота этого телефона читает окно или другая служба — "
+              "здесь он только пишет отчёты")
 
     print(f"служба запущена ({devices.name_of(serial) or 'телефон по умолчанию'}), "
           "Ctrl+C для выхода")

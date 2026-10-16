@@ -263,7 +263,7 @@ def interrupt_running():
 
 
 def add(video_path, caption="", targets="tiktok", run_at=None, captions=None,
-        exact=False, status="pending", fingerprint="", chat=""):
+        exact=False, status="pending", fingerprint="", chat="", device=None):
     """Задача в очередь. status="draft" — черновик из бота: видео скачано, но
     сети и время человек ещё выбирает кнопками; публиковать его нельзя."""
     if not fingerprint and os.path.isfile(video_path):
@@ -274,7 +274,8 @@ def add(video_path, caption="", targets="tiktok", run_at=None, captions=None,
             " device, captions, exact, status, fingerprint, chat)"
             " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (video_path, caption, targets, run_at or time.time(), time.time(),
-             DEVICE, json.dumps(captions or {}, ensure_ascii=False),
+             DEVICE if device is None else device,
+             json.dumps(captions or {}, ensure_ascii=False),
              1 if exact else 0, status, fingerprint, chat or ""),
         )
         return cur.lastrowid

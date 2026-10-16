@@ -61,25 +61,76 @@ MAX_DOWNLOAD_MB = 20
 
 
 # ------------------------------------------------------- настройки бота
+#
+# Несколько телефонов — несколько ботов (2026-10-16: «для нескольких телефонов
+# нужно будет несколько ботов, продумай механику»). Бот принадлежит ТЕЛЕФОНУ:
+# видео, присланное ему, публикуется на этом телефоне и больше ни на каком.
+#
+#   devices/<телефон>/telegram.json — свой бот телефона: токен, владелец,
+#       группы и темы, отметка о выписке из облака;
+#   telegram.json рядом с программой — общее: api_id/api_hash, адрес сервера
+#       Bot API, и «общий бот» прежних версий. Общий бот тоже принадлежит
+#       одному телефону («phone») — первому, кто его запустил: иначе два
+#       телефона разыгрывали бы одного бота, и видео уезжало бы на случайный.
+#
+# Бота телефона опрашивает процесс этого телефона: окно, пока телефон в нём
+# выбран, или служба телефона во «Флоте». Замок — на номер бота
+# (`fleet.telegram_gate`), так что двое одного бота не читают.
+
+def shared_path():
+    return os.path.join(config.BASE, "telegram.json")
+
+
+def _phone_path(serial=None):
+    serial = config.SERIAL if serial is None else serial
+    if not serial:
+        return ""
+    import devices
+    return os.path.join(devices.ROOT, devices.slug(serial), "telegram.json")
+
+
+def _read(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+
+def _write(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
 
 def settings_path():
-    return os.path.join(config.BASE, "telegram.json")
+    """Файл бота этого телефона: свой — если есть; иначе общий, если он
+    ничей или этого телефона; иначе своего бота у телефона нет."""
+    phone = _phone_path()
+    if phone and _read(phone).get("token"):
+        return phone
+    shared = _read(shared_path())
+    owner = str(shared.get("phone") or "")
+    if not phone or not owner or owner == str(config.SERIAL):
+        return shared_path()
+    return phone
 
 
 def load_settings():
     """Токен и владелец. Файл рядом с программой важнее переменных окружения:
     в собранном exe переменные задавать неудобно."""
-    data = {"token": config.TELEGRAM_TOKEN, "owner": config.TELEGRAM_OWNER}
-    try:
-        with open(settings_path(), encoding="utf-8") as f:
-            saved = json.load(f)
+    path = settings_path()
+    shared = path == shared_path()
+    data = {"token": config.TELEGRAM_TOKEN if shared else "",
+            "owner": config.TELEGRAM_OWNER if shared else ""}
+    saved = _read(path)
+    if saved:
         data["token"] = str(saved.get("token") or data["token"]).strip()
         # Токен, сохранённый с мусором прежней версией, чистим и при чтении:
         # после обновления бот оживает сам, без повторной вставки.
         data["token"] = clean_token(data["token"]) or data["token"]
         data["owner"] = str(saved.get("owner") or data["owner"]).strip()
-    except (OSError, json.JSONDecodeError):
-        pass
     return data
 
 
@@ -99,40 +150,121 @@ def clean_token(raw):
     return m.group(1) if m else ""
 
 
-def save_settings(token, owner, api_id=None, api_hash=None):
-    """Сохранить. api_id / api_hash — None: оставить, что было (их вписывают
-    отдельно от токена, и сохранение токена не должно их стирать)."""
+def _bot_of(token):
+    """Номер бота — часть токена до двоеточия. Перевыпуск токена в @BotFather
+    его не меняет, и очередь сообщений у бота та же: начать с нуля значило бы
+    получить заново последнюю пачку, которую старый токен уже не успел
+    подтвердить (ему отвечают 401), — и ответить на неё второй раз."""
+    return str(token or "").split(":", 1)[0]
+
+
+def bots():
+    """Все боты программы: [{serial, path, token, username}]. serial "" — общий
+    бот, ещё никому не доставшийся."""
+    import devices
+
+    out = []
+    shared = _read(shared_path())
+    if clean_token(shared.get("token")):
+        out.append({"serial": str(shared.get("phone") or ""), "path": shared_path(),
+                    "token": clean_token(shared["token"]),
+                    "username": shared.get("username", "")})
+    root = devices.ROOT
+    for folder in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+        path = os.path.join(root, folder, "telegram.json")
+        data = _read(path)
+        if clean_token(data.get("token")):
+            out.append({"serial": str(data.get("phone") or folder), "path": path,
+                        "token": clean_token(data["token"]),
+                        "username": data.get("username", "")})
+    return out
+
+
+def taken_by(token):
+    """Чей это бот, если не этого телефона: серийник другого телефона или ""."""
+    me = str(config.SERIAL or "")
+    mine = settings_path()
+    for bot in bots():
+        if _bot_of(bot["token"]) == _bot_of(token) and bot["path"] != mine \
+                and bot["serial"] and bot["serial"] != me:
+            return bot["serial"]
+    return ""
+
+
+def bind_shared():
+    """Общий бот достаётся телефону, который его запустил первым."""
+    if settings_path() != shared_path() or not config.SERIAL:
+        return
+    data = _read(shared_path())
+    if data.get("token") and not data.get("phone"):
+        data["phone"] = str(config.SERIAL)
+        _write(shared_path(), data)
+
+
+def save_settings(token, owner, api_id=None, api_hash=None, server_url=None):
+    """Сохранить. api_id / api_hash / server_url — None: оставить, что было (их
+    вписывают отдельно от токена, и сохранение токена не должно их стирать).
+
+    Токен и владелец — боту ЭТОГО телефона: в его файл, если он есть или общий
+    бот уже у другого телефона; иначе — в общий (один телефон — как раньше).
+    """
     token = clean_token(token) if str(token or "").strip() else ""
-    try:
-        with open(settings_path(), encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            data = {}
-    except (OSError, json.JSONDecodeError):
-        data = {}
-    data.update(token=token, owner=str(owner).strip())
-    if api_id is not None:
-        data["api_id"] = re.sub(r"\D", "", str(api_id))
-    if api_hash is not None:
-        data["api_hash"] = re.sub(r"[^0-9a-fA-F]", "", str(api_hash)).lower()
-    with open(settings_path(), "w", encoding="utf-8", newline="\n") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    return settings_path()
+    path = settings_path()
+    data = _read(path)
+    if data.get("token") and token and _bot_of(data["token"]) != _bot_of(token):
+        # Другой бот — прежние группы, темы и владелец к нему не относятся.
+        for key in ("groups", "username", "cloud_logged_out"):
+            data.pop(key, None)
+    # Владелец — это человек (его номер в Telegram), а не бот: для второго
+    # бота он тот же. Иначе владельцем нового бота стал бы первый написавший.
+    owner = str(owner or "").strip() or next(
+        (str(_read(b["path"]).get("owner")) for b in bots() if _read(b["path"]).get("owner")), "")
+    data.update(token=token, owner=owner)
+    if config.SERIAL:
+        data["phone"] = str(config.SERIAL)
+    _write(path, data)
+    if api_id is not None or api_hash is not None or server_url is not None:
+        shared = _read(shared_path())
+        if api_id is not None:
+            shared["api_id"] = re.sub(r"\D", "", str(api_id))
+        if api_hash is not None:
+            shared["api_hash"] = re.sub(r"[^0-9a-fA-F]", "", str(api_hash)).lower()
+        if server_url is not None:
+            shared["server_url"] = _clean_url(server_url)
+        _write(shared_path(), shared)
+    return path
+
+
+def _clean_url(raw):
+    text = str(raw or "").strip().rstrip("/")
+    if text and not re.match(r"^https?://", text):
+        text = "http://" + text
+    return text
 
 
 def _saved():
-    try:
-        with open(settings_path(), encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
+    return _read(settings_path())
+
+
+def _remember(**fields):
+    """Дописать в файл бота (имя бота, отметки), не трогая остального."""
+    path = settings_path()
+    data = _read(path)
+    if not data.get("token"):
+        return
+    data.update(fields)
+    _write(path, data)
 
 
 def api_keys():
     """(api_id, api_hash) с my.telegram.org — для своего сервера. Нет — ("", "")."""
-    data = _saved()
+    data = _read(shared_path())
     return str(data.get("api_id") or ""), str(data.get("api_hash") or "")
+
+
+def server_url():
+    """Адрес уже запущенного сервера Bot API, вписанный руками. Пусто — искать самим."""
+    return str(_read(shared_path()).get("server_url") or "")
 
 
 def api_base():
@@ -143,7 +275,12 @@ def api_base():
 
 def max_download_mb():
     import tgserver
-    return 2000 if tgserver.url() else MAX_DOWNLOAD_MB
+    # Сервер без --local отдаёт столько же, сколько облако. Про чужой сервер,
+    # найденный по адресу, режим неизвестен — считаем, что --local (ради него
+    # такие и ставят), а «файл слишком большой» объясняем при скачивании.
+    if tgserver.url() and tgserver.is_local() is not False:
+        return 2000
+    return MAX_DOWNLOAD_MB
 
 
 def _token_mark(token):
@@ -152,43 +289,53 @@ def _token_mark(token):
 
 
 def setup_server():
-    """Включить свой сервер Bot API, если вписаны api_id и api_hash.
+    """Подключить сервер Bot API: уже запущенный — или свой, если есть ключи.
 
-    Перед первой работой через свой сервер бота нужно один раз «выписать»
-    из облака (logOut) — иначе Telegram не обещает доставлять ему сообщения.
-    Отметка (не сам токен) хранится в telegram.json, чтобы не делать это
-    на каждом запуске. Не вышло поднять сервер — бот остаётся в облаке, как
-    раньше: из-за него ничего не ломается.
+    Сначала ищем работающий (вписанный руками адрес, процесс telegram-bot-api
+    на этом ПК, обычные порты) — ключи для него не нужны. Нет — поднимаем
+    свой, если вписаны api_id и api_hash. Ни того ни другого — облако.
+
+    Перед первой работой через сервер бота нужно один раз «выписать» из
+    облака (logOut) — иначе Telegram не обещает доставлять ему сообщения.
+    Отметка (не сам токен) хранится в файле бота, чтобы не делать это на
+    каждом запуске.
     """
     import tgserver
 
     cfg = load_settings()
-    api_id, api_hash = api_keys()
-    if not (api_id and api_hash and cfg["token"]):
+    if not cfg["token"]:
         tgserver.stop()
         return ""
-    local = tgserver.start(api_id, api_hash, token=cfg["token"])
+    local = tgserver.discover(cfg["token"], server_url())
+    if not local:
+        api_id, api_hash = api_keys()
+        if not (api_id and api_hash):
+            tgserver.stop()
+            if server_url():
+                print(f"[бот] сервер Bot API по адресу {server_url()} не отвечает — "
+                      "работаю через облако", flush=True)
+            return ""
+        local = tgserver.start(api_id, api_hash, token=cfg["token"])
     if not local:
         print(f"[бот] свой сервер Telegram не поднялся: {tgserver.why()} — работаю через облако",
               flush=True)
         return ""
     mark = _token_mark(cfg["token"])
-    data = _saved()
-    if data.get("cloud_logged_out") != mark:
+    if _saved().get("cloud_logged_out") != mark:
         try:
             req = urllib.request.Request(f"{API}/bot{cfg['token']}/logOut", data=b"")
             with urllib.request.urlopen(req, timeout=20) as r:
                 r.read()
+            done = True
         except urllib.error.HTTPError:
-            pass                    # уже выписан — тоже годится
+            done = True             # уже выписан — тоже годится
         except Exception as e:
             print(f"[бот] не смог выписать бота из облака ({e}) — пробую так", flush=True)
-            data = None
-        if data is not None:
-            data["cloud_logged_out"] = mark
-            with open(settings_path(), "w", encoding="utf-8", newline="\n") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-    print("[бот] свой сервер Telegram на этом ПК: видео до 2 ГБ", flush=True)
+            done = False
+        if done:
+            _remember(cloud_logged_out=mark)
+    size = "видео до 2 ГБ" if tgserver.is_local() is not False else "без --local: видео до 20 МБ"
+    print(f"[бот] сервер Telegram: {tgserver.source()} — {size}", flush=True)
     return local
 
 
@@ -853,6 +1000,8 @@ def check():
             return False, why
         return False, f"токен не принят: {str(res.get('error') or res)[:80]}"
     name = res["result"].get("username") or res["result"].get("first_name")
+    if res["result"].get("username") and _saved().get("username") != name:
+        _remember(username=name)            # окну — показать, чей бот, без сети
     who = "открыт всем" if config.BOT_OPEN else f"только для {cfg['owner']}"
     if not cfg["owner"]:
         # Не поломка: отвечать он уже может. Некуда слать только неспрошенное —
@@ -861,13 +1010,29 @@ def check():
     return True, f"@{name}, {who}; неспрошенное шлю в {cfg['owner']}"
 
 
+DOWNLOAD = {"why": ""}      # почему не скачалось — в ответ человеку
+
+
 def _download(file_id, dest_dir, size_mb=0):
     # Свой сервер отвечает на getFile, только когда САМ скачал файл у
     # Telegram: на сотнях мегабайт это минуты, и 30 с обрывали бы каждое
     # большое видео «не смог скачать».
+    import tgserver
+
     wait = 30 + (min(3600, size_mb * 3) if max_download_mb() >= 2000 else 0)
     info = _call("getFile", {"file_id": file_id}, timeout=wait)
+    DOWNLOAD["why"] = ""
     if not info.get("ok"):
+        text = str(info.get("description") or info.get("error") or "")
+        if "too big" in text.lower():
+            # Сервер без --local: он, как облако, отдаёт до 20 МБ. Запоминаем —
+            # следующее большое видео получит объяснение сразу, без скачивания.
+            tgserver._STATE["local"] = False
+            DOWNLOAD["why"] = ("сервер Bot API запущен без --local и, как облако, отдаёт "
+                               "только до 20 МБ. Перезапусти его с --local — или впиши "
+                               "api_id и api_hash, и программа поднимет свой")
+        else:
+            DOWNLOAD["why"] = text[:120]
         return None
     path = info["result"]["file_path"]
     token = load_settings()["token"]
@@ -880,8 +1045,19 @@ def _download(file_id, dest_dir, size_mb=0):
             shutil.move(path, dest)
             return dest
         except OSError:
-            return None
-    url = f"{api_base()}/file/bot{token}/{path}"
+            try:
+                shutil.copyfile(path, dest)      # чужой сервер держит файл — копию
+                return dest
+            except OSError as e:
+                DOWNLOAD["why"] = f"файл сервера не читается: {e}"
+                return None
+    if os.path.isabs(path) or re.match(r"^/|^[A-Za-z]:", path):
+        # Путь на диске сервера, а у нас его нет: сервер на другом ПК или в
+        # Docker. Иногда такие раздают файлы по HTTP — пробуем, иначе говорим.
+        DOWNLOAD["why"] = (f"сервер Bot API положил файл у себя ({path[:60]}), а на этом ПК его "
+                           "нет — сервер на другом компьютере или в Docker. Нужен сервер на "
+                           "этом ПК (или раздача его папки по HTTP)")
+    url = f"{api_base()}/file/bot{token}/{path.lstrip('/')}"
     # Не `urlretrieve`: у него нет таймаута вовсе. Зависшая отдача с той
     # стороны — и поток бота стоит навсегда, бот перестаёт отвечать на всё,
     # включая /stop. Здесь таймаут на каждое чтение и чистка обрывка.
@@ -910,6 +1086,18 @@ def set_submit(fn):
     SUBMIT = fn
 
 
+class Deferred(RuntimeError):
+    """«Опубликую сам, когда телефон свободен» — так отвечает служба телефона."""
+
+
+def leave_to_scheduler(title, work):
+    """Очередь действий службы телефона (`main.py serve`): публиковать здесь, в
+    потоке бота, нельзя — в это время по телефону может идти сессия из
+    основного потока. Задача уже в очереди со временем «сейчас», цикл службы
+    её подберёт."""
+    raise Deferred(title)
+
+
 def _run(title, work):
     # Работа уходит в ЧУЖОЙ поток (общая очередь окна), а «кому отвечать»
     # живёт в переменной потока — там его уже не будет. Поэтому чат
@@ -928,6 +1116,10 @@ def _run(title, work):
         try:
             SUBMIT(title, in_thread)
             return True
+        except Deferred:
+            send("Поставил в очередь — служба телефона опубликует, как только "
+                 "телефон освободится (обычно в течение минуты).")
+            return False
         except RuntimeError as e:
             # Занято сессией — и это нормально: обрывать её ради поста нельзя,
             # телефон один, а недосмотренная сессия выглядит подозрительнее
@@ -1098,7 +1290,10 @@ def _handle(msg):
 
     # Скачивание — не в потоке опроса: большой файл через свой сервер идёт
     # минутами, и всё это время бот не отвечал бы ни на что, даже на /stop.
-    _later(lambda: _take_video(video, text, spec, size_mb))
+    # Куда класть — запоминаем СЕЙЧАС: пока видео качается, телефон в окне
+    # могут переключить, и оно уехало бы в очередь другого телефона.
+    where = (config.QUEUE_DIR, getattr(jobs, "DEVICE", ""))
+    _later(lambda: _take_video(video, text, spec, size_mb, where))
 
 
 VIDEO_EXT = (".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".3gp")
@@ -1260,14 +1455,16 @@ def _command(text, addressed, chat_id, sender):
     return False
 
 
-def _take_video(video, text, spec, size_mb=0):
+def _take_video(video, text, spec, size_mb=0, where=None):
     """Скачать видео и сделать черновик (или задачу по шаблону)."""
     import postspec
 
+    queue_dir, device = where or (config.QUEUE_DIR, None)
+
     send("Качаю..." if size_mb < 50 else f"Качаю {size_mb:.0f} МБ — это займёт время...")
-    path = _download(video["file_id"], config.QUEUE_DIR, size_mb)
+    path = _download(video["file_id"], queue_dir, size_mb)
     if not path:
-        send("Не смог скачать файл.")
+        send("Не смог скачать файл" + (f": {DOWNLOAD['why']}." if DOWNLOAD["why"] else "."))
         return
     # То же видео, что уже ждёт или публикуется, — не ставим второй раз.
     fp = jobs.video_fingerprint(path)
@@ -1309,14 +1506,14 @@ def _take_video(video, text, spec, size_mb=0):
                 pass
             return
         job_id = jobs.add(path, caption=caption, targets=",".join(targets),
-                          status="draft", chat=reply_address())
+                          status="draft", chat=reply_address(), device=device)
         _send_draft(job_id)
         return
 
     job_id = jobs.add(path, caption=spec["caption"], targets=",".join(spec["targets"]),
                       run_at=spec["when"].timestamp() if spec["when"] else None,
                       captions=spec["captions"], exact=spec["exact"],
-                      chat=reply_address())
+                      chat=reply_address(), device=device)
     send(postspec.describe(spec, job_id) + f"\n\nОтменить: /cancel {job_id}")
     if spec["when"] is None:
         _publish_now(job_id)
@@ -1722,6 +1919,7 @@ def poll_forever(generation=0):
     if not ok and "не принят" in info:
         _TROUBLE["text"] = REJECTED
     _drop_stale_drafts()
+    bind_shared()
     _REPLY.polling = True        # видео из этого потока качаются в своём (_later)
     said = ""
     conflict_since = None
@@ -1755,6 +1953,7 @@ def poll_forever(generation=0):
                 if time.time() - conflict_since < CONFLICT_GRACE_SEC:
                     time.sleep(RETRY_SEC)
                     continue
+            _revive_server(str(e))
             _TROUBLE["text"] = str(e)
             if str(e) != said:               # в журнал — один раз на беду
                 print(f"[бот] {e}", flush=True)
@@ -1763,6 +1962,27 @@ def poll_forever(generation=0):
         except Exception as e:               # поток бота не должен умирать
             print(f"[бот] сбой: {type(e).__name__}: {e}", flush=True)
             time.sleep(RETRY_SEC)
+
+
+_REVIVED = {"at": 0.0}
+
+
+def _revive_server(why):
+    """Свой сервер пропал (его поднимала другая копия программы и закрылась,
+    или он упал) — поднять снова или найти другой. Не чаще раза в 30 с."""
+    import tgserver
+
+    if "нет связи" not in why or not tgserver.url() or time.time() - _REVIVED["at"] < 30:
+        return
+    _REVIVED["at"] = time.time()
+    if tgserver._alive(tgserver.url(), timeout=2.0):
+        return
+    print("[бот] сервер Telegram не отвечает — поднимаю заново", flush=True)
+    tgserver._STATE.update(url="")
+    try:
+        setup_server()
+    except Exception as e:
+        print(f"[бот] сервер: {type(e).__name__}: {e}", flush=True)
 
 
 def _drop_stale_drafts():
@@ -1791,21 +2011,13 @@ UPDATES = json.dumps(["message", "callback_query", "my_chat_member"])
 # получал ту же пачку снова (Telegram считает сообщение прочитанным только
 # на следующем getUpdates): человеку приходило два ответа на одно сообщение.
 # Теперь новый поток ждёт, пока старый доразберёт, и продолжает с его места.
-_OFFSET = {"mark": "", "n": 0}
+_OFFSET = {}                 # номер бота -> с какого сообщения читать
 _HANDLING = threading.Lock()
-
-
-def _bot_of(token):
-    """Номер бота — часть токена до двоеточия. Перевыпуск токена в @BotFather
-    его не меняет, и очередь сообщений у бота та же: начать с нуля значило бы
-    получить заново последнюю пачку, которую старый токен уже не успел
-    подтвердить (ему отвечают 401), — и ответить на неё второй раз."""
-    return str(token or "").split(":", 1)[0]
 
 
 def _offset_for(token):
     with _HANDLING:
-        return _OFFSET["n"] if _OFFSET["mark"] == _bot_of(token) else 0
+        return _OFFSET.get(_bot_of(token), 0)
 
 
 def _poll_once(offset, generation=None):
@@ -1833,7 +2045,7 @@ def _poll_once(offset, generation=None):
         mark = _bot_of(asked_with)
         for upd in res.get("result", []):
             offset = upd["update_id"] + 1
-            _OFFSET.update(mark=mark, n=offset)
+            _OFFSET[mark] = offset
             _dispatch(upd)
     return offset
 
@@ -1874,12 +2086,18 @@ _THREAD = None
 _GENERATION = {"n": 0}
 
 
-def restart():
-    """Сменили токен — бросить старый опрос и начать новый с нуля."""
+def stop():
+    """Бросить опрос: поток уходит на ближайшей проверке. Нужен окну — у
+    другого телефона другой бот, и старого опрашивать оно больше не должно."""
     global _THREAD
     _GENERATION["n"] += 1
     _TROUBLE["text"] = ""
     _THREAD = None
+
+
+def restart():
+    """Сменили токен — бросить старый опрос и начать новый с нуля."""
+    stop()
     return start_background()
 
 

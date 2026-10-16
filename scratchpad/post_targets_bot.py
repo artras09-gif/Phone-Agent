@@ -137,6 +137,7 @@ def fake_call(method, params=None, timeout=70):
 
 
 telegram_bot._call = fake_call
+telegram_bot.setup_server = lambda: ""      # поиск сервера Bot API здесь не проверяем
 telegram_bot.check = lambda: (True, "@bot_" + telegram_bot.load_settings()["token"].lower())
 telegram_bot._handle = lambda msg: handled.append(msg["text"])
 telegram_bot.send = lambda *a, **k: None

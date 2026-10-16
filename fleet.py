@@ -71,8 +71,11 @@ def device_gate(serial):
                      os.path.join(config.BASE, ".gates"))
 
 
-def telegram_gate():
+def telegram_gate(bot=""):
     """Замок на Telegram-бота: читатель у него ровно один.
+
+    `bot` — номер бота (часть токена до двоеточия): у каждого телефона может
+    быть свой бот, и замок у каждого свой. Пусто — прежний общий замок.
 
     `getUpdates` устроен так, что второй читатель того же токена получает
     409 Conflict, и тогда ломаются ОБА: сообщения начинают доставаться
@@ -80,7 +83,19 @@ def telegram_gate():
     а остальные работают без него. Слот держится до конца жизни процесса —
     отпускать его некому и незачем.
     """
-    return gate.Gate("telegram", 1, os.path.join(config.BASE, ".gates"))
+    name = f"telegram.{bot}" if bot else "telegram"
+    return gate.Gate(name, 1, os.path.join(config.BASE, ".gates"))
+
+
+def bot_busy(bot):
+    """Опрашивает ли этого бота какой-нибудь процесс программы прямо сейчас."""
+    g = telegram_gate(bot)
+    try:
+        g.acquire(timeout=0.01)
+    except gate.Timeout:
+        return True
+    g.release()
+    return False
 
 
 def busy_elsewhere(serial):
