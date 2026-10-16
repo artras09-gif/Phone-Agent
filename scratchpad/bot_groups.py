@@ -49,7 +49,7 @@ def fake_call(method, params=None, timeout=70):
 bot._call = fake_call
 bot.save_settings("1234567:" + "A" * 35, OWNER)
 video = os.path.join(config.QUEUE_DIR, "v.mp4")
-bot._download = lambda file_id, dest: (open(video, "wb").write(os.urandom(64)) and video)
+bot._download = lambda file_id, dest, *more: (open(video, "wb").write(os.urandom(64)) and video)
 scheduler.looks_like_video = lambda path: ""
 bot._run = lambda title, work: None
 

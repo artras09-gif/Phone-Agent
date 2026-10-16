@@ -152,7 +152,7 @@ import telegram_bot  # noqa: E402
 sent = []
 telegram_bot.send = lambda text, **kw: sent.append(text)
 telegram_bot.load_settings = lambda: {"token": "t", "owner": "1"}
-telegram_bot._download = lambda file_id, dest: video
+telegram_bot._download = lambda file_id, dest, *more: video
 scheduler.looks_like_video = lambda path: ""
 telegram_bot._handle({"chat": {"id": 1}, "video": {"file_id": "f", "file_size": 5_000_000},
                       "caption": "куда: шортс\nкогда: 23:59\nописание:\nПицца #еда"})

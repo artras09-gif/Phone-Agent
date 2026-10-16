@@ -122,7 +122,7 @@ say("не взял" in sent[-1], "про остаток сказано вслу�
 # --- 5. ссылка и видео в одном сообщении -----------------------------
 print("\n--- видео важнее ссылки ---")
 routed = []
-bot._download = lambda file_id, dest: routed.append("качаю") or ""
+bot._download = lambda file_id, dest, *more: routed.append("качаю") or ""
 before = len(saved)
 bot.load_settings = lambda: {"token": "x", "owner": "1"}
 bot._handle({"chat": {"id": "1"}, "caption": "вот https://vk.com/video1_2",

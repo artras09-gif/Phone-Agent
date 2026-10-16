@@ -264,13 +264,31 @@ KEYBOARD = json.dumps({
 }, ensure_ascii=False)
 
 
-def _call(method, params=None, timeout=70):
+def _call(method, params=None, timeout=70, _retry=True):
     token = load_settings()["token"]
     url = f"{api_base()}/bot{token}/{method}"
     data = urllib.parse.urlencode(params or {}).encode()
     try:
         with urllib.request.urlopen(url, data=data, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # Telegram кладёт причину в тело ответа: без него 409 «другая копия»
+        # не отличить от 409 «включён webhook», а 429 — не узнать, сколько ждать.
+        try:
+            res = json.loads(e.read().decode("utf-8"))
+        except Exception:
+            res = {}
+        if not isinstance(res, dict):
+            res = {}
+        res.update(ok=False, error=str(e))
+        res.setdefault("error_code", e.code)
+        wait = (res.get("parameters") or {}).get("retry_after")
+        if e.code == 429 and _retry and method != "getUpdates" and wait and wait <= 30:
+            # В группе Telegram пускает ~20 сообщений в минуту: подождать и
+            # отправить, а не потерять ответ.
+            time.sleep(float(wait))
+            return _call(method, params, timeout, _retry=False)
+        return res
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -402,9 +420,10 @@ GROUP_HELLO = ("Работаю в этом чате — как в личке:\n"
                "• ССЫЛКУ — сохраню в подборку\n"
                "• /queue, /cancel 5, /status, /stop, /links\n\n"
                "Публиковать может любой участник этого чата.")
-PRIVACY_HINT = ("\n\n⚠ Сейчас я вижу в этом чате только команды. Чтобы видел видео и ссылки: "
-                "сделай меня администратором чата — или в @BotFather: /setprivacy → "
-                "выбери меня → Disable, потом убери и снова добавь меня в чат.")
+PRIVACY_HINT = ("\n\n⚠ Сейчас я вижу в этом чате только команды и ответы на мои сообщения. "
+                "Чтобы видел все видео и ссылки: сделай меня администратором чата — или в "
+                "@BotFather: /setprivacy → выбери меня → Disable, потом убери и снова "
+                "добавь меня в чат. А пока присылай видео ОТВЕТОМ на это сообщение.")
 
 
 def _membership(update):
@@ -680,8 +699,12 @@ def check():
     return True, f"@{name}, {who}; неспрошенное шлю в {cfg['owner']}"
 
 
-def _download(file_id, dest_dir):
-    info = _call("getFile", {"file_id": file_id}, timeout=30)
+def _download(file_id, dest_dir, size_mb=0):
+    # Свой сервер отвечает на getFile, только когда САМ скачал файл у
+    # Telegram: на сотнях мегабайт это минуты, и 30 с обрывали бы каждое
+    # большое видео «не смог скачать».
+    wait = 30 + (min(3600, size_mb * 3) if max_download_mb() >= 2000 else 0)
+    info = _call("getFile", {"file_id": file_id}, timeout=wait)
     if not info.get("ok"):
         return None
     path = info["result"]["file_path"]
@@ -743,13 +766,14 @@ def _run(title, work):
         try:
             SUBMIT(title, in_thread)
             return True
-        except RuntimeError:
+        except RuntimeError as e:
             # Занято сессией — и это нормально: обрывать её ради поста нельзя,
             # телефон один, а недосмотренная сессия выглядит подозрительнее
             # любой задержки. Задача остаётся в очереди, и сторож в окне
             # (webui.Dispatcher) публикует её, как только телефон освободится.
-            send("Сейчас идёт сессия — не прерываю её. "
-                 "Опубликую сразу, как закончится.")
+            busy = str(e).split(": ", 1)[-1].strip() or "другое действие"
+            send(f"Телефон сейчас занят ({busy}) — не прерываю. "
+                 "Опубликую сразу, как освободится.")
             return False
     in_thread()
     return True
@@ -839,77 +863,37 @@ def _handle(msg):
         if other_bot:
             return                                # команда другому боту
 
-    if text.startswith("/stop"):
-        # Останавливаем то, что идёт сейчас, а не запрещаем будущее: режимов
-        # в программе больше нет, всё остальное работает штатно.
-        abort.request()
-        send("Останавливаю текущее действие.")
-        return
-    if text.startswith("/start") and group:
-        send(GROUP_HELLO + ("" if _me().get("can_read_all_group_messages") else PRIVACY_HINT))
-        return
-    if text.startswith("/start"):
-        when = ", ".join(config.LINKS_DIGEST_TIMES) or "только по команде"
-        send("Работаю.\n\n"
-             "ВИДЕО с подписью — опубликую. Подпись = описание поста, "
-             "как есть. Куда и когда — выберешь кнопками.\n"
-             "/queue — что ждёт публикации, /cancel 5 — отменить пост #5\n\n"
-             "ССЫЛКУ — сохраню в подборку. Любая соцсеть: TikTok, YouTube, "
-             "Instagram, VK, X, Telegram, Pinterest, Reddit и прочие. "
-             "Можно несколько сразу и с припиской — она станет заметкой.\n\n"
-             f"/links — подборка (сама приходит: {when})\n"
-             "/links 20 — последние 20, даже если уже присылал\n"
-             "/status — что происходит\n"
-             "/stop — прервать текущее действие", keyboard=True)
-        return
-    if text.startswith("/status"):
-        send(
-            f"В очереди: {len(jobs.pending())}\n"
-            f"Постов сегодня: {jobs.count_today('done')}/{config.MAX_POSTS_PER_DAY}\n"
-            f"Сессий сегодня: {jobs.sessions_today()}\n"
-            f"Ссылок ждёт подборки: {jobs.links_waiting()}"
-        )
-        return
-    if text == BTN_LINKS:
-        # Именно "/links", а не текст кнопки: разбор берёт второе слово как
-        # довесок, и «Ссылки» из подписи он принял бы за аргумент.
-        _cmd_links("/links")
-        return
-    if text == BTN_POST or text.startswith("/queue") or text.lower() == "очередь":
-        # Публикацию кнопкой не заменить — нужен сам файл. Поэтому здесь
-        # очередь и напоминание, как прислать видео.
-        send(_queue_text() + "\n\nЧтобы опубликовать — пришли ВИДЕО с подписью "
-             "(подпись = описание). Куда и когда — выберешь кнопками.", keyboard=True)
-        return
-    if text.startswith("/template") or text.lower() in ("шаблон", "/шаблон"):
-        import postspec
-        send(postspec.TEMPLATE_HELP)
-        return
-    if text.startswith("/cancel") or text.lower().startswith("отмена"):
-        _cmd_cancel(text)
-        return
-    if text.startswith("/links") or text.lower().startswith("ссылки"):
-        _cmd_links(text)
-        return
-    if text and not (msg.get("video") or msg.get("document") or msg.get("animation")) \
-            and _take_time_answer(chat_id, text, sender):
+    video = msg.get("video") or msg.get("document") or msg.get("animation")
+    # Команды — только в ТЕКСТЕ. Подпись к видео — это описание поста:
+    # «Ссылки на рецепт в профиле» или «Отмена встречи — разбор» должны уйти
+    # в публикацию, а не выдать подборку и не отменять задачу.
+    if not video and _command(text, addressed or text.startswith("/"), chat_id, sender):
         return
 
     # Ссылки принимаем до видео: сообщение со ссылкой — это не публикация,
     # а пополнение подборки. Разметка нужна потому, что в пересланном посте
     # адрес бывает спрятан за текстом и в самом тексте его нет.
     urls = weblink.find_urls(text, msg.get("entities") or msg.get("caption_entities"))
-    if urls and not (msg.get("video") or msg.get("document") or msg.get("animation")):
+    if urls and not video:
         _save_incoming(urls, weblink.strip_urls(text))
         return
 
-    video = msg.get("video") or msg.get("document") or msg.get("animation")
     if not video:
-        # В группе на обычную болтовню не отвечаем — только если обратились.
-        if text and addressed:
+        # Фото вместо видео — частая промашка; в группе на обычную болтовню
+        # и картинки не отвечаем — только если обратились.
+        if addressed and (text or msg.get("photo")):
             send("Пришли видео файлом — опубликую, или ссылку — сохраню.",
                  keyboard=True)
         return
+
+    if not _is_video(msg, video):
+        # Документ, но не видео (PDF, архив, картинка файлом). Не качаем:
+        # архив на гигабайт впустую занял бы бота на минуты.
+        if addressed:
+            send("Это не видео. Пришли видео — опубликую.")
+        return
+    if group and msg.get("animation") and not addressed:
+        return                    # гифка-реакция в чате — не пост
 
     size_mb = (video.get("file_size") or 0) / 1024 / 1024
     if size_mb > max_download_mb():
@@ -936,8 +920,106 @@ def _handle(msg):
             send(f"Не понял подпись: {e}.")
             return
 
-    send("Качаю...")
-    path = _download(video["file_id"], config.QUEUE_DIR)
+    # Скачивание — не в потоке опроса: большой файл через свой сервер идёт
+    # минутами, и всё это время бот не отвечал бы ни на что, даже на /stop.
+    _later(lambda: _take_video(video, text, spec, size_mb))
+
+
+VIDEO_EXT = (".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".3gp")
+
+
+def _is_video(msg, video):
+    if msg.get("video") or msg.get("animation"):
+        return True
+    mime = str(video.get("mime_type") or "").lower()
+    name = str(video.get("file_name") or "").lower()
+    return mime.startswith("video/") or name.endswith(VIDEO_EXT) or not (mime or name)
+
+
+def _command(text, addressed, chat_id, sender):
+    """Команда или кнопка. True — обработано.
+
+    В группе слова без «/» («ссылки», «очередь», «отмена») — только когда
+    обратились к боту: иначе «ссылки скинь» в разговоре выдавало бы всю
+    подборку (и помечало её отправленной), а «отмена встречи» — отменяло.
+    """
+    low = text.lower()
+    if text.startswith("/stop"):
+        # Останавливаем то, что идёт сейчас, а не запрещаем будущее: режимов
+        # в программе больше нет, всё остальное работает штатно.
+        abort.request()
+        send("Останавливаю текущее действие.")
+        return True
+    if (text.startswith("/start") or text.startswith("/help")) and in_group():
+        send(GROUP_HELLO + ("" if _me().get("can_read_all_group_messages") else PRIVACY_HINT))
+        return True
+    if text.startswith("/start") or text.startswith("/help"):
+        when = ", ".join(config.LINKS_DIGEST_TIMES) or "только по команде"
+        send("Работаю.\n\n"
+             "ВИДЕО с подписью — опубликую. Подпись = описание поста, "
+             "как есть. Куда и когда — выберешь кнопками.\n"
+             "/queue — что ждёт публикации, /cancel 5 — отменить пост #5\n\n"
+             "ССЫЛКУ — сохраню в подборку. Любая соцсеть: TikTok, YouTube, "
+             "Instagram, VK, X, Telegram, Pinterest, Reddit и прочие. "
+             "Можно несколько сразу и с припиской — она станет заметкой.\n\n"
+             f"/links — подборка (сама приходит: {when})\n"
+             "/links 20 — последние 20, даже если уже присылал\n"
+             "/status — что происходит\n"
+             "/stop — прервать текущее действие", keyboard=True)
+        return True
+    if text.startswith("/status"):
+        send(
+            f"В очереди: {len(jobs.pending())}\n"
+            f"Постов сегодня: {jobs.count_today('done')}/{config.MAX_POSTS_PER_DAY}\n"
+            f"Сессий сегодня: {jobs.sessions_today()}\n"
+            f"Ссылок ждёт подборки: {jobs.links_waiting()}"
+        )
+        return True
+    if text.startswith("/queue") or (addressed and (text == BTN_POST or low == "очередь")):
+        # Публикацию кнопкой не заменить — нужен сам файл. Поэтому здесь
+        # очередь и напоминание, как прислать видео.
+        send(_queue_text() + "\n\nЧтобы опубликовать — пришли ВИДЕО с подписью "
+             "(подпись = описание). Куда и когда — выберешь кнопками.", keyboard=True)
+        return True
+    if text.startswith("/template"):
+        import postspec
+        send(postspec.TEMPLATE_HELP)
+        return True
+    if text.startswith("/cancel"):
+        _cmd_cancel(text)
+        return True
+    if text.startswith("/links"):
+        _cmd_links(text)
+        return True
+    if text and _take_time_answer(chat_id, text, sender):
+        return True
+    if not addressed:
+        return False
+    # Кнопки клавиатуры и слова — как команды.
+    if text == BTN_LINKS:
+        # Именно "/links", а не текст кнопки: разбор берёт второе слово как
+        # довесок, и «Ссылки» из подписи он принял бы за аргумент.
+        _cmd_links("/links")
+        return True
+    if low in ("шаблон", "/шаблон"):
+        import postspec
+        send(postspec.TEMPLATE_HELP)
+        return True
+    if low.startswith("отмена"):
+        _cmd_cancel(text)
+        return True
+    if low.startswith("ссылки"):
+        _cmd_links(text)
+        return True
+    return False
+
+
+def _take_video(video, text, spec, size_mb=0):
+    """Скачать видео и сделать черновик (или задачу по шаблону)."""
+    import postspec
+
+    send("Качаю..." if size_mb < 50 else f"Качаю {size_mb:.0f} МБ — это займёт время...")
+    path = _download(video["file_id"], config.QUEUE_DIR, size_mb)
     if not path:
         send("Не смог скачать файл.")
         return
@@ -994,6 +1076,46 @@ def _handle(msg):
         _publish_now(job_id)
 
 
+# Видео качаются по одному в своём потоке — в порядке прихода (иначе два
+# одинаковых, присланных подряд, разминулись бы мимо проверки на повтор).
+# Вне опроса (тесты, `main.py`) — сразу, в том же потоке.
+_WORK = {"queue": None, "thread": None}
+
+
+def _later(fn):
+    if not getattr(_REPLY, "polling", False):
+        fn()
+        return
+    import queue
+
+    address = reply_address()
+
+    def job():
+        reply_to(address)
+        try:
+            fn()
+        except Exception as e:
+            send(f"ошибка обработки видео: {type(e).__name__}: {e}")
+        finally:
+            set_reply(None)
+
+    if _WORK["queue"] is None:
+        _WORK["queue"] = queue.Queue()
+    _WORK["queue"].put(job)
+    worker = _WORK["thread"]
+    if worker is None or not worker.is_alive():
+        def loop():
+            while True:
+                task = _WORK["queue"].get()
+                try:
+                    task()
+                except Exception:
+                    pass
+
+        _WORK["thread"] = threading.Thread(target=loop, daemon=True, name="tg-video")
+        _WORK["thread"].start()
+
+
 # --------------------------------------------------- пост кнопками (2026-10-11)
 #
 # «Какая-то странная хуйня, как-то проще можно?» — про шаблон «куда/когда/
@@ -1002,7 +1124,8 @@ def _handle(msg):
 # `jobs.targets`, статус 'draft'), поэтому кнопки работают и после перезапуска.
 
 TARGET_ORDER = ("tiktok", "reels", "shorts")
-_ASK_TIME = {}          # чат -> задача, для которой ждём «своё время» текстом
+_ASK_TIME = {}          # «чат:человек» -> задача, для которой ждём «своё время» текстом
+ASK_TIME_SEC = 15 * 60  # дольше не ждём: человек передумал и пишет уже о другом
 
 
 def _defaults_path():
@@ -1203,8 +1326,9 @@ def _handle_callback(cq):
             note = "отметь хотя бы одну сеть"
         elif code == "ask":
             who = str((cq.get("from") or {}).get("id", "") or chat_id)
-            _ASK_TIME[f"{chat_id}:{who}"] = (job["id"], message_id)
-            send("Напиши время одним сообщением: 18:30, завтра 9:00, 12.10 18:30 или пт 20:00")
+            _ASK_TIME[f"{chat_id}:{who}"] = (job["id"], message_id, time.time())
+            send("Напиши время одним сообщением: 18:30, завтра 9:00, 12.10 18:30 или пт 20:00"
+                 + (" — ответом на это сообщение" if group else ""))
         else:
             when, exact = _when_of(code)
             _schedule(job["id"], when, exact, chat_id, message_id)
@@ -1224,7 +1348,13 @@ def _take_time_answer(chat_id, text, sender=None):
         return False
     import postspec
 
-    job_id, message_id = waiting
+    job_id, message_id, asked = waiting
+    job = jobs.by_id(job_id)
+    if job is None or job["status"] != "draft" or time.time() - asked > ASK_TIME_SEC:
+        _ASK_TIME.pop(key, None)       # время уже выбрали кнопкой или забыли
+        return False
+    if weblink.find_urls(text, None):
+        return False                   # не время, а ссылка — в подборку
     try:
         when, exact = postspec.parse_when(text)
     except postspec.SpecError as e:
@@ -1283,6 +1413,9 @@ CONFLICT = ("бота уже опрашивает другая копия PhoneA
 REJECTED = "Telegram не принимает токен (401) — вставь его заново во вкладке «Бот»"
 MALFORMED = ("токен вставлен с ошибкой (Telegram его не узнаёт, 404) — скопируй "
              "его у @BotFather заново и вставь во вкладке «Бот»")
+WEBHOOK = ("у бота включён webhook — Telegram отдаёт сообщения другому сервису, а не "
+           "программе. Если бот только для PhoneAgent: открой в браузере "
+           "api.telegram.org/bot<токен>/deleteWebhook — и бот заработает")
 RETRY_SEC = 5            # пауза перед повтором после неудачного опроса
 CONFLICT_GRACE_SEC = 75  # 409 короче этого — наш же прежний запрос, не другая копия
 
@@ -1295,6 +1428,8 @@ def _why_failed(res):
     """Человеческая причина неудачного getUpdates."""
     text = str(res.get("description") or res.get("error") or "")
     code = res.get("error_code")
+    if "webhook" in text.lower():
+        return WEBHOOK
     if code == 409 or "409" in text or "Conflict" in text:
         return CONFLICT
     if code == 401 or "401" in text or "Unauthorized" in text:
@@ -1330,17 +1465,18 @@ def poll_forever(generation=0):
     if not ok and "не принят" in info:
         _TROUBLE["text"] = REJECTED
     _drop_stale_drafts()
-    offset = 0
+    _REPLY.polling = True        # видео из этого потока качаются в своём (_later)
     said = ""
     conflict_since = None
     token = load_settings()["token"]
+    offset = _offset_for(token)
     while True:
         if generation != _GENERATION["n"]:
             return                           # нас сменил поток с новым токеном
         now_token = load_settings()["token"]
         if now_token != token:
             # Токен поменяли в обход окна (руками в telegram.json).
-            token, offset, said = now_token, 0, ""
+            token, offset, said = now_token, _offset_for(now_token), ""
             _TROUBLE["text"] = ""
             if not token:
                 return
@@ -1390,9 +1526,31 @@ class _PollFailed(Exception):
     pass
 
 
+UPDATES = json.dumps(["message", "callback_query", "my_chat_member"])
+
+
+# Сколько сообщений уже разобрано — общее для потоков опроса. При смене
+# токена старый поток мог как раз разбирать пачку, а новый начинал с нуля и
+# получал ту же пачку снова (Telegram считает сообщение прочитанным только
+# на следующем getUpdates): человеку приходило два ответа на одно сообщение.
+# Теперь новый поток ждёт, пока старый доразберёт, и продолжает с его места.
+_OFFSET = {"mark": "", "n": 0}
+_HANDLING = threading.Lock()
+
+
+def _offset_for(token):
+    with _HANDLING:
+        return _OFFSET["n"] if _OFFSET["mark"] == _token_mark(token) else 0
+
+
 def _poll_once(offset, generation=None):
     """Один круг getUpdates. Возвращает новый offset."""
-    res = _call("getUpdates", {"offset": offset, "timeout": 50})
+    # Список обновлений — явно: Telegram помнит его от прошлого опроса, и
+    # программа, когда-то попросившая только «message», лишила бы нас кнопок
+    # и вступлений в чаты.
+    asked_with = load_settings()["token"]
+    res = _call("getUpdates", {"offset": offset, "timeout": 50,
+                               "allowed_updates": UPDATES})
     # Пока ждали ответа, токен сменили: пришедшее — для старого бота, и
     # отвечать на него новым токеном нельзя.
     if generation is not None and generation != _GENERATION["n"]:
@@ -1402,35 +1560,49 @@ def _poll_once(offset, generation=None):
     if _TROUBLE["text"]:
         print("[бот] снова на связи", flush=True)
         _TROUBLE["text"] = ""
-    for upd in res.get("result", []):
-        offset = upd["update_id"] + 1
-        if upd.get("callback_query"):
-            try:
-                _handle_callback(upd["callback_query"])
-            except Exception as e:
-                send(f"ошибка кнопки: {type(e).__name__}: {e}")
-            finally:
-                set_reply(None)
-            continue
-        if upd.get("my_chat_member"):
-            try:
-                _membership(upd["my_chat_member"])
-            except Exception as e:
-                print(f"[бот] вступление в чат: {type(e).__name__}: {e}", flush=True)
-            finally:
-                set_reply(None)
-            continue
-        msg = upd.get("message") or upd.get("channel_post")
-        if msg:
-            try:
-                _handle(msg)
-            except Exception as e:
-                send(f"ошибка обработки: {type(e).__name__}: {e}")
-            finally:
-                # Обязательно: иначе следующее сообщение от другого
-                # человека ушло бы в чат предыдущего.
-                set_reply(None)
+    with _HANDLING:
+        if generation is not None and generation != _GENERATION["n"]:
+            return offset                    # сменили, пока ждали замок
+        if load_settings()["token"] != asked_with:
+            return offset                    # пришло старому боту — не нам
+        mark = _token_mark(asked_with)
+        for upd in res.get("result", []):
+            offset = upd["update_id"] + 1
+            _OFFSET.update(mark=mark, n=offset)
+            _dispatch(upd)
     return offset
+
+
+def _dispatch(upd):
+    """Одно обновление: кнопка, вступление в чат или сообщение."""
+    if upd.get("callback_query"):
+        try:
+            _handle_callback(upd["callback_query"])
+        except Exception as e:
+            send(f"ошибка кнопки: {type(e).__name__}: {e}")
+            _call("answerCallbackQuery", {"callback_query_id":
+                                          upd["callback_query"].get("id", "")}, timeout=10)
+        finally:
+            set_reply(None)
+        return
+    if upd.get("my_chat_member"):
+        try:
+            _membership(upd["my_chat_member"])
+        except Exception as e:
+            print(f"[бот] вступление в чат: {type(e).__name__}: {e}", flush=True)
+        finally:
+            set_reply(None)
+        return
+    msg = upd.get("message")
+    if msg:
+        try:
+            _handle(msg)
+        except Exception as e:
+            send(f"ошибка обработки: {type(e).__name__}: {e}")
+        finally:
+            # Обязательно: иначе следующее сообщение от другого
+            # человека ушло бы в чат предыдущего.
+            set_reply(None)
 
 
 _THREAD = None
