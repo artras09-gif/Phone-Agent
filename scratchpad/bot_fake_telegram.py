@@ -54,7 +54,7 @@ def say(good, text):
 
 
 TOKEN = "7000000001:" + "A" * 35
-TOKEN2 = "7000000002:" + "B" * 35
+TOKEN2 = "7000000001:" + "B" * 35      # тот же бот, токен перевыпущен в @BotFather
 OWNER, FRIEND, STRANGER = 111, 222, 333
 GROUP, ALIEN_GROUP = -1001, -1002
 BOTNAME = "Videopost23bot"
@@ -816,7 +816,7 @@ say(wait(lambda: bot.trouble() == "", 8) and last_text(OWNER, m, "В очере�
 state = webui._bot_state()
 say(state.get("groups") and "Команда" in state["groups"][0], f"окно: «работает в чатах»: {state.get('groups')}")
 
-print("\n--- смена токена ---")
+print("\n--- смена токена (перевыпуск в @BotFather) ---")
 FAKE.token = TOKEN2
 say(wait(lambda: bot.trouble() == bot.REJECTED, 6), "старый токен отозван — «токен не принят»")
 bot.save_settings(TOKEN2, bot.load_settings()["owner"])

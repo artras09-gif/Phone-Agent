@@ -1795,9 +1795,17 @@ _OFFSET = {"mark": "", "n": 0}
 _HANDLING = threading.Lock()
 
 
+def _bot_of(token):
+    """Номер бота — часть токена до двоеточия. Перевыпуск токена в @BotFather
+    его не меняет, и очередь сообщений у бота та же: начать с нуля значило бы
+    получить заново последнюю пачку, которую старый токен уже не успел
+    подтвердить (ему отвечают 401), — и ответить на неё второй раз."""
+    return str(token or "").split(":", 1)[0]
+
+
 def _offset_for(token):
     with _HANDLING:
-        return _OFFSET["n"] if _OFFSET["mark"] == _token_mark(token) else 0
+        return _OFFSET["n"] if _OFFSET["mark"] == _bot_of(token) else 0
 
 
 def _poll_once(offset, generation=None):
@@ -1822,7 +1830,7 @@ def _poll_once(offset, generation=None):
             return offset                    # сменили, пока ждали замок
         if load_settings()["token"] != asked_with:
             return offset                    # пришло старому боту — не нам
-        mark = _token_mark(asked_with)
+        mark = _bot_of(asked_with)
         for upd in res.get("result", []):
             offset = upd["update_id"] + 1
             _OFFSET.update(mark=mark, n=offset)

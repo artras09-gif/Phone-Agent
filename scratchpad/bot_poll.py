@@ -117,6 +117,13 @@ tb.time.time, tb.time.sleep = real_time, real_sleep
 tb._poll_once, tb.check, tb._drop_stale_drafts, tb.setup_server, tb.load_settings = saved
 tb._TROUBLE["text"] = ""
 
+print("\n--- смена токена: с какого сообщения продолжать ---")
+tb._OFFSET.update(mark="7000000001", n=50)
+say(tb._offset_for("7000000001:" + "B" * 35) == 50,
+    "перевыпущенный токен того же бота — с того же места (без повторных ответов)")
+say(tb._offset_for("7000000002:" + "C" * 35) == 0, "другой бот — с нуля")
+tb._OFFSET.update(mark="", n=0)
+
 print("\n--- поток не умирает ---")
 import threading  # noqa: E402
 import time  # noqa: E402
