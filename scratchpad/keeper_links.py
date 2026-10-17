@@ -82,5 +82,20 @@ time.sleep(0.3)
 say(digests == [1, 1], "идёт сессия — подборка всё равно уходит вовремя")
 busy.set()
 
+print("\n--- аналитика аккаунтов не вперёд расписания ---")
+import accstats  # noqa: E402
+accstats.due = lambda now=None: True
+started.clear()
+keeper3 = webui.Keeper(runner)
+keeper3.day = now.date()
+keeper3.schedule = [(now - dt.timedelta(minutes=1), "session", ("tiktok", 600))]
+keeper3.done = set()
+keeper3._tick()
+say(started and started[0].startswith("сессия"),
+    f"сессия, чьё время подошло, — первой (не ждёт аналитику): {started}")
+started.clear()
+keeper3._tick()
+say(started == ["аналитика аккаунтов"], f"по плану ничего не ждёт — аналитика: {started}")
+
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)
