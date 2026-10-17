@@ -55,7 +55,9 @@ NETS = {
         "steps": [{"find": ["Вы", "You"], "bottom": True, "exact": True},
                   {"find": ["Перейти на канал", "View channel", "Ваш канал", "Your channel"]}],
         "grid_tab": ["Shorts"],
-        "own": ["Управление видео", "Управлять видео", "Manage videos", "Настроить канал",
+        # Живьём 2026-10-17 на своём канале — «Аналитика» и «Параметры канала».
+        "own": ["Параметры канала", "Channel settings", "Аналитика", "Analytics",
+                "Управление видео", "Управлять видео", "Manage videos", "Настроить канал",
                 "Customize channel", "Изменить канал", "Edit channel"],
     },
 }
@@ -155,13 +157,18 @@ def parse_profile(nodes, height=2400):
         text = (n.text or n.desc or "").strip()
         # Длинное — фраза («ваш профиль просмотрел 1 человек»), а не подпись
         # под плиткой.
-        if not text or len(text) > 80 or _center(n)[1] < top or _center(n)[1] > bottom:
+        has_word = bool(VIEWS_WORD.search(text))
+        if not text or len(text) > (200 if has_word else 80) \
+                or _center(n)[1] < top or _center(n)[1] > bottom:
             continue
         if JUST_NUMBER.match(text) or (VIEWS_WORD.search(text) and re.search(r"\d", text)):
             views = parse_count(VIEWS_WORD.split(text)[0] if VIEWS_WORD.search(text) else text)
             if views is None:
                 continue
-            title = text.split(",")[0].strip() if VIEWS_WORD.search(text) and "," in text else ""
+            # YouTube: «Воспроизвести короткое видео "ывпвапавпавп, 2 просмотра"».
+            quoted = re.search(r'"([^"]+)"', text)
+            inner = quoted.group(1) if quoted else text
+            title = inner.rsplit(",", 1)[0].strip() if VIEWS_WORD.search(inner) and "," in inner else ""
             videos.append((round(_center(n)[1] / 40), _center(n)[0], views, title))
     videos.sort()
     seen, out = set(), []
@@ -448,7 +455,8 @@ def report_text(now=None):
                 gain, fresh = views_gain(views, [v["views"] for v in day["videos"]],
                                          _posted(con, net, day["at"])) \
                     if day and day["videos"] else (None, 0)
-                line = f"Просмотры последних {len(videos)} видео: {_fmt(sum(views))}"
+                line = (f"Просмотры видео в профиле: {_fmt(sum(views))} "
+                        f"({len(videos)} {_plural(len(videos), 'видео', 'видео', 'видео')})")
                 if gain is not None:
                     known = True
                     total_views += gain
