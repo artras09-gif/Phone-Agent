@@ -240,6 +240,103 @@ def push_video(local_path):
     return remote
 
 
+def tx_bytes():
+    """Сколько байт телефон отправил в сеть с включения — все интерфейсы,
+    кроме lo. None — счётчики недоступны (на редких прошивках закрыты)."""
+    out = adb.shell("for f in /sys/class/net/*/statistics/tx_bytes; "
+                    "do echo $f $(cat $f); done", check=False) or ""
+    total, seen = 0, False
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and "/lo/" not in parts[0] and parts[1].isdigit():
+            total += int(parts[1])
+            seen = True
+    if seen:
+        return total
+    out = adb.shell("cat /proc/net/dev", check=False) or ""
+    for line in out.splitlines():
+        name, _, rest = line.partition(":")
+        cols = rest.split()
+        if rest and name.strip() != "lo" and len(cols) >= 9 and cols[8].isdigit():
+            total += int(cols[8])
+            seen = True
+    return total if seen else None
+
+
+def upload_progress(package):
+    """Прогресс загрузки из уведомления приложения: (сделано, всего), (0, 0) —
+    крутится без процентов, None — уведомления о загрузке нет."""
+    out = adb.shell("dumpsys notification --noredact", check=False, timeout=20) or ""
+    found = None
+    for block in re.split(r"\n\s*NotificationRecord\(", out):
+        if f"pkg={package}" not in block:
+            continue
+        done = re.search(r"android\.progress=(?:\w+ \()?(\d+)", block)
+        total = re.search(r"android\.progressMax=(?:\w+ \()?(\d+)", block)
+        if total and done and 0 < int(total.group(1)) and int(done.group(1)) < int(total.group(1)):
+            return int(done.group(1)), int(total.group(1))
+        if re.search(r"android\.progressIndeterminate=(?:\w+ \()?true", block):
+            found = (0, 0)
+    return found
+
+
+def _pushed_path():
+    return os.path.join(os.path.dirname(config.QUEUE_DIR), "pushed.json")
+
+
+def remember_pushed(remote_path):
+    """Записать залитый на телефон файл: удалить его можно, только когда
+    приложение его догрузит. В /sdcard/Movies лежат и чужие видео — трогаем
+    только записанные здесь."""
+    import json
+    try:
+        with open(_pushed_path(), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    data[remote_path] = time.time()
+    try:
+        with open(_pushed_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def forget_pushed(remote_path):
+    import json
+    try:
+        with open(_pushed_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        data.pop(remote_path, None)
+        with open(_pushed_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except (OSError, ValueError):
+        pass
+
+
+def cleanup_pushed(keep_sec=None):
+    """Убрать с телефона свои старые файлы, которые не удалились после
+    публикации (загрузку не дождались). Возвращает, сколько убрано."""
+    import json
+    keep_sec = config.PUSHED_KEEP_SEC if keep_sec is None else keep_sec
+    try:
+        with open(_pushed_path(), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return 0
+    old = [p for p, at in data.items() if time.time() - float(at) > keep_sec]
+    for remote in old:
+        remove_remote(remote)
+        data.pop(remote, None)
+    if old:
+        try:
+            with open(_pushed_path(), "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+        except OSError:
+            pass
+    return len(old)
+
+
 def remove_remote(remote_path):
     adb.shell(f"rm -f {adb.quote(remote_path)}", check=False)
     adb.shell(

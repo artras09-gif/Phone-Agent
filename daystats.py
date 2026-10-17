@@ -87,7 +87,16 @@ def _day_bounds(day):
 
 
 def day_text(day=None):
-    """Итог дня: сессии, ролики, лайки, ссылки, посты, о чём была лента."""
+    """Итог дня: аналитика аккаунтов (как в YouTube Studio) и работа агента."""
+    import accstats
+
+    accounts = accstats.report_text()
+    agent = agent_text(day)
+    return f"{accounts}\n\n{agent}" if accounts else agent
+
+
+def agent_text(day=None):
+    """Работа агента за день: сессии, ролики, лайки, ссылки, посты, о чём лента."""
     day = day or dt.date.today()
     start, end = _day_bounds(day)
     mine, dev = jobs._mine()
@@ -114,7 +123,7 @@ def day_text(day=None):
 
     sessions = [parse(e["payload"]) for e in events]
     done = [s for s in sessions if s["finished"]]
-    lines = [f"📊 Итог дня — {day:%d.%m}"]
+    lines = [f"📊 Работа агента — {day:%d.%m}"]
     if done:
         by_app = {}
         for s in done:

@@ -751,23 +751,30 @@ scheduler.session.browse = lambda app, seconds=None, keep_open=False: (
     "сессия в tiktok, план 1.0 мин\n  заглянул в комментарии (протяжек: 2)\n"
     "итог: 30 видео, 4 лайков, 1 ссылок сохранено")
 scheduler.run_session("tiktok", 60, manual=True)
+time.sleep(0.8)
+say(not texts(GROUP, m) and not texts(OWNER, m),
+    "по умолчанию цифры каждой сессии не шлются (статистика — это аналитика аккаунтов)")
+config.STATS_PER_SESSION = True
+m = FAKE.mark()
+scheduler.run_session("tiktok", 60, manual=True)
+config.STATS_PER_SESSION = False
 ss = last_text(GROUP, m, "📊 Сессия TikTok")
 say(ss and str(ss.get("message_thread_id")) == str(STATS) and "роликов 30" in ss["text"]
-    and "лайков 4" in ss["text"], "после сессии — цифры в «Статистика»")
+    and "лайков 4" in ss["text"], "включили STATS_PER_SESSION — цифры сессии в «Статистика»")
 say(not texts(OWNER, m) and len(texts(GROUP, m)) == 1, "больше никуда — ни в личку, ни в другие темы")
 m = FAKE.mark()
 import datetime as _dt  # noqa: E402
 late = _dt.datetime.combine(_dt.date.today(), _dt.time(22, 1))
 said = scheduler.maybe_day_stats(late)
-day = last_text(GROUP, m, "Итог дня")
+day = last_text(GROUP, m, "Работа агента")
 say(said and day and str(day.get("message_thread_id")) == str(STATS), "в 22:00 — итог дня в «Статистика»")
-say(day and "Сессий: 1" in day["text"] and "Роликов: 30" in day["text"] and "Постов:" in day["text"],
+say(day and "Сессий: 2" in day["text"] and "Роликов: 60" in day["text"] and "Постов:" in day["text"],
     "в итоге дня — сессии, ролики, посты: " + repr(day and day["text"][:120]))
 say(not scheduler.maybe_day_stats(late), "второй раз за день — не шлёт")
 say(not scheduler.maybe_day_stats(late.replace(hour=21)), "до 22:00 — не шлёт")
 m = FAKE.mark()
 say_to(GROUP, FRIEND, "/stats", thread=STATS)
-say(last_text(GROUP, m, "Итог дня"), "/stats в «Статистика» — итог за сегодня")
+say(last_text(GROUP, m, "Работа агента"), "/stats в «Статистика» — итог за сегодня")
 say_to(GROUP, FRIEND, "/status", thread=LINKS)
 st = last_text(GROUP, m, "В очереди")
 say(st and str(st.get("message_thread_id")) == str(LINKS), "/status в любой из тем бота — ответ там же")

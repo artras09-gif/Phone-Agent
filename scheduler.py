@@ -454,6 +454,8 @@ def run_session(app, seconds=None, notify=None, manual=False, keep_open=False):
 def _tell_stats(report, minutes):
     """Коротко о сессии — в тему статистики группы, если она привязана."""
     try:
+        if not config.STATS_PER_SESSION:
+            return
         import daystats
         import telegram_bot
 
@@ -576,6 +578,14 @@ def serve(notify=None, watch=False, record=False, should_stop=None):
                 jobs.log_event("error", msg)
                 if notify:
                     notify(msg)
+
+        try:
+            import accstats
+
+            if accstats.due(now):
+                accstats.collect_all(log=runlog.Log("аналитика аккаунтов"))
+        except Exception as e:
+            jobs.log_event("error", f"аналитика аккаунтов: {e}")
 
         for said in maybe_day_stats(now):
             if notify:

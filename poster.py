@@ -779,6 +779,83 @@ def failure_files(log_path):
     return shot, screen
 
 
+UPLOAD_WORDS = re.compile(r"(загрузк|загружа|uploading|публику|публикац|posting|sharing|"
+                          r"обработк|processing|отправк)", re.I)
+UPLOAD_PERCENT = re.compile(r"(?<![\d.,])(?:\d{1,2}|100)\s?%")
+
+
+def _upload_on_screen(package):
+    """Видно ли на экране приложения, что загрузка идёт («45 %», «Публикация…»)."""
+    try:
+        pkg, _ = adb.current_app()
+        if pkg != package:
+            return False
+        nodes = ui.dump(retries=1, tolerant=True)
+    except Exception:
+        return False
+    for n in nodes or []:
+        text = f"{n.text} {n.desc}"
+        if UPLOAD_PERCENT.search(text) or UPLOAD_WORDS.search(text):
+            return True
+    return False
+
+
+def wait_upload(package, video_path, log):
+    """Дождаться, пока опубликованное видео уйдёт в сеть. True — дождались.
+
+    После «Опубликовать» приложение ещё минуты грузит видео в фоне. Раньше
+    программа тут же удаляла файл с телефона (YouTube читает его во время
+    загрузки) и шла в следующую сеть, закрывая предыдущее приложение, —
+    загрузка обрывалась (2026-10-17: «не дожидается, пока загрузится видос»).
+
+    Признаки, что грузит: телефон отправляет данные быстрее фона, в
+    уведомлении приложения прогресс, на экране «45 %» или «Публикация…».
+    Конец — всё это стихло на UPLOAD_IDLE_SEC секунд. TikTok сперва пережимает
+    видео (сеть молчит, а работа идёт), поэтому, пока не ушла хотя бы треть
+    файла, тишину в первые две минуты концом не считаем.
+    """
+    try:
+        size = os.path.getsize(video_path)
+    except OSError:
+        size = 0
+    started = time.time()
+    first = device.tx_bytes()
+    last_bytes, last_at = first, started
+    known = first is not None
+    # Без счётчиков сети — хотя бы по объёму: ~2 Мбит/с отправки.
+    floor = config.UPLOAD_MIN_SEC if known else \
+        max(config.UPLOAD_MIN_SEC, min(600, size / 1024 / 1024 * 4))
+    idle_since, sent, peak = None, 0, 0.0
+    while True:
+        abort.sleep(config.UPLOAD_POLL_SEC)
+        if abort.requested():
+            log.append("  загрузку не дождался: остановили")
+            return False
+        now = time.time()
+        rate = None
+        tx = device.tx_bytes() if known else None
+        if tx is not None and last_bytes is not None:
+            rate = max(0, tx - last_bytes) / max(0.5, now - last_at)
+            sent = tx - first
+            peak = max(peak, rate)
+        last_bytes, last_at = tx, now
+        progress = device.upload_progress(package)
+        busy = bool(progress) or (rate is not None and rate > config.UPLOAD_IDLE_RATE) \
+            or _upload_on_screen(package)
+        idle_since = None if busy else (idle_since or now)
+        elapsed = now - started
+        early = known and size and sent < size * 0.3 and elapsed < 120
+        if idle_since and now - idle_since >= config.UPLOAD_IDLE_SEC \
+                and elapsed >= floor and not early:
+            how = f", ушло {sent / 1024 / 1024:.1f} МБ" if known else ""
+            log.append(f"  загрузка закончилась: ждал {elapsed:.0f} с{how}")
+            return True
+        if elapsed >= config.UPLOAD_WAIT_MAX:
+            log.append(f"  [!] загрузка не кончилась за {elapsed / 60:.0f} мин — "
+                       "дальше не жду, файл на телефоне оставляю")
+            return False
+
+
 def post(video_path, caption, target, recipes=None):
     """Опубликовать видео в одну соцсеть. Возвращает (успех, отчёт)."""
     recipes = recipes or load_recipes()
@@ -797,6 +874,7 @@ def post(video_path, caption, target, recipes=None):
 
     remote = None
     published = False
+    uploaded = False
     opened = False
     try:
         if not device.unlock():
@@ -816,7 +894,12 @@ def post(video_path, caption, target, recipes=None):
                 f"{recipe.get('title', target).split()[0]} → Разрешения → «Файлы и медиа» "
                 "(или «Фото и видео») → Разрешить. Один раз")
 
+        try:
+            device.cleanup_pushed()           # недогруженное с прошлых раз
+        except (adb.AdbError, OSError):
+            pass
         remote = device.push_video(video_path)
+        device.remember_pushed(remote)
         report.append(f"залито: {remote}")
 
         if recipe.get("open_uri"):
@@ -846,6 +929,9 @@ def post(video_path, caption, target, recipes=None):
             report.append(f"  {i:2d}. {line}")
 
         published = not config.DRY_RUN
+        if published:
+            report.append("  жду, пока видео догрузится…")
+            uploaded = wait_upload(package, video_path, report)
         report.append("готово")
         # Маршрут прошёл — снимки шагов больше не нужны: они для разбора
         # СБОЯ, а сбоя не было. Остаётся текстовый отчёт. Иначе каждая
@@ -878,7 +964,11 @@ def post(video_path, caption, target, recipes=None):
                 report.append("[!] не смог закрыть приложение — "
                               "экран публикации мог остаться открытым")
         device.keep_awake(False)
-        if remote:
+        # Файл удаляем, только когда приложение его больше не читает: не
+        # публиковали — или загрузка кончилась. Не дождались — оставляем,
+        # его уберёт `cleanup_pushed` через несколько часов.
+        if remote and (not published or uploaded):
             device.remove_remote(remote)
+            device.forget_pushed(remote)
         with open(os.path.join(log_path, "report.txt"), "w", encoding="utf-8") as f:
             f.write(report.text())

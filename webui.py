@@ -325,6 +325,17 @@ class Keeper:
         # а сессия свой остаток досмотрит следом.
         if jobs.due() is not None:
             return
+        # Аналитика аккаунтов (профили трёх сетей) — тоже действие с
+        # телефоном, через общую очередь. Раз в день, к итогу дня.
+        try:
+            import accstats
+
+            if accstats.due(now):
+                self.runner.start("аналитика аккаунтов",
+                                  lambda: accstats.collect_all(log=runlog.Log("аналитика аккаунтов")))
+                return
+        except Exception as e:
+            self.runner.log(f"аналитика аккаунтов: {type(e).__name__}: {e}")
 
         for i, (when, kind, arg) in enumerate(self.schedule):
             if i in self.done or now < when or kind == "links":
