@@ -1614,8 +1614,15 @@ def _take_video(video, text, spec, size_mb=0, where=None):
             except OSError:
                 pass
             return
+        extra = {}
+        if "shorts" in targets and config.YT_TAGS and caption.strip():
+            # Теги YouTube подбираем сразу — человек увидит их в черновике
+            # до того, как нажмёт «Сейчас».
+            import yttags
+            extra["shorts_tags"] = yttags.suggest(caption)
         job_id = jobs.add(path, caption=caption, targets=",".join(targets),
-                          status="draft", chat=reply_address(), device=device)
+                          status="draft", chat=reply_address(), device=device,
+                          captions=extra or None)
         _send_draft(job_id)
         return
 
@@ -1751,6 +1758,9 @@ def _draft_text(job):
         title = postspec.fit(postspec.shorts_title(caption), "shorts")
         if title != caption:
             text += f"Название на YouTube: {title}\n\n"
+    tags = jobs.captions_of(job).get("shorts_tags") if "shorts" in picked else None
+    if tags:
+        text += "Теги YouTube (подобрал DeepSeek): " + ", ".join(tags) + "\n\n"
     skipped = [postspec.TITLES[t] for t in TARGET_ORDER if t not in picked]
     if skipped:
         text += "Не публикую в: " + ", ".join(skipped) + "\n\n"

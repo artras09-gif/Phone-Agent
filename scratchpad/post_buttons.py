@@ -22,6 +22,8 @@ os.makedirs(config.QUEUE_DIR)
 
 import jobs          # noqa: E402
 import scheduler     # noqa: E402
+import yttags  # noqa: E402
+yttags.suggest = lambda caption, timeout=40: ["тег", "ещё тег"]  # без модели
 import telegram_bot as bot  # noqa: E402
 
 jobs._SCHEMA_READY = False
@@ -131,7 +133,7 @@ import postspec   # noqa: E402
 say(postspec.shorts_title("Пицца за 5 минут\n#еда #рецепт\nподробности") == "Пицца за 5 минут",
     "первая строка")
 posted = []
-scheduler.poster.post = lambda path, text, target: (posted.append((target, text)) or (True, "ok"))
+scheduler.poster.post = lambda path, text, target, extra=None: (posted.append((target, text)) or (True, "ok"))
 j = jobs.add(video, "Пицца за 5 минут\n#еда #рецепт", targets="tiktok,shorts", exact=True)
 scheduler.run_post_job(job_id=j)
 say(posted == [("tiktok", "Пицца за 5 минут\n#еда #рецепт"), ("shorts", "Пицца за 5 минут")],

@@ -101,9 +101,11 @@ print("     " + shown.replace("\n", "\n     "))
 
 print("\n--- очередь: своё описание, лимит, точное время ---")
 import scheduler  # noqa: E402
+import yttags  # noqa: E402
+yttags.suggest = lambda caption, timeout=40: ["тег", "ещё тег"]  # без модели
 
 posted = []
-scheduler.poster.post = lambda path, text, target: (posted.append((target, text)) or (True, f"{target}: ok"))
+scheduler.poster.post = lambda path, text, target, extra=None: (posted.append((target, text)) or (True, f"{target}: ok"))
 video = os.path.join(config.QUEUE_DIR, "v.mp4")
 open(video, "wb").write(b"x")
 job = jobs.add(video, "Общий текст", targets="tiktok,shorts",

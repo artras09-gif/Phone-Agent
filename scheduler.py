@@ -306,6 +306,19 @@ def run_post_job(notify=None, job_id=None):
         restore()
 
 
+def _youtube_extra(job, captions):
+    """YouTube: полное описание и теги. Теги подобраны при черновике (бот
+    показал их человеку) — берём те же; нет — подбирает модель сейчас."""
+    full = str(captions.get("shorts_description") or job["caption"] or "").strip()
+    tags = captions.get("shorts_tags")
+    if tags is None and config.YT_TAGS:
+        import yttags
+        tags = yttags.suggest(full)
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",") if t.strip()]
+    return {"description": full, "tags": list(tags or [])}
+
+
 def _reply_from(job):
     """Направить ответы бота в чат задачи; вернуть, как было."""
     try:
@@ -358,8 +371,10 @@ def _post_job(job, notify):
         if target == "shorts" and target not in captions:
             text = postspec.shorts_title(text)
         text = postspec.fit(text, target)
+        extra = _youtube_extra(job, captions) if target == "shorts" else None
         try:
-            ok, report = poster.post(job["video_path"], text, target)
+            ok, report = (poster.post(job["video_path"], text, target, extra=extra) if extra
+                          else poster.post(job["video_path"], text, target))
         except Exception as e:
             # Падение посреди маршрута не должно оставлять задачу «ждущей»:
             # сторож очереди повторял бы её каждые 10 с, а расписание ждало бы

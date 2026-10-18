@@ -36,6 +36,8 @@ for d in (config.WATCH_DIR, config.QUEUE_DIR):
 
 import jobs       # noqa: E402
 import poster     # noqa: E402
+import yttags  # noqa: E402
+yttags.suggest = lambda caption, timeout=40: ["тег", "ещё тег"]  # без модели
 import prefs      # noqa: E402
 import scheduler  # noqa: E402
 import webui      # noqa: E402
@@ -93,7 +95,7 @@ first = jobs.connect().execute("SELECT * FROM jobs ORDER BY id LIMIT 1").fetchon
 seen = {}
 
 
-def fake_post(path, text, target):
+def fake_post(path, text, target, extra=None):
     row = jobs.by_id(first["id"])
     seen["status"] = row["status"]
     seen["queue"] = webui._queue()

@@ -35,6 +35,8 @@ for d in (config.QUEUE_DIR, config.WATCH_DIR):
 import abort          # noqa: E402
 import jobs           # noqa: E402
 import poster         # noqa: E402
+import yttags  # noqa: E402
+yttags.suggest = lambda caption, timeout=40: ["тег", "ещё тег"]  # без модели
 import scheduler      # noqa: E402
 import telegram_bot as bot  # noqa: E402
 import tgserver       # noqa: E402
@@ -231,7 +233,7 @@ POSTED = []
 SCREEN_PNG = b"\x89PNG\r\n\x1a\n" + b"screen" * 50
 
 
-def fake_post(path, text, target):
+def fake_post(path, text, target, extra=None):
     POSTED.append((os.path.basename(path), text, target))
     time.sleep(0.05)
     if "СЛОМАЙ" in text:

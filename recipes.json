@@ -597,6 +597,20 @@
         ]
       },
       {
+        "op": "yt_details",
+        "desc": "описание и теги (DeepSeek)",
+        "upload": [
+          {
+            "rid": "upload_bottom_button"
+          }
+        ],
+        "title": [
+          {
+            "rid": "title_edit_text"
+          }
+        ]
+      },
+      {
         "op": "publish",
         "timeout": 25,
         "any": [
@@ -625,7 +639,7 @@
         "desc": "ФИНАЛЬНАЯ КНОПКА"
       }
     ],
-    "rev": 5,
+    "rev": 6,
     "needs_storage": true
   },
   "_feed_apps": {

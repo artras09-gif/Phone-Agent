@@ -69,6 +69,7 @@ TESTS = [
     ("scratchpad/bot_phones.py", "несколько телефонов — у каждого свой бот, видео — своему телефону"),
     ("scratchpad/upload_wait.py", "публикация ждёт, пока видео догрузится, файл удаляется потом"),
     ("scratchpad/accstats_test.py", "аналитика аккаунтов из профилей трёх сетей, как в YouTube Studio"),
+    ("scratchpad/yt_tags_test.py", "YouTube: описание и теги от DeepSeek вбиваются при загрузке"),
     ("scratchpad/post_dupes.py", "одно видео — одна публикация; бот без журнала сессий"),
     ("scratchpad/post_youtube.py", "YouTube: доступ к файлам, аудитория, серая кнопка — не «готово»"),
     ("scratchpad/post_new_phone.py", "новый телефон: обрезка YouTube, окно микрофона Instagram"),

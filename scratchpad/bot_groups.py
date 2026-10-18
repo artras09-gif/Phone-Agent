@@ -21,6 +21,8 @@ os.makedirs(config.QUEUE_DIR)
 
 import jobs          # noqa: E402
 import scheduler     # noqa: E402
+import yttags  # noqa: E402
+yttags.suggest = lambda caption, timeout=40: ["тег", "ещё тег"]  # без модели
 import telegram_bot as bot  # noqa: E402
 
 jobs._SCHEMA_READY = False
@@ -168,7 +170,7 @@ import threading  # noqa: E402
 import poster     # noqa: E402
 
 say(jobs.by_id(job["id"])["chat"] == GROUP, "задача помнит чат, откуда её заказали")
-poster.post = lambda path, text, target: (True, f"{target}: опубликовано")
+poster.post = lambda path, text, target, extra=None: (True, f"{target}: опубликовано")
 
 
 def tell(text):                       # как webui._tell: без адреса

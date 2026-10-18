@@ -184,6 +184,9 @@ def run_step(step, ctx, log_path, index):
     if op == "yt_audience":
         return _yt_audience(step, log_path, index)
 
+    if op == "yt_details":
+        return _yt_details(step, ctx, log_path, index)
+
     if op == "publish_more":
         # Instagram 451: кнопка экрана подписи — «Далее» (share_button), за
         # ней окно «О Reels» со СВОЕЙ кнопкой «Поделиться» (живьём 2026-10-16:
@@ -288,6 +291,167 @@ def run_step(step, ctx, log_path, index):
         return f"введён текст ({len(value)} символов)"
 
     raise StepFailed(f"неизвестная операция: {op}")
+
+
+# ----------------------------------------- YouTube: описание и теги
+#
+# Просьба 2026-10-19: «постить на ютуб с тегами — дипсик подбирал теги и
+# вбивал». Экран «Добавьте информацию» → «Развернуть» → строки без подписей в
+# дереве (Compose): «Добавьте описание» — находим по снимку; «Атрибуты:
+# Использование ИИ, Теги» — последняя строка над «Свернуть», внутри поле
+# «Добавьте теги». Тег — по одному, каждый с Enter: через запятую приложение
+# склеивает всё в один тег. Снято живьём на Redmi (YouTube, Ease.motion).
+
+YT_EXPAND = ["Развернуть", "Expand", "Show more", "Mostrar más", "Ver más", "Más"]
+YT_COLLAPSE = ["Свернуть", "Collapse", "Show less", "Mostrar menos", "Ver menos", "Contraer"]
+YT_ADD_TAGS = ["Добавьте теги", "Add tags", "Agrega etiquetas", "Añade etiquetas",
+               "Agregar etiquetas", "Añadir etiquetas"]
+YT_DESC_WORDS = ("описан", "descrip")
+ASK_ROW_AT = """Снимок экрана телефона, {w}x{h} пикселей. Это экран сведений о
+видео YouTube со списком строк настроек. Есть ли строка {labels}? Если есть —
+ответь {{"x": число, "y": число, "надпись": "как написано в строке"}}: центр
+строки в пикселях этого снимка. Нет такой строки — {{"нет": true}}."""
+
+
+def _exact(nodes, words):
+    low = {w.lower() for w in words}
+    return next((n for n in nodes or [] if n.clickable
+                 and (n.text or n.desc).strip().lower() in low), None)
+
+
+def _on_details(nodes, step):
+    """Вернулись на экран сведений: на месте кнопка «Загрузить»."""
+    return ui.find_any(nodes, step.get("upload", [{"rid": "upload_bottom_button"}])) is not None
+
+
+def _calm_keyboard():
+    """Убрать клавиатуру перед прокруткой. Возврат на экран сведений ставит
+    курсор в поле НАЗВАНИЯ и открывает клавиатуру; прокрутка по ней — это
+    набор жестом: в название приписалось «by» (живьём 2026-10-19)."""
+    for _ in range(2):
+        if not device.keyboard_shown():
+            return True
+        device.hide_keyboard()
+        human.pause(0.6, 0.9)
+    return not device.keyboard_shown()
+
+
+def _title_text(nodes, step):
+    """Текст поля названия. У YouTube оно без id (живьём 2026-10-19), поэтому
+    запасной путь — поле ввода в верхней трети экрана сведений."""
+    field = ui.find_any(nodes, step.get("title", [{"rid": "title_edit_text"}]))
+    if field is None:
+        field = next((n for n in nodes or [] if str(getattr(n, "cls", "")).endswith("EditText")
+                      and 0 < n.bounds[1] < 900), None)
+    return (field.text if field is not None else "").strip()
+
+
+def _back_to_details(step):
+    for _ in range(3):
+        nodes = ui.dump(retries=2, tolerant=True)
+        if _on_details(nodes, step):
+            return True
+        device.back()
+        human.pause(1.0, 1.5)
+    return _on_details(ui.dump(retries=2, tolerant=True), step)
+
+
+def _yt_details(step, ctx, log_path, index):
+    """Описание целиком и теги — в «Развернуть» экрана сведений YouTube."""
+    desc = str(ctx.get("description") or "").strip()
+    tags = list(ctx.get("tags") or [])
+    if desc == str(ctx.get("caption") or "").strip():
+        desc = ""                                   # то же, что название, — незачем
+    if not desc and not tags:
+        return "описания и тегов нет — пропускаю"
+    notes = []
+    w, h = adb.screen_size()
+    nodes = ui.dump(retries=2, tolerant=True)
+    more = _exact(nodes, YT_EXPAND)
+    if more is not None:
+        ui.tap_node(more)
+        human.pause(1.5, 2.2)
+
+    if desc:
+        hit = _vision_point(ASK_ROW_AT.replace(
+            "{labels}", "«Добавьте описание» (или «Описание», «Add description», «Agrega una descripción»)"))
+        if hit and any(word in hit[2].lower() for word in YT_DESC_WORDS):
+            adb.tap(hit[0], hit[1])
+            human.pause(2.5, 3)
+            if _on_details(ui.dump(retries=2, tolerant=True), step):
+                notes.append("строка описания не открылась")
+            else:
+                device.type_text(desc)
+                human.pause(0.8, 1.2)
+                device.hide_keyboard()
+                notes.append(f"описание: {len(desc)} знаков"
+                             + ("" if _back_to_details(step) else " [!] не вернулся к сведениям"))
+        else:
+            notes.append("строку описания не нашёл — описание только в названии")
+
+    if tags:
+        row = None
+        for _ in range(4):
+            if not _calm_keyboard():
+                break                                   # прокручивать по клавиатуре нельзя
+            nodes = ui.dump(retries=2, tolerant=True)
+            fold = _exact(nodes, YT_COLLAPSE)
+            if fold is not None and fold.bounds[1] < h * 0.95:
+                rows = [n for n in nodes if n.clickable and n.bounds[0] <= 2 and n.bounds[2] >= w - 2
+                        and abs(n.bounds[3] - fold.bounds[1]) < 40]
+                if rows:
+                    row = rows[-1]
+                    break
+            adb.shell(f"input swipe {w // 2} {int(h * 0.75)} {w // 2} {int(h * 0.4)} 400", check=False)
+            human.pause(1.0, 1.4)
+        field = None
+        if row is not None:
+            ui.tap_node(row)
+            human.pause(2.5, 3)
+            field = _exact(ui.dump(retries=2, tolerant=True), YT_ADD_TAGS)
+        if field is None:
+            notes.append("поле тегов не нашёл — теги не поставлены")
+            _back_to_details(step)
+        else:
+            ui.tap_node(field)
+            human.pause(1.5, 2)
+            for tag in tags:
+                device.type_text(tag)
+                human.pause(0.4, 0.7)
+                adb.shell("input keyevent 66", check=False)      # Enter — отдельный тег
+                human.pause(0.6, 0.9)
+            chips = sum(1 for n in ui.dump(retries=2, tolerant=True)
+                        if any((n.text or n.desc).startswith(t + ",") for t in tags))
+            device.hide_keyboard()
+            notes.append(f"теги: {chips} из {len(tags)}"
+                         + ("" if _back_to_details(step) else " [!] не вернулся к сведениям"))
+    _calm_keyboard()
+    # Название — то, что вписали. Изменилось (набор жестом, автозамена) —
+    # не публикуем: испорченное название на YouTube хуже остановки.
+    title = str(ctx.get("caption") or "").strip()
+    for _ in range(3):
+        nodes = ui.dump(retries=2, tolerant=True)
+        if _on_details(nodes, step):
+            break
+        device.back()
+        human.pause(1, 1.4)
+    seen = _title_text(nodes, step)
+    if not seen:
+        # Поле названия уехало вверх за край — вернуть список к началу
+        # (клавиатура уже убрана, прокрутка безопасна) и прочитать.
+        w, h = adb.screen_size()
+        for _ in range(3):
+            adb.shell(f"input swipe {w // 2} {int(h * 0.3)} {w // 2} {int(h * 0.75)} 400", check=False)
+            human.pause(0.8, 1.1)
+            nodes = ui.dump(retries=2, tolerant=True)
+            seen = _title_text(nodes, step)
+            if seen:
+                break
+    _snap(log_path, index, "details")
+    if title and seen and seen != title and not title.startswith(seen.rstrip("…. ")):
+        raise StepFailed(f"название на экране изменилось: «{seen[:60]}» вместо «{title[:60]}» — "
+                         "не публикую. Дерево экрана сохранено в " + str(log_path))
+    return "; ".join(notes)
 
 
 # ------------------------------------------------- YouTube: аудитория
@@ -856,8 +1020,9 @@ def wait_upload(package, video_path, log):
             return False
 
 
-def post(video_path, caption, target, recipes=None):
-    """Опубликовать видео в одну соцсеть. Возвращает (успех, отчёт)."""
+def post(video_path, caption, target, recipes=None, extra=None):
+    """Опубликовать видео в одну соцсеть. Возвращает (успех, отчёт).
+    extra — что ещё нужно маршруту: описание и теги YouTube (`yt_details`)."""
     recipes = recipes or load_recipes()
     if target not in recipes:
         # Через Log, а не голой строкой: иначе при живом журнале сообщение
@@ -923,7 +1088,7 @@ def post(video_path, caption, target, recipes=None):
             raise StepFailed(f"{package} не открылся")
         report.append("приложение открыто на экране публикации")
 
-        ctx = {"caption": caption, "video": video_path}
+        ctx = {"caption": caption, "video": video_path, **(extra or {})}
         for i, step in enumerate(recipe["steps"], start=1):
             line = run_step(step, ctx, log_path, i)
             report.append(f"  {i:2d}. {line}")

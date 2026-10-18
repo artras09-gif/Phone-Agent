@@ -21,6 +21,8 @@ os.makedirs(config.QUEUE_DIR)
 import jobs          # noqa: E402
 import postspec      # noqa: E402
 import poster        # noqa: E402
+import yttags  # noqa: E402
+yttags.suggest = lambda caption, timeout=40: ["тег", "ещё тег"]  # без модели
 import scheduler     # noqa: E402
 import telegram_bot as bot  # noqa: E402
 
@@ -53,7 +55,7 @@ BODY = ("Donald Trump volvió a sorprender con su actitud despreocupada: «La ve
 POST = TITLE + "\n\n" + BODY
 
 posted = {}
-poster.post = lambda path, text, target: (posted.__setitem__(target, text) or (True, f"{target}: ok"))
+poster.post = lambda path, text, target, extra=None: (posted.__setitem__(target, text) or (True, f"{target}: ok"))
 
 
 def send_video(caption):
