@@ -407,49 +407,78 @@ def _shot_youtube(folder, w, h):
     return path
 
 
-IG_INSIGHTS = ["Статистика", "Insights", "Estadísticas", "Estadisticas"]
-IG_DASHBOARD = ["Профессиональная панель", "Панель для профессионалов", "Professional dashboard",
-                "Panel para profesionales", "Panel profesional"]
-IG_SEE_ALL = ["Статистика аккаунта", "Account insights", "Estadísticas de la cuenta"]
+# Живьём 2026-10-18 (Redmi, личный аккаунт): ☰ профиля → «Настройки и
+# действия» → внизу раздел «Статистика и инструменты» → «Ваша панель» → в
+# блоке «Статистика» строка «Просмотры» → экран «Статистика · Обзор»
+# (просмотры, прирост подписчиков, график, просмотры по типу контента) — тот
+# же, что «Estadísticas · Resumen» на снимке человека. У профессиональных
+# аккаунтов пункт зовётся «Профессиональная панель» или сразу «Статистика».
+IG_ENTRY = ["Ваша панель", "Your dashboard", "Tu panel", "Профессиональная панель",
+            "Professional dashboard", "Panel profesional", "Panel para profesionales",
+            "Статистика", "Insights", "Estadísticas"]
+IG_VIEWS = ["Просмотры", "Views", "Visualizaciones"]
+IG_INSIGHTS_TITLE = ["Статистика", "Insights", "Estadísticas"]
+IG_SHEET_OK = ["Продолжить", "Continue", "Continuar"]
+
+
+def _row(nodes, label):
+    """Нажимаемая строка списка, внутри которой стоит подпись (сама подпись
+    обычно не нажимается, а весь экран-контейнер — слишком большая цель)."""
+    rows = [n for n in nodes if n.clickable and n.bounds[1] <= label.bounds[1]
+            and n.bounds[3] >= label.bounds[3] and n.bounds[3] - n.bounds[1] < 400]
+    return min(rows, key=lambda n: n.bounds[3] - n.bounds[1]) if rows else label
+
+
+def _find_scrolling(words, w, h, swipes=8):
+    """Пункт списка по точной подписи, листая вниз. (узел, дерево) или (None, дерево)."""
+    nodes = []
+    for _ in range(swipes + 1):
+        nodes = ui.dump(retries=2, tolerant=True)
+        for word in words:                                # порядок = приоритет
+            hit = next((n for n in nodes if (n.text or n.desc).strip() == word
+                        and n.bounds[3] > n.bounds[1] and n.bounds[1] > h * 0.08), None)
+            if hit is not None:
+                return hit, nodes
+        adb.shell(f"input swipe {w // 2} {int(h * 0.8)} {w // 2} {int(h * 0.35)} 450", check=False)
+        human.pause(1.0, 1.4)
+    return None, nodes
 
 
 def _shot_instagram(folder, w, h):
-    """Профессиональный аккаунт — «Статистика» (Insights, как на снимке человека
-    2026-10-18: «Estadísticas · Resumen»). Путь: ☰ профиля → «Статистика»;
-    нет — «Профессиональная панель» → «Статистика аккаунта». У личного
-    аккаунта статистики нет — снимок профиля."""
+    """«Статистика · Обзор» Instagram (как «Estadísticas · Resumen» у человека)."""
     nodes = ui.dump(retries=2, tolerant=True)
     menu = [n for n in nodes if n.clickable and n.bounds[1] < h * 0.12 and n.bounds[0] > w * 0.82]
-    if menu:
-        ui.tap_node(max(menu, key=lambda n: n.bounds[0]))   # ☰
-        human.pause(1.5, 2.2)
-        item = _pick(ui.dump(retries=2, tolerant=True), IG_INSIGHTS, h, exact=True)
-        if item is not None:
-            ui.tap_node(item)
+    if not menu:
+        return _snap(folder, "instagram")
+    ui.tap_node(max(menu, key=lambda n: n.bounds[0]))       # ☰ — «Параметры»
+    human.pause(2, 2.5)
+    entry, nodes = _find_scrolling(IG_ENTRY, w, h)
+    if entry is None:
+        device.back()
+        return _snap(folder, "instagram")                    # хотя бы профиль
+    ui.tap_node(_row(nodes, entry))
+    human.pause(4, 5)
+    backs = 2                                                # к настройкам и к профилю
+    nodes = ui.dump(retries=2, tolerant=True)
+    if (entry.text or entry.desc).strip() not in IG_INSIGHTS_TITLE:
+        # Панель. Первый раз поверх неё шторка «Посмотрите статистику…» с
+        # «Продолжить» — закрываем «назад», ничего не принимая. Ссылку
+        # «Выключить статистику» не трогаем никогда.
+        if any((n.text or n.desc).strip() in IG_SHEET_OK and n.clickable for n in nodes):
+            device.back()
+            human.pause(1.2, 1.6)
+            nodes = ui.dump(retries=2, tolerant=True)
+        views = next((n for n in nodes if (n.text or n.desc).strip() in IG_VIEWS
+                      and h * 0.15 < n.bounds[1] < h * 0.6), None)
+        if views is not None:
+            ui.tap_node(views)
             human.pause(6, 7)
-            path = _snap(folder, "instagram")
-            device.back()
-            human.pause(0.8, 1.2)
-            device.back()
-            return path
-        device.back()                                        # закрыть меню
-        human.pause(0.8, 1.2)
-        nodes = ui.dump(retries=2, tolerant=True)
-    pro = _pick(nodes, IG_DASHBOARD, h)
-    if pro is not None:
-        ui.tap_node(pro)
-        human.pause(4, 5)
-        more = _pick(ui.dump(retries=2, tolerant=True), IG_SEE_ALL, h)
-        if more is not None:
-            ui.tap_node(more)
-            human.pause(5, 6)
-        path = _snap(folder, "instagram")
+            backs = 3
+    path = _snap(folder, "instagram")
+    for _ in range(backs):
         device.back()
         human.pause(0.8, 1.2)
-        if more is not None:
-            device.back()
-        return path
-    return _snap(folder, "instagram")
+    return path
 
 
 META_SUITE = "com.facebook.pages.app"
