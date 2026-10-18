@@ -725,7 +725,7 @@ GROUP_HELLO = ("Работаю в этом чате — как в личке:\n"
                "• /queue, /cancel 5, /status, /stop, /links\n"
                "• Темы: /here — всё в этой теме; /here видео, /here ссылки, "
                "/here статистика — одно дело сюда; /everywhere — во всех темах\n"
-               "• /stats — снимки статистики всех сетей и цифры, /stats сейчас — снять свежие\n\n"
+               "• /stats — снять статистику всех сетей сейчас (снимки экранов)\n\n"
                "Публиковать может любой участник этого чата.")
 PRIVACY_HINT = ("\n\n⚠ Сейчас я вижу в этом чате только команды и ответы на мои сообщения. "
                 "Чтобы видел все видео и ссылки: сделай меня администратором чата — или в "
@@ -878,12 +878,13 @@ def send_album(items, chat_id=None, thread=None):
         return False
 
 
-def send_shots(chat_id=None, thread=None):
-    """Последние снимки экранов статистики — альбомом. True — ушли."""
+def send_shots(chat_id=None, thread=None, fresh=False):
+    """Последние снимки экранов статистики — альбомом. True — ушли.
+    fresh — только сегодняшние (только что снятые)."""
     import accstats
 
     items, day = accstats.latest_shots()
-    if not items:
+    if not items or (fresh and day != dt.date.today().isoformat()):
         return False
     stamp = "" if day == dt.date.today().isoformat() else f" (снято {day[8:10]}.{day[5:7]})"
     pics = []
@@ -1463,8 +1464,7 @@ def _command(text, addressed, chat_id, sender):
              f"/links — подборка (сама приходит: {when})\n"
              "/links 20 — последние 20, даже если уже присылал\n"
              "/status — что происходит\n"
-             "/stats — статистика: снимки экранов аналитики всех сетей и цифры; "
-             "/stats сейчас — снять свежие\n"
+             "/stats — снять статистику всех сетей сейчас и прислать снимками экранов\n"
              "/stop — прервать текущее действие", keyboard=True)
         return True
     if text.startswith("/status"):
@@ -1486,20 +1486,7 @@ def _command(text, addressed, chat_id, sender):
         send(postspec.TEMPLATE_HELP)
         return True
     if text.startswith("/stats") or (addressed and low.startswith("статистика")):
-        import accstats
-        import daystats
-        if re.search(r"сейчас|now|снять|обнови", low):
-            # Свежие снимки — действие с телефоном: в общую очередь. Занят —
-            # снимем, как освободится (сторож расписания видит просьбу).
-            accstats.request_now(reply_address())
-            send("Сниму статистику со всех сетей — пришлю снимками, когда телефон "
-                 "освободится (обычно 2–3 минуты).")
-            return True
-        if not send_shots():
-            send("Снимков статистики ещё нет — агент снимает их сам в "
-                 + ", ".join(config.ACCOUNT_STATS_TIMES)
-                 + ". Снять сейчас: /stats сейчас")
-        send(daystats.day_text())
+        _snap_stats()
         return True
     if text.startswith("/cancel"):
         _cmd_cancel(text)
@@ -1528,6 +1515,53 @@ def _command(text, addressed, chat_id, sender):
         _cmd_links(text)
         return True
     return False
+
+
+def _snap_stats():
+    """/stats — снять экраны статистики ВСЕХ сетей прямо сейчас и прислать
+    альбомом сюда же (2026-10-18: «нужны именно тогда, когда я их запрошу»).
+
+    Съёмка — действие с телефоном, поэтому через общую очередь действий.
+    Телефон занят — просьба записывается, и сторож снимет сразу, как он
+    освободится. Уже снимаем — второй раз не начинаем.
+    """
+    import accstats
+    import runlog
+
+    address = reply_address()
+    role = getattr(_REPLY, "role", None) or "stats"
+
+    def work():
+        reply_to(address, role)
+        try:
+            log = runlog.Log("статистика по запросу")
+            accstats.collect_all(log=log)
+            if not send_shots(fresh=True):
+                lines = [ln.strip() for ln in log.text().splitlines() if ln.strip()]
+                send("Снимки статистики не получились: "
+                     + (lines[-1] if len(lines) > 1 else "телефон не ответил")
+                     + ". Телефон подключён и разблокирован?")
+        finally:
+            set_reply(None)
+
+    if SUBMIT is None:
+        send("Снимаю статистику со всех сетей — пришлю снимками через 2–3 минуты.")
+        work()
+        return
+    try:
+        SUBMIT("статистика по запросу", work)
+        send("Снимаю статистику со всех сетей — пришлю снимками через 2–3 минуты.")
+    except Deferred:
+        accstats.request_now(address)
+        send("Сниму статистику, как только служба телефона его освободит, — пришлю сюда.")
+    except RuntimeError as e:
+        busy = str(e).split(": ", 1)[-1].strip()
+        if "статистик" in busy:
+            send("Уже снимаю статистику — пришлю, как будет готово.")
+        else:
+            accstats.request_now(address)
+            send(f"Телефон сейчас занят ({busy}) — сниму статистику сразу, как "
+                 "освободится, и пришлю сюда.")
 
 
 def _take_video(video, text, spec, size_mb=0, where=None):
@@ -2090,9 +2124,38 @@ _OFFSET = {}                 # номер бота -> с какого сообщ
 _HANDLING = threading.Lock()
 
 
+# Тоже на диске: Telegram считает сообщение прочитанным только на СЛЕДУЮЩЕМ
+# getUpdates. Закрыли программу сразу после ответа — при запуске та же пачка
+# приходила снова, и на /stats бот отвечал дважды (живьём 2026-10-18).
+def _offset_path():
+    return os.path.join(config.BASE, "tg_offset.json")
+
+
+def _offset_saved():
+    try:
+        with open(_offset_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _offset_store(bot, n):
+    data = _offset_saved()
+    if data.get(bot) == n:
+        return
+    data[bot] = n
+    try:
+        with open(_offset_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except OSError:
+        pass
+
+
 def _offset_for(token):
     with _HANDLING:
-        return _OFFSET.get(_bot_of(token), 0)
+        bot = _bot_of(token)
+        return _OFFSET.get(bot) or int(_offset_saved().get(bot) or 0)
 
 
 def _poll_once(offset, generation=None):
@@ -2122,6 +2185,7 @@ def _poll_once(offset, generation=None):
             offset = upd["update_id"] + 1
             _OFFSET[mark] = offset
             _dispatch(upd)
+            _offset_store(mark, offset)
     return offset
 
 

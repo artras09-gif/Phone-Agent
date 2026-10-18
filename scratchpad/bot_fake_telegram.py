@@ -241,6 +241,27 @@ def fake_post(path, text, target):
 
 
 poster.post = fake_post
+
+# Съёмка статистики на «телефоне» — подменена: живой телефон тест не трогает.
+import accstats  # noqa: E402
+snapped = []
+release_snap = threading.Event()
+release_snap.set()
+
+
+def fake_collect(nets=None, log=None):
+    """Съёмка на «телефоне»: кладёт три снимка, как настоящая."""
+    snapped.append(1)
+    release_snap.wait(5)
+    folder = accstats.shots_dir()
+    os.makedirs(folder, exist_ok=True)
+    for name in ("youtube", "tiktok", "instagram"):
+        open(os.path.join(folder, name + ".png"), "wb").write(b"\x89PNG\r\n\x1a\n" + os.urandom(20000))
+    return {}
+
+
+accstats.collect_all = fake_collect
+
 poster.failure_files = lambda d: (SCREEN_PNG, "кнопки: Далее, Отмена")
 
 bot.API = URL
@@ -765,6 +786,8 @@ say(not texts(OWNER, m) and len(texts(GROUP, m)) == 1, "больше никуд�
 m = FAKE.mark()
 import datetime as _dt  # noqa: E402
 late = _dt.datetime.combine(_dt.date.today(), _dt.time(22, 1))
+say(not scheduler.maybe_day_stats(late), "по умолчанию по часам ничего не шлёт — только по /stats")
+config.STATS_TIMES = ["22:00"]           # включили — механизм работает
 said = scheduler.maybe_day_stats(late)
 day = last_text(GROUP, m, "Работа агента")
 say(said and day and str(day.get("message_thread_id")) == str(STATS), "в 22:00 — итог дня в «Статистика»")
@@ -775,31 +798,38 @@ say(not scheduler.maybe_day_stats(late), "второй раз за день — 
 say(not scheduler.maybe_day_stats(late.replace(hour=21)), "до 22:00 — не шлёт")
 m = FAKE.mark()
 say_to(GROUP, FRIEND, "/stats", thread=STATS)
-say(last_text(GROUP, m, "Работа агента"), "/stats в «Статистика» — итог за сегодня")
-import accstats  # noqa: E402
-shots = accstats.shots_dir()
-os.makedirs(shots, exist_ok=True)
-for name, txt in (("youtube", "Просмотры: 108"), ("tiktok", "Лайки: 0"), ("instagram", "подписчики: 0")):
-    open(os.path.join(shots, name + ".png"), "wb").write(b"\x89PNG\r\n\x1a\n" + os.urandom(20000))
-    open(os.path.join(shots, name + ".txt"), "w", encoding="utf-8").write(txt)
+say(last_text(GROUP, m, "Снимаю статистику"), "/stats в «Статистика» — снимает статистику сейчас")
+idle()
+idle()
+snapped.clear()
+release_snap.clear()
 m = FAKE.mark()
 say_to(GROUP, FRIEND, "/stats", thread=STATS)
+say(last_text(GROUP, m, "Снимаю статистику"), "/stats — сразу «снимаю статистику», без «ждите 21:30»")
+say_to(GROUP, FRIEND, "/stats", thread=STATS)
+say(last_text(GROUP, m, "Уже снимаю"), "второй /stats во время съёмки — «уже снимаю», не вторая съёмка")
+release_snap.set()
 album = wait(lambda: [p for _, p in FAKE.calls("sendMediaGroup", m)])
 media = json.loads(album[-1]["media"]) if album else []
 say(album and len(media) == 3 and str(album[-1].get("message_thread_id")) == str(STATS),
-    "/stats — альбом из трёх снимков статистики в тему «Статистика»")
+    "снял — альбом из трёх снимков в тему «Статистика»")
 say(media and [m_["caption"] for m_ in media] == ["YouTube Studio — аналитика", "Instagram — статистика",
                                                    "TikTok Studio — аналитика"],
     f"порядок и подписи: {[m_['caption'] for m_ in media]}")
 say(album and all(isinstance(album[-1].get(f"p{i}"), bytes) and len(album[-1][f"p{i}"]) > 20000
                   for i in range(3)), "снимки дошли целыми (multipart)")
+say(len(snapped) == 1, f"снимали один раз: {len(snapped)}")
+idle()
+busy_ev = threading.Event()
+webui.RUNNER.start("сессия tiktok 10 мин", lambda: busy_ev.wait(10))
 m = FAKE.mark()
-say_to(GROUP, FRIEND, "/stats сейчас", thread=STATS)
-say(last_text(GROUP, m, "Сниму статистику") and os.path.isfile(accstats._request_path()),
-    "«/stats сейчас» — просьба записана, ответ в тему")
-say(accstats.due(), "сторож увидит просьбу и снимет при свободном телефоне")
+say_to(GROUP, FRIEND, "/stats", thread=STATS)
+say(last_text(GROUP, m, "занят"), "телефон занят сессией — «сниму, как освободится»")
+say(os.path.isfile(accstats._request_path()), "просьба записана — сторож снимет, когда телефон освободится")
 asked = accstats.take_request()
 say(asked and asked["address"] == f"{GROUP}:{STATS}", f"ответ уйдёт туда, откуда просили: {asked}")
+busy_ev.set()
+idle()
 m = FAKE.mark()
 say_to(GROUP, FRIEND, "/status", thread=LINKS)
 st = last_text(GROUP, m, "В очереди")

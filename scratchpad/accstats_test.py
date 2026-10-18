@@ -191,6 +191,8 @@ say(accstats._shot_facebook(folder, 1080, 2400) is None, "нет Meta Business S
 print("\n--- когда снимать ---")
 import telegram_bot  # noqa: E402
 late = dt.datetime.combine(dt.date.today(), dt.time(21, 31))
+say(config.ACCOUNT_STATS_TIMES == [], "по умолчанию по часам не снимаем — только по /stats")
+config.ACCOUNT_STATS_TIMES = ["21:30"]       # включили — механизм работает
 with jobs.connect() as con:
     con.execute("DELETE FROM account_stats")
 telegram_bot.load_settings = lambda: {"token": "", "owner": ""}

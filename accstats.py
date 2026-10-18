@@ -572,8 +572,9 @@ def _answer(address):
 
         telegram_bot.reply_to(address, role="stats")
         try:
-            telegram_bot.send_shots()
-            telegram_bot.send(daystats.day_text())
+            if not telegram_bot.send_shots(fresh=True):
+                telegram_bot.send("Снимки статистики не получились — телефон подключён "
+                                  "и разблокирован? Подробности — в журнале окна.")
         finally:
             telegram_bot.set_reply(None)
     except Exception:
@@ -581,6 +582,14 @@ def _answer(address):
 
 
 def _collect_all(nets=None, log=None):
+    # Только свежее: в альбом не должны попасть снимки прошлой съёмки, если
+    # эта где-то не удалась.
+    import glob
+    for old in glob.glob(os.path.join(shots_dir(), "*.png")):
+        try:
+            os.remove(old)
+        except OSError:
+            pass
     if not device.unlock():
         if log is not None:
             log.append("не смог разблокировать телефон — аналитику не снял")

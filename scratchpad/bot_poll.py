@@ -124,6 +124,19 @@ say(tb._offset_for("7000000001:" + "B" * 35) == 50,
 say(tb._offset_for("7000000002:" + "C" * 35) == 0, "другой бот — с нуля")
 tb._OFFSET.clear()
 
+print("\n--- перезапуск программы не повторяет ответы (2026-10-18) ---")
+import tempfile  # noqa: E402
+import config  # noqa: E402
+saved_base = config.BASE
+config.BASE = tempfile.mkdtemp(prefix="pa_offset_")
+tb._offset_store("7000000001", 77)
+tb._OFFSET.clear()                       # «новый процесс» — в памяти пусто
+say(tb._offset_for("7000000001:" + "B" * 35) == 77,
+    "после перезапуска — с записанного на диск места, а не с нуля (иначе /stats отвечал дважды)")
+say(tb._offset_for("7000000002:" + "C" * 35) == 0, "у другого бота — своё место")
+config.BASE = saved_base
+tb._OFFSET.clear()
+
 print("\n--- поток не умирает ---")
 import threading  # noqa: E402
 import time  # noqa: E402
