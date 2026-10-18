@@ -84,7 +84,9 @@ def telegram_gate(bot=""):
     отпускать его некому и незачем.
     """
     name = f"telegram.{bot}" if bot else "telegram"
-    return gate.Gate(name, 1, os.path.join(config.BASE, ".gates"))
+    # `Held`, а не `Gate`: окно отпускает этот замок из другого потока, чем
+    # брало (см. gate.Held) — с `Gate` он не отпускался вовсе.
+    return gate.Held(name, os.path.join(config.BASE, ".gates"))
 
 
 def bot_busy(bot):

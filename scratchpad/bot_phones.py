@@ -128,6 +128,19 @@ say(fleet.bot_busy(bot._bot_of(TOKEN_A)), "бот A занят этим проц
 say(not fleet.bot_busy(bot._bot_of(TOKEN_B)), "бот B свободен — его возьмёт служба телефона B")
 ga.release()
 
+print("\n--- замок бота отпускается из любого потока ---")
+held = fleet.telegram_gate("7000000009")
+threading.Thread(target=lambda: held.acquire(timeout=0.5)).start()
+time.sleep(0.3)
+say(fleet.bot_busy("7000000009"), "взяли в одном потоке — занят")
+t = threading.Thread(target=held.release)
+t.start(); t.join()
+say(not fleet.bot_busy("7000000009"), "отпустили из ДРУГОГО потока — свободен (раньше оставался занят)")
+again = fleet.telegram_gate("7000000009")
+again.acquire(timeout=0.5)
+say(again.held(), "снова взяли — без ложного «бота ведёт другой процесс»")
+again.release()
+
 print("\n--- служба телефона: «Сейчас» публикует цикл службы, не поток бота ---")
 said = []
 bot.send = lambda text, **k: said.append(text) or True

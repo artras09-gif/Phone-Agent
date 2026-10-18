@@ -149,6 +149,55 @@ class Gate:
         return False
 
 
+class Held:
+    """Замок на весь ПРОЦЕСС: взять в одном потоке, отпустить в любом.
+
+    `Gate` помнит занятый слот в переменной потока — для очереди к модели это
+    правильно (берёт и отдаёт один и тот же поток). А замок Telegram-бота окно
+    берёт при запуске, а отпускает из потока, где нажали «Сохранить»: `Gate`
+    там «не держит» ничего, release молча не отпускал, и окно упиралось в
+    СВОЙ же замок — «бота ведёт служба телефона в другом процессе» при
+    повторной вставке того же токена (жалоба 2026-10-18).
+    """
+
+    def __init__(self, name, root):
+        self.name = name
+        self.root = root
+        self._fd = None
+        self._lock = threading.Lock()
+
+    def held(self):
+        return self._fd is not None
+
+    def acquire(self, timeout=None, poll=0.05):
+        with self._lock:
+            if self._fd is not None:
+                return True
+        os.makedirs(self.root, exist_ok=True)
+        path = os.path.join(self.root, f"{self.name}.0.slot")
+        deadline = None if timeout is None else time.time() + timeout
+        while True:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+            if _try_lock(fd):
+                with self._lock:
+                    self._fd = fd
+                return True
+            os.close(fd)
+            if deadline is not None and time.time() >= deadline:
+                raise Timeout(f"«{self.name}» занят другим процессом")
+            time.sleep(poll)
+
+    def release(self):
+        with self._lock:
+            fd, self._fd = self._fd, None
+        if fd is not None:
+            _unlock(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 class _Passthrough:
     """Заглушка на случай «ограничивать нечего»: тот же вид, ничего не делает."""
 

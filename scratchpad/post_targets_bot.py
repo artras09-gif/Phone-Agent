@@ -162,6 +162,19 @@ time.sleep(0.3)
 say(handled.count("старый") == 1, "старый поток больше не принимает сообщений")
 say(telegram_bot.running(), "бот работает")
 
+print("\n--- тот же токен вставили ещё раз (жалоба 2026-10-18) ---")
+updates[NEW].append({"update_id": 6, "message": {"text": "после повторной вставки", "chat": {"id": 1}}})
+res = post("/api/telegram", json.dumps({"token": NEW}).encode())
+deadline = time.time() + 3
+while "после повторной вставки" not in handled and time.time() < deadline:
+    time.sleep(0.05)
+state = json.loads(urllib.request.urlopen(BASE_URL + "/api/state", timeout=10).read().decode("utf-8")) \
+    if "BASE_URL" in globals() else {}
+say(not webui._BOT_ELSEWHERE["yes"],
+    "не пишет «бота ведёт служба телефона в другом процессе» — это наш же замок")
+say(telegram_bot.running() and "после повторной вставки" in handled,
+    "бот снова опрашивает и принимает сообщения")
+
 print("\n--- токен, вставленный с мусором (2026-10-14: «HTTP Error 404») ---")
 say(telegram_bot.load_settings()["token"] == NEW,
     "вставили « \"bot<токен>\" » — сохранён чистый токен")

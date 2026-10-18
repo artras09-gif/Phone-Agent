@@ -554,7 +554,7 @@ def _start_bot():
     if not token:
         _drop_bot_gate()
         return
-    if _BOT_GATE["gate"] is not None and _BOT_GATE["bot"] != bot:
+    if _BOT_GATE["gate"] is not None and (_BOT_GATE["bot"] != bot or not _BOT_GATE["gate"].held()):
         telegram_bot.stop()
         _drop_bot_gate()
     if _BOT_GATE["gate"] is None:
