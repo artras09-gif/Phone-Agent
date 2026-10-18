@@ -296,17 +296,26 @@ def _read_profile(net, cfg, result):
             except OSError:
                 pass
     result.update(found)
-    if result["followers"] is None and not result["videos"]:
+    if result["followers"] is None and not result["videos"] and not readable:
+        # Экран прочитан, а цифр нет — новый пустой канал (живьём: Ease.motion
+        # без подписчиков и видео), это не сбой.
         result["why"] = result["why"] or "цифр на экране профиля не нашёл"
 
 
-def collect(net, log=None):
+def collect(net, log=None, shots=False):
     """Снять цифры профиля одной сети. {"followers", "videos", "why"}."""
     cfg = NETS[net]
     say = log.append if log is not None else (lambda s: None)
     result = {"followers": None, "videos": [], "why": ""}
     try:
         _read_profile(net, cfg, result)
+        if shots and "не мой профиль" not in result["why"] and net in SHOTS:
+            try:
+                w, h = adb.screen_size()
+                result["shot"] = SHOTS[net](shots_dir(), w, h)
+            except (adb.AdbError, RuntimeError, OSError) as e:
+                result["shot"] = None
+                say(f"  {TITLES[net]}: снимок статистики не вышел — {str(e)[:80]}")
     except (adb.AdbError, RuntimeError) as e:
         result["why"] = str(e)[:120]
     finally:
@@ -317,8 +326,184 @@ def collect(net, log=None):
         except Exception:
             pass
     say(f"  {TITLES[net]}: подписчики {result['followers']}, видео {len(result['videos'])}"
+        + (", снимок есть" if result.get("shot") else "")
         + (f" — {result['why']}" if result["why"] else ""))
     return result
+
+
+# ------------------------------------------------------- снимки экранов
+#
+# «Где сбор статистики скриншотами, как я просил?» (2026-10-17): человеку нужны
+# не только цифры, а сами экраны статистики — как его снимок YouTube Studio.
+# Снимаем родные экраны аналитики: YouTube Studio → «Аналитика», TikTok →
+# ☰ → TikTok Studio → «Статистика»; у личного Instagram аналитики нет —
+# снимаем профиль. Пути сняты живьём 2026-10-18 на Redmi.
+
+STUDIO = "com.google.android.apps.youtube.creator"
+
+
+def shots_dir(day=None):
+    day = day or dt.date.today()
+    return os.path.join(os.path.dirname(config.QUEUE_DIR), "analytics", day.isoformat())
+
+
+def _snap(folder, name):
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, f"{name}.png")
+    adb.screenshot(path)
+    return path if os.path.isfile(path) and os.path.getsize(path) > 10_000 else None
+
+
+def _installed(package):
+    return bool((adb.shell(f"pm path {package}", check=False) or "").strip())
+
+
+def _shot_tiktok(folder, w, h):
+    """С своего профиля: ☰ → TikTok Studio → «Статистика» → снимок."""
+    nodes = ui.dump(retries=2, tolerant=True)
+    menu = [n for n in nodes if n.clickable and n.bounds[1] < h * 0.12 and n.bounds[0] > w * 0.82]
+    if not menu:
+        return None
+    ui.tap_node(max(menu, key=lambda n: n.bounds[0]))      # крайняя правая — ☰
+    human.pause(1.5, 2.2)
+    studio = _pick(ui.dump(retries=2, tolerant=True), ["TikTok Studio"], h, exact=True) or \
+        next((n for n in ui.dump(retries=1, tolerant=True)
+              if (n.text or n.desc).strip() == "TikTok Studio"), None)
+    if studio is None:
+        device.back()
+        return None
+    ui.tap_node(studio)
+    human.pause(4, 5)
+    # Карточка «Статистика» — сразу под заголовком (её текста в дереве нет).
+    title = next((n for n in ui.dump(retries=2, tolerant=True)
+                  if (n.text or n.desc).strip() == "TikTok Studio" and n.bounds[1] < h * 0.15), None)
+    below = (title.bounds[3] if title else int(h * 0.081)) + int(h * 0.062)
+    adb.tap(int(w * 0.5), below)
+    human.pause(6, 7)
+    opened = any(w_ in (n.text or n.desc) for n in ui.dump(retries=2, tolerant=True)
+                 for w_ in ("Аналитика", "Analytics", "Analíticas", "Estadísticas"))
+    path = _snap(folder, "tiktok")
+    for _ in range(3 if opened else 2):                     # обратно к профилю
+        device.back()
+        human.pause(0.8, 1.2)
+    return path
+
+
+def _shot_youtube(folder, w, h):
+    """YouTube Studio → вкладка «Аналитика» (как снимок человека)."""
+    if not _installed(STUDIO):
+        return _snap(folder, "youtube")                      # хотя бы страница канала
+    device.open_app(STUDIO)
+    if not device.wait_for_app(STUDIO, timeout=25):
+        return None
+    human.pause(5, 6)
+    nodes = ui.dump(retries=2, tolerant=True)
+    bottom = sorted((n for n in nodes if n.clickable and n.bounds[1] > h * 0.86), key=lambda n: n.bounds[0])
+    y = (bottom[0].bounds[1] + bottom[0].bounds[3]) // 2 if bottom else int(h * 0.9)
+    adb.tap(int(w * 0.5), y)                                 # «Аналитика» — средняя из пяти
+    human.pause(6, 7)
+    path = _snap(folder, "youtube")
+    device.go_home()
+    return path
+
+
+IG_INSIGHTS = ["Статистика", "Insights", "Estadísticas", "Estadisticas"]
+IG_DASHBOARD = ["Профессиональная панель", "Панель для профессионалов", "Professional dashboard",
+                "Panel para profesionales", "Panel profesional"]
+IG_SEE_ALL = ["Статистика аккаунта", "Account insights", "Estadísticas de la cuenta"]
+
+
+def _shot_instagram(folder, w, h):
+    """Профессиональный аккаунт — «Статистика» (Insights, как на снимке человека
+    2026-10-18: «Estadísticas · Resumen»). Путь: ☰ профиля → «Статистика»;
+    нет — «Профессиональная панель» → «Статистика аккаунта». У личного
+    аккаунта статистики нет — снимок профиля."""
+    nodes = ui.dump(retries=2, tolerant=True)
+    menu = [n for n in nodes if n.clickable and n.bounds[1] < h * 0.12 and n.bounds[0] > w * 0.82]
+    if menu:
+        ui.tap_node(max(menu, key=lambda n: n.bounds[0]))   # ☰
+        human.pause(1.5, 2.2)
+        item = _pick(ui.dump(retries=2, tolerant=True), IG_INSIGHTS, h, exact=True)
+        if item is not None:
+            ui.tap_node(item)
+            human.pause(6, 7)
+            path = _snap(folder, "instagram")
+            device.back()
+            human.pause(0.8, 1.2)
+            device.back()
+            return path
+        device.back()                                        # закрыть меню
+        human.pause(0.8, 1.2)
+        nodes = ui.dump(retries=2, tolerant=True)
+    pro = _pick(nodes, IG_DASHBOARD, h)
+    if pro is not None:
+        ui.tap_node(pro)
+        human.pause(4, 5)
+        more = _pick(ui.dump(retries=2, tolerant=True), IG_SEE_ALL, h)
+        if more is not None:
+            ui.tap_node(more)
+            human.pause(5, 6)
+        path = _snap(folder, "instagram")
+        device.back()
+        human.pause(0.8, 1.2)
+        if more is not None:
+            device.back()
+        return path
+    return _snap(folder, "instagram")
+
+
+META_SUITE = "com.facebook.pages.app"
+META_INSIGHTS = ["Статистика", "Insights", "Estadísticas", "Estadisticas"]
+META_MORE = ["Ещё", "Еще", "More", "Más", "Menú", "Меню", "Menu"]
+
+
+def _shot_facebook(folder, w, h):
+    """Meta Business Suite на телефоне → «Статистика» (как «Estadísticas» на снимке
+    человека). Приложения нет — пропускаем: публикаций в Facebook агент не ведёт."""
+    if not _installed(META_SUITE):
+        return None
+    device.open_app(META_SUITE)
+    if not device.wait_for_app(META_SUITE, timeout=25):
+        return None
+    human.pause(5, 6)
+    nodes = ui.dump(retries=2, tolerant=True)
+    item = _pick(nodes, META_INSIGHTS, h, exact=True)
+    if item is None:
+        more = _pick(nodes, META_MORE, h, exact=True)
+        if more is not None:
+            ui.tap_node(more)
+            human.pause(2, 3)
+            item = _pick(ui.dump(retries=2, tolerant=True), META_INSIGHTS, h, exact=True)
+    if item is None:
+        device.go_home()
+        return None
+    ui.tap_node(item)
+    human.pause(6, 7)
+    path = _snap(folder, "facebook")
+    device.go_home()
+    return path
+
+
+SHOTS = {"tiktok": _shot_tiktok, "shorts": _shot_youtube, "reels": _shot_instagram}
+SHOT_FILES = {"tiktok": "tiktok", "shorts": "youtube", "reels": "instagram", "facebook": "facebook"}
+SHOT_TITLES = {"tiktok": "TikTok Studio — аналитика", "shorts": "YouTube Studio — аналитика",
+               "reels": "Instagram — статистика", "facebook": "Facebook — статистика (Meta Business Suite)"}
+
+
+def latest_shots():
+    """Снимки последнего дня: ([(путь, подпись)], дата) или ([], None)."""
+    root = os.path.join(os.path.dirname(config.QUEUE_DIR), "analytics")
+    days = sorted(d for d in os.listdir(root)) if os.path.isdir(root) else []
+    for day in reversed(days):
+        folder = os.path.join(root, day)
+        items = []
+        for net in ("shorts", "reels", "facebook", "tiktok"):
+            path = os.path.join(folder, f"{SHOT_FILES[net]}.png")
+            if os.path.isfile(path):
+                items.append((path, SHOT_TITLES[net]))
+        if items:
+            return items, day
+    return [], None
 
 
 def _table(con):
@@ -337,8 +522,36 @@ def save(net, data, at=None):
 
 
 def collect_all(nets=None, log=None):
-    """Пройти все сети по очереди и записать. Возвращает {сеть: данные}."""
-    jobs.log_event("account_stats", "попытка")
+    """Пройти все сети по очереди и записать. Возвращает {сеть: данные}.
+
+    Если снимали по просьбе «/stats сейчас» — снимки и цифры уходят туда,
+    откуда просили."""
+    asked = take_request()
+    if asked is None:
+        jobs.log_event("account_stats", "попытка")      # плановая — две в день
+    try:
+        return _collect_all(nets, log)
+    finally:
+        if asked is not None:
+            _answer(asked.get("address", ""))
+
+
+def _answer(address):
+    try:
+        import daystats
+        import telegram_bot
+
+        telegram_bot.reply_to(address, role="stats")
+        try:
+            telegram_bot.send_shots()
+            telegram_bot.send(daystats.day_text())
+        finally:
+            telegram_bot.set_reply(None)
+    except Exception:
+        pass
+
+
+def _collect_all(nets=None, log=None):
     if not device.unlock():
         if log is not None:
             log.append("не смог разблокировать телефон — аналитику не снял")
@@ -349,10 +562,17 @@ def collect_all(nets=None, log=None):
         for net in nets or config.FEED_APPS:
             if net not in NETS:
                 continue
-            data = collect(net, log)
+            data = collect(net, log, shots=True)
             if data["followers"] is not None or data["videos"]:
                 save(net, data)
             out[net] = data
+        try:
+            w, h = adb.screen_size()
+            fb = _shot_facebook(shots_dir(), w, h)
+            if log is not None and fb:
+                log.append("  Facebook: снимок статистики есть")
+        except (adb.AdbError, RuntimeError, OSError):
+            pass
     finally:
         try:
             device.keep_awake(False)
@@ -487,6 +707,29 @@ def report_text(now=None):
     return head + "\n\n" + "\n\n".join(blocks)
 
 
+def _request_path():
+    return os.path.join(os.path.dirname(config.QUEUE_DIR), "analytics", "requested.json")
+
+
+def request_now(address=""):
+    """Попросили «/stats сейчас» — снять при первой свободной минуте телефона и
+    прислать туда, откуда попросили."""
+    os.makedirs(os.path.dirname(_request_path()), exist_ok=True)
+    with open(_request_path(), "w", encoding="utf-8") as f:
+        json.dump({"address": address, "at": time.time()}, f)
+
+
+def take_request():
+    """Забрать просьбу (адрес, откуда просили) или None."""
+    try:
+        with open(_request_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        os.remove(_request_path())
+        return data
+    except (OSError, ValueError):
+        return None
+
+
 def due(now=None):
     """Пора ли снимать аналитику: время из ACCOUNT_STATS_TIMES прошло, а сегодня
     ещё не снимали, и бот настроен. Тема статистики не обязательна: снимки
@@ -497,6 +740,8 @@ def due(now=None):
     now = now or dt.datetime.now()
     if not telegram_bot.load_settings()["token"]:
         return False
+    if os.path.isfile(_request_path()):
+        return True                                   # «/stats сейчас»
     start = time.mktime(now.date().timetuple())
     with jobs.connect() as con:
         _table(con)

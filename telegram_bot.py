@@ -659,6 +659,8 @@ def day_stats(slot=""):
         if con.execute("SELECT 1 FROM events WHERE kind='stats_day' AND payload=?",
                        (mark,)).fetchone():
             return ""
+    for chat, topic in destinations("stats"):
+        send_shots(chat_id=chat, thread=topic)        # экраны статистики — альбомом
     if not post_stats(daystats.day_text()):
         return ""
     jobs.log_event("stats_day", mark)
@@ -723,7 +725,7 @@ GROUP_HELLO = ("Работаю в этом чате — как в личке:\n"
                "• /queue, /cancel 5, /status, /stop, /links\n"
                "• Темы: /here — всё в этой теме; /here видео, /here ссылки, "
                "/here статистика — одно дело сюда; /everywhere — во всех темах\n"
-               "• /stats — статистика за сегодня\n\n"
+               "• /stats — снимки статистики всех сетей и цифры, /stats сейчас — снять свежие\n\n"
                "Публиковать может любой участник этого чата.")
 PRIVACY_HINT = ("\n\n⚠ Сейчас я вижу в этом чате только команды и ответы на мои сообщения. "
                 "Чтобы видел все видео и ссылки: сделай меня администратором чата — или в "
@@ -804,7 +806,7 @@ def send(text, preview=True, chat_id=None, keyboard=False, thread=None):
     return ok
 
 
-def send_photo(image, caption="", chat_id=None):
+def send_photo(image, caption="", chat_id=None, thread=None):
     """Картинка (JPEG или PNG) с подписью. True — Telegram принял.
 
     multipart вручную: сторонних библиотек в проекте нет, а urllib умеет
@@ -818,9 +820,13 @@ def send_photo(image, caption="", chat_id=None):
         return False
     kind = "png" if image[:4] == b"\x89PNG" else "jpeg"
     boundary = "----pa" + secrets.token_hex(12)
+    fields = [("chat_id", target), ("caption", caption[:1000])]
+    topic = _thread_for(target, thread)
+    if topic:
+        fields.append(("message_thread_id", topic))     # тема группы
     head = "".join(
         f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'
-        for k, v in (("chat_id", target), ("caption", caption[:1000])))
+        for k, v in fields)
     body = (head.encode("utf-8")
             + (f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; '
                f'filename="screen.{kind}"\r\nContent-Type: image/{kind}\r\n\r\n').encode()
@@ -833,6 +839,61 @@ def send_photo(image, caption="", chat_id=None):
             return bool(json.loads(r.read().decode("utf-8")).get("ok"))
     except Exception:
         return False
+
+
+def send_album(items, chat_id=None, thread=None):
+    """Несколько снимков одним сообщением (до 10). items — [(байты, подпись)].
+    True — Telegram принял. Подпись первого — подпись альбома."""
+    import secrets
+
+    cfg = load_settings()
+    target = chat_id or current_chat() or cfg["owner"]
+    items = [(img, cap) for img, cap in items if img][:10]
+    if not cfg["token"] or not target or not items:
+        return False
+    if len(items) == 1:
+        return send_photo(items[0][0], items[0][1], chat_id=target, thread=thread)
+    boundary = "----pa" + secrets.token_hex(12)
+    media = [{"type": "photo", "media": f"attach://p{i}", "caption": cap[:1000]}
+             for i, (_, cap) in enumerate(items)]
+    fields = [("chat_id", str(target)), ("media", json.dumps(media, ensure_ascii=False))]
+    topic = _thread_for(target, thread)
+    if topic:
+        fields.append(("message_thread_id", str(topic)))
+    body = "".join(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'
+                   for k, v in fields).encode("utf-8")
+    for i, (img, _) in enumerate(items):
+        kind = "png" if img[:4] == b"\x89PNG" else "jpeg"
+        body += (f'--{boundary}\r\nContent-Disposition: form-data; name="p{i}"; '
+                 f'filename="shot{i}.{kind}"\r\nContent-Type: image/{kind}\r\n\r\n').encode()
+        body += bytes(img) + b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+    req = urllib.request.Request(
+        f"{api_base()}/bot{cfg['token']}/sendMediaGroup", data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return bool(json.loads(r.read().decode("utf-8")).get("ok"))
+    except Exception:
+        return False
+
+
+def send_shots(chat_id=None, thread=None):
+    """Последние снимки экранов статистики — альбомом. True — ушли."""
+    import accstats
+
+    items, day = accstats.latest_shots()
+    if not items:
+        return False
+    stamp = "" if day == dt.date.today().isoformat() else f" (снято {day[8:10]}.{day[5:7]})"
+    pics = []
+    for path, title in items:
+        try:
+            with open(path, "rb") as f:
+                pics.append((f.read(), title + stamp))
+        except OSError:
+            pass
+    return send_album(pics, chat_id=chat_id, thread=thread)
 
 
 def alert(text, image=None):
@@ -1401,7 +1462,9 @@ def _command(text, addressed, chat_id, sender):
              "Можно несколько сразу и с припиской — она станет заметкой.\n\n"
              f"/links — подборка (сама приходит: {when})\n"
              "/links 20 — последние 20, даже если уже присылал\n"
-             "/status — что происходит, /stats — статистика за сегодня\n"
+             "/status — что происходит\n"
+             "/stats — статистика: снимки экранов аналитики всех сетей и цифры; "
+             "/stats сейчас — снять свежие\n"
              "/stop — прервать текущее действие", keyboard=True)
         return True
     if text.startswith("/status"):
@@ -1423,7 +1486,19 @@ def _command(text, addressed, chat_id, sender):
         send(postspec.TEMPLATE_HELP)
         return True
     if text.startswith("/stats") or (addressed and low.startswith("статистика")):
+        import accstats
         import daystats
+        if re.search(r"сейчас|now|снять|обнови", low):
+            # Свежие снимки — действие с телефоном: в общую очередь. Занят —
+            # снимем, как освободится (сторож расписания видит просьбу).
+            accstats.request_now(reply_address())
+            send("Сниму статистику со всех сетей — пришлю снимками, когда телефон "
+                 "освободится (обычно 2–3 минуты).")
+            return True
+        if not send_shots():
+            send("Снимков статистики ещё нет — агент снимает их сам в "
+                 + ", ".join(config.ACCOUNT_STATS_TIMES)
+                 + ". Снять сейчас: /stats сейчас")
         send(daystats.day_text())
         return True
     if text.startswith("/cancel"):
