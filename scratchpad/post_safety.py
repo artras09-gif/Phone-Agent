@@ -91,5 +91,73 @@ finally:
         setattr(device, n, f)
     poster.run_step, config.DRY_RUN = saved_step, saved_dry
 
+print("\n--- Instagram: после «Share» лента с видео (дерева нет) — пост ушёл ---")
+import ui  # noqa: E402
+saved_ui = ui.dump, ui.tap_node
+caption_screen = [type("N", (), {"text": "", "desc": "", "rid": "com.instagram.android:id/caption_input_text_view",
+                                 "bounds": (52, 1323, 1228, 1479), "clickable": True, "enabled": True,
+                                 "selected": False, "area": 1000, "pkg": "", "cls": ""})()]
+dumps = iter([caption_screen, [], [], [], []])
+ui.dump = lambda retries=3, tolerant=False, timeout=30: next(dumps, [])
+poster.human.pause = lambda a, b=None: None
+config.DRY_RUN = False
+step = {"op": "publish_more", "timeout": 30, "any": [{"text": "Share"}],
+        "unless": [{"rid": "caption_input_text_view"}], "first_rid": "share_button"}
+try:
+    res = poster.run_step(step, {}, tempfile.mkdtemp() if "tempfile" in globals() else ".", 12)
+except poster.StepFailed as e:
+    res = "ОШИБКА " + str(e)
+say("опубликовано" in res, f"три пустых дерева подряд — ушли с экрана подписи: {res[:60]}")
+
+print("\n--- TikTok: в редакторе играет видео (дерева нет) — пауза касанием ---")
+taps = []
+poster.adb.screen_size = lambda: (1280, 2772)
+poster.adb.tap = lambda x, y: taps.append((x, y))
+nxt = type("N", (), {"text": "Next", "desc": "", "rid": "", "bounds": (985, 2571, 1240, 2720),
+                     "clickable": True, "enabled": True, "selected": False, "area": 1000, "pkg": "", "cls": ""})()
+calls = iter([(None, []), (nxt, [nxt])])
+ui.wait_any = lambda selectors, timeout=20, interval=0.7: next(calls)
+tapped = []
+ui.tap_node = lambda n: tapped.append(n.text)
+res = poster.run_step({"op": "tap", "timeout": 60, "pause_xy": [0.5, 0.42], "any": [{"text": "Next"}]},
+                      {}, ".", 3)
+say(taps == [(640, 1164)] and tapped == ["Next"], f"касание по видео ({taps}), потом «Next»: {res[:40]}")
+print("\n--- Instagram: реклама Edits поверх редактора (в дереве её нет) ---")
+editor_next = type("N", (), {"text": "Далее", "desc": "", "rid": "com.instagram.android:id/clips_right_action_button",
+                             "bounds": (807, 2144, 1047, 2177), "clickable": True, "enabled": True,
+                             "selected": False, "area": 1000, "pkg": "", "cls": ""})()
+caption = type("N", (), {"text": "Добавьте подпись", "desc": "", "rid": "com.instagram.android:id/caption_input_text_view",
+                         "bounds": (44, 1101, 1036, 1233), "clickable": True, "enabled": True,
+                         "selected": False, "area": 1000, "pkg": "", "cls": ""})()
+screens = {"now": "editor"}
+backs, tapped2 = [], []
+
+
+def wait_any2(selectors, timeout=20, interval=0.7):
+    if screens["now"] == "caption":
+        return caption, [caption]
+    return None, [editor_next]
+
+
+ui.wait_any = wait_any2
+ui.dump = lambda retries=3, tolerant=False, timeout=30: [editor_next] if screens["now"] != "caption" else [caption]
+ui.tap_node = lambda n: tapped2.append(n.text) or screens.update(now="caption" if screens["now"] == "editor_clear" else screens["now"])
+poster.device.back = lambda: backs.append(1) or screens.update(now="editor_clear")
+poster._overlay_on_screen = lambda: screens["now"] == "editor"
+poster._snap = lambda *a, **k: None
+step = {"op": "clear_overlay", "timeout": 3, "tries": 2,
+        "until": [{"rid": "caption_input_text_view"}], "still": [{"rid": "clips_right_action_button"}]}
+res = poster.run_step(step, {}, ".", 5)
+say(backs == [1] and tapped2 == ["Далее"] and "закрыл всплывающее окно" in res and "открылся" in res,
+    f"окно закрыто «назад», не его кнопкой; «Далее» ещё раз — экран подписи: {res}")
+screens["now"] = "editor"
+backs.clear(); tapped2.clear()
+poster._overlay_on_screen = lambda: False
+res = poster.run_step(step, {}, ".", 5)
+say(not backs and not tapped2 and "окна поверх нет" in res,
+    "окна на снимке нет — ничего не жмём вслепую (раньше «Далее» жалось сквозь рекламу)")
+ui.dump, ui.tap_node = saved_ui
+config.DRY_RUN = saved_dry
+
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)

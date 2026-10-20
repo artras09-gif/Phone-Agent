@@ -576,6 +576,19 @@ def _roles(chat_id):
     return {}
 
 
+def role_home(role):
+    """Где живёт дело по ВСЕМ чатам бота: (чат, тема) или None — нигде не привязано.
+
+    Дело одно на бота, а не на каждый чат: «/here видео» в одном чате — и
+    видео из других чатов бот больше не берёт (жалоба 2026-10-20: «принимает
+    на постинг видео не только в том чате, в котором я ему указал»)."""
+    for g in _groups():
+        topic = role_topic(g["id"], role)
+        if topic:
+            return g["id"], topic
+    return None
+
+
 def role_topic(chat_id, role):
     bound = _roles(chat_id).get(role)
     return bound["topic"] if bound else None
@@ -1287,8 +1300,9 @@ def _handle(msg):
     if group:
         roles = _roles(chat_id)
         here = thread or GENERAL
-        if role and role in roles and roles[role]["topic"] != here:
-            return                                # у этого дела своя тема
+        home = role_home(role) if role else None
+        if home and (home[0] != str(chat_id) or home[1] != here):
+            return                                # у этого дела свой чат и тема
         if not role and roles and len(roles) == len(ROLES) \
                 and here not in {v["topic"] for v in roles.values()}:
             return                                # тема не наша вовсе — молчим
@@ -1409,21 +1423,26 @@ def _cmd_topic(text, chat, msg, sender, cfg):
             f"{ROLE_TITLES[picked[0]].capitalize()} — снова в любой теме."
         send(what)
         return
-    if not thread and not chat.get("is_forum"):
-        send("В этом чате нет тем — я и так пишу только сюда.")
-        return
-    name = _topic_name(msg)
+    # Чат без тем — привязываем весь чат: дело живёт здесь, из других чатов
+    # бот его больше не берёт.
+    name = _topic_name(msg) if (thread or chat.get("is_forum")) else (chat.get("title") or "этот чат")
+    for g in _groups():                           # дело переезжает сюда из другого чата
+        if g["id"] != chat_id and any(role_topic(g["id"], r) for r in picked):
+            set_roles(g["id"], picked, None)
     set_roles(chat_id, picked, thread or GENERAL, name)
     if not word:
-        send(f"Готово: работаю только в теме «{name}». В других темах молчу, "
-             "отчёты о публикациях — сюда же. Вернуть во все темы — /everywhere.")
+        where = f"теме «{name}»" if (thread or chat.get("is_forum")) else "этом чате"
+        send(f"Готово: работаю только в {where}. В других темах и чатах молчу, "
+             "отчёты о публикациях — сюда же. Вернуть как было — /everywhere.")
         return
     jobs_here = {"posts": "Видео отсюда беру на постинг, черновики и отчёты о публикациях — сюда.",
                  "links": "Ссылки отсюда сохраняю, подборку присылаю сюда.",
                  "stats": "Статистику после каждой сессии и итог дня пишу сюда."}[picked[0]]
     others = [f"{ROLE_TITLES[r]} → «{v['name'] or 'Общая'}»"
               for r, v in _roles(chat_id).items() if r != picked[0]]
-    send(f"Готово: тема «{name}» — {ROLE_TITLES[picked[0]]}. {jobs_here}"
+    place = f"тема «{name}»" if (thread or chat.get("is_forum")) else "этот чат"
+    send(f"Готово: {place} — {ROLE_TITLES[picked[0]]}. {jobs_here} В других чатах и "
+         "темах это дело больше не принимаю."
          + ("\nОстальное: " + ", ".join(others) if others else ""))
 
 
@@ -1853,13 +1872,13 @@ def _handle_callback(cq):
         _call("answerCallbackQuery", {"callback_query_id": cq.get("id", ""),
                                       "text": "этот чат не подключён"}, timeout=10)
         return
-    bound = role_topic(chat_id, "posts") if group else None
+    home = role_home("posts")
     _REPLY.role = "posts"
-    if bound and (thread or GENERAL) != bound:
+    if home and group and (home[0] != chat_id or (thread or GENERAL) != home[1]):
         # Старый черновик в теме, где бот больше не работает: всплывашка, а
         # не сообщение — писать бот должен только в своей теме.
         _call("answerCallbackQuery", {"callback_query_id": cq.get("id", ""),
-                                      "text": "я теперь работаю в другой теме — пришли видео туда",
+                                      "text": "видео я теперь принимаю в другом чате или теме — пришли туда",
                                       "show_alert": "true"}, timeout=10)
         return
     note = ""

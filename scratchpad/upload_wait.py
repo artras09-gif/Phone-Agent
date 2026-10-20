@@ -69,11 +69,11 @@ done, took, _ = scenario(lambda t: 0 if t < 40 else (500 * 1024 if t < 100 else 
 say(done and took >= 125, f"тишину во время пережатия концом не счёл: {took:.0f} с")
 
 print("\n--- сеть молчит, но в уведомлении прогресс ---")
-done, took, _ = scenario(lambda t: 0, progress=lambda t: (int(t), 100) if t < 200 else None)
+done, took, _ = scenario(lambda t: 12 * 1024, progress=lambda t: (int(t), 100) if t < 200 else None)
 say(done and took >= 225, f"пока в уведомлении проценты — ждёт: {took:.0f} с")
 
 print("\n--- на экране «Публикация… 45 %» ---")
-done, took, _ = scenario(lambda t: 0, screen=lambda t: t < 150)
+done, took, _ = scenario(lambda t: 12 * 1024, screen=lambda t: t < 150)
 say(done and took >= 175, f"пока на экране прогресс — ждёт: {took:.0f} с")
 
 print("\n--- счётчиков сети нет (закрыты прошивкой) ---")
@@ -84,6 +84,37 @@ print("\n--- загрузка бесконечная ---")
 done, took, text = scenario(lambda t: 300 * 1024)
 say(not done and took >= config.UPLOAD_WAIT_MAX and took < config.UPLOAD_WAIT_MAX + 10,
     f"сдался через {took / 60:.0f} мин и сказал: {text.splitlines()[-1].strip()[:50]}")
+
+print("\n--- живьём 2026-10-20: YouTube за 2 мин отправил 0,1 МБ — это не конец ---")
+open(video, "wb").write(b"\0" * (100 * 1024 * 1024))          # 100 МБ
+real_wait = poster.wait_upload
+
+
+def run(rates, target, since_offset=0):
+    start = clock[0]
+    total = [0]
+
+    def tx():
+        t_ = clock[0] - start
+        total[0] += rates(t_) * config.UPLOAD_POLL_SEC
+        return 10 ** 9 + int(total[0])
+
+    device.tx_bytes = tx
+    device.upload_progress = lambda pkg: None
+    poster._upload_on_screen = lambda pkg: False
+    log = runlog.Log("x", live=False)
+    done = real_wait("com.app", video, log, since=10 ** 9 - since_offset, target=target)
+    return done, clock[0] - start, log.text()
+
+
+done, took, text = run(lambda t: 1000 if t < 100 else 0, "shorts")
+say(not done and took >= config.UPLOAD_WAIT_MAX and "не ушло" in text,
+    f"не объявил «закончилась» на 0,1 МБ: ждал {took / 60:.0f} мин и предупредил")
+done, took, _ = run(lambda t: 0, "reels", since_offset=30 * 1024 * 1024)
+say(done and took < 120, f"Instagram загрузил заранее, пока набиралась подпись, — засчитано: {took:.0f} с")
+done, took, _ = run(lambda t: 2 * 1024 * 1024 if t < 50 else 0, "shorts")
+say(done and took < 150, f"YouTube отправил исходник — конец по тишине: {took:.0f} с")
+open(video, "wb").write(b"\0" * (40 * 1024 * 1024))
 
 print("\n--- остановили кнопкой ---")
 device.tx_bytes = lambda: 10 ** 9
@@ -109,20 +140,20 @@ recipe = {"demo": {"package": "com.app", "title": "demo", "steps": [{"op": "slee
 poster.run_step = lambda step, ctx, log_path, i: "шаг"
 config.DRY_RUN = False
 order = []
-poster.wait_upload = lambda pkg, path, log: order.append(("ждал", list(removed))) or True
+poster.wait_upload = lambda pkg, path, log, **kw: order.append(("ждал", list(removed))) or True
 good, report = poster.post(video, "x", "demo", recipes=recipe)
 say(good and order == [("ждал", [])] and removed == ["/sdcard/Movies/v.mp4"],
     "сперва дождался загрузки, файл удалил потом")
 say(not stopped, "приложение после публикации не закрывали")
 removed.clear()
-poster.wait_upload = lambda pkg, path, log: False
+poster.wait_upload = lambda pkg, path, log, **kw: False
 poster.post(video, "x", "demo", recipes=recipe)
 pushed = open(os.path.join(os.path.dirname(config.QUEUE_DIR), "pushed.json"), encoding="utf-8").read()
 say(not removed and "/sdcard/Movies/v.mp4" in pushed,
     "не дождался — файл оставлен и записан, его уберут через несколько часов")
 config.DRY_RUN = True
 waited = []
-poster.wait_upload = lambda pkg, path, log: waited.append(1) or True
+poster.wait_upload = lambda pkg, path, log, **kw: waited.append(1) or True
 poster.post(video, "x", "demo", recipes=recipe)
 say(not waited and stopped, "сухой прогон — не ждёт загрузки (её нет), приложение закрыто")
 config.DRY_RUN = False

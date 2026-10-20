@@ -307,7 +307,8 @@ def say_to(chat, sender, text=None, media=None, thread=None, reply_to=None, topi
     _msg_id[0] += 1
     msg = {"message_id": _msg_id[0], "date": int(time.time()),
            "chat": {"id": chat, "type": CHAT_TYPE[chat],
-                    **({"title": "Команда", "is_forum": True} if chat < 0 else {})},
+                    **({"title": "Команда", "is_forum": CHAT_TYPE[chat] == "supergroup"}
+                       if chat < 0 else {})},
            "from": {"id": sender, "is_bot": False, "first_name": "U"}, **extra}
     if media:
         msg[media[0]] = media[1]
@@ -690,7 +691,7 @@ say(job_by_caption("в другую тему") is None and bot.group_topic(GROUP
     "видео из другой темы не взято, привязка не сдвинута")
 press(early, f"w:{early_job['id']}:now", FRIEND)
 alert = wait(lambda: [p for _, p in FAKE.calls("answerCallbackQuery", m) if p.get("text")])
-say(alert and "другой теме" in alert[-1]["text"] and not texts(GROUP, m)
+say(alert and "другом чате или теме" in alert[-1]["text"] and not texts(GROUP, m)
     and jobs.by_id(early_job["id"])["status"] == "draft",
     "кнопка старого черновика из «Общей» — всплывашка, в чат ни слова")
 m = FAKE.mark()
@@ -846,6 +847,42 @@ lo = last_text(GROUP, m, "Сохранил")
 say(lo and str(lo.get("message_thread_id")) == str(OTHER), "ссылки снова принимаются в любой теме")
 say_to(GROUP, OWNER, "/everywhere")
 say(wait(lambda: not bot._roles(GROUP)), "/everywhere — всё отвязано")
+
+print("\n--- два чата: «видео сюда» в одном — из другого видео не берём (2026-10-20) ---")
+SECOND = -1003
+CHAT_TYPE[SECOND] = "group"
+m = FAKE.mark()
+FAKE.push({"my_chat_member": {"chat": {"id": SECOND, "type": "group", "title": "Второй"},
+                              "from": {"id": OWNER}, "date": int(time.time()),
+                              "old_chat_member": {"status": "left"},
+                              "new_chat_member": {"status": "member"}}})
+say(wait(lambda: str(SECOND) in bot.allowed_groups()), "второй чат подключён")
+idle()
+m = FAKE.mark()
+say_to(GROUP, OWNER, "/here видео", thread=POSTS if "POSTS" in globals() else 10, topic_name="Постинг")
+say(last_text(GROUP, m, "больше не принимаю"), "«/here видео» — ответ: в других чатах не принимаю")
+m = FAKE.mark()
+say_to(SECOND, FRIEND, "видео во второй чат", media=video(), reply_to=1)
+time.sleep(1.2)
+say(not texts(SECOND, m) and job_by_caption("видео во второй чат") is None,
+    "видео во втором чате — не взято, бот молчит")
+say_to(SECOND, FRIEND, "/status")
+say(last_text(SECOND, m, "В очереди"), "а команды в нём работают по-прежнему")
+m = FAKE.mark()
+say_to(SECOND, OWNER, "/here видео")
+moved = last_text(SECOND, m, "этот чат — видео на постинг")
+say(moved and bot.role_home("posts") == (str(SECOND), bot.GENERAL),
+    f"чат без тем: «/here видео» привязал весь чат, дело переехало: {bot.role_home('posts')}")
+say(bot.role_topic(GROUP, "posts") is None, "в первом чате видео больше не привязаны")
+m = FAKE.mark()
+say_to(SECOND, FRIEND, "теперь сюда", media=video())
+say(draft_of(SECOND, m), "видео во втором чате — черновик")
+say_to(GROUP, FRIEND, "а сюда уже нет", media=video(), thread=10)
+time.sleep(1.2)
+say(job_by_caption("а сюда уже нет") is None, "в первом чате видео больше не принимаются")
+say_to(SECOND, OWNER, "/everywhere")
+say(wait(lambda: bot.role_home("posts") is None), "/everywhere — видео снова в любом чате")
+idle()
 
 print("\n--- чужая группа ---")
 m = FAKE.mark()

@@ -49,7 +49,7 @@
       },
       {
         "op": "tap",
-        "timeout": 45,
+        "timeout": 60,
         "any": [
           {
             "text": "Далее"
@@ -61,7 +61,12 @@
             "rid": "btn_next"
           }
         ],
-        "desc": "из редактора на экран описания"
+        "desc": "из редактора на экран описания",
+        "pause_xy": [
+          0.5,
+          0.42
+        ],
+        "pause_after": 12
       },
       {
         "op": "optional_tap",
@@ -153,7 +158,8 @@
         ],
         "desc": "ФИНАЛЬНАЯ КНОПКА"
       }
-    ]
+    ],
+    "rev": 1
   },
   "reels": {
     "package": "com.instagram.android",
@@ -290,13 +296,32 @@
         "desc": "из редактора дальше"
       },
       {
-        "op": "optional_tap",
-        "any": [
+        "op": "clear_overlay",
+        "timeout": 12,
+        "tries": 2,
+        "until": [
+          {
+            "rid": "caption_input_text_view"
+          },
+          {
+            "contains": "Добавьте подпись"
+          },
+          {
+            "contains": "Напишите подпись"
+          },
+          {
+            "contains": "Write a caption"
+          },
+          {
+            "contains": "Add a caption"
+          }
+        ],
+        "still": [
           {
             "rid": "clips_right_action_button"
           }
         ],
-        "desc": "ещё раз «Далее», если первый тап ушёл в подсказку"
+        "desc": "реклама Edits поверх редактора — закрыть и «Далее» ещё раз"
       },
       {
         "op": "wait",
@@ -372,7 +397,7 @@
       },
       {
         "op": "publish_more",
-        "timeout": 15,
+        "timeout": 45,
         "any": [
           {
             "text": "Поделиться"
@@ -397,10 +422,10 @@
         ],
         "desc": "второй экран «Поделиться», если Instagram его показал",
         "first_rid": "share_button",
-        "leave_timeout": 20
+        "leave_timeout": 45
       }
     ],
-    "rev": 6
+    "rev": 8
   },
   "shorts": {
     "package": "com.google.android.youtube",

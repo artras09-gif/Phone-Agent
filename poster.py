@@ -187,6 +187,9 @@ def run_step(step, ctx, log_path, index):
     if op == "yt_details":
         return _yt_details(step, ctx, log_path, index)
 
+    if op == "clear_overlay":
+        return _clear_overlay(step, log_path, index)
+
     if op == "publish_more":
         # Instagram 451: кнопка экрана подписи — «Далее» (share_button), за
         # ней окно «О Reels» со СВОЕЙ кнопкой «Поделиться» (живьём 2026-10-16:
@@ -203,17 +206,28 @@ def run_step(step, ctx, log_path, index):
         first = step.get("first_rid", "share_button")
         human.pause(2.0, 3.0)
         end = time.time() + timeout
+        blank = 0
         while time.time() < end:
             nodes = ui.dump(retries=1, tolerant=True)
+            # Экран подписи статичный и снимается всегда. Дерева нет несколько
+            # раз подряд — значит, Instagram уже показывает ленту с играющим
+            # видео: пост ушёл (живьём 2026-10-20 на новом телефоне: лента
+            # Reels и подсказка «Get inspired on Edits», а мы ждали дерево и
+            # отчитались «пост не ушёл»).
+            blank = blank + 1 if not nodes else 0
+            if blank >= 3:
+                return f"экран подписи ушёл (дальше лента с видео) — опубликовано ({label})"
             sheet = [n for sel in selectors for n in ui.find(nodes, **sel)
                      if n.area > 0 and n.enabled and n.rid.split("/")[-1] != first]
             if sheet:
                 ui.tap_node(sheet[0])
                 human.pause(1.5, 2.5)
-                gone = time.time() + step.get("leave_timeout", 20)
+                gone = time.time() + step.get("leave_timeout", 45)
+                blank = 0
                 while time.time() < gone:
                     nodes = ui.dump(retries=1, tolerant=True)
-                    if nodes and ui.find_any(nodes, unless) is None:
+                    blank = blank + 1 if not nodes else 0
+                    if blank >= 3 or (nodes and ui.find_any(nodes, unless) is None):
                         return f"второй экран: тап «{sheet[0].text or sheet[0].desc}» — опубликовано"
                     time.sleep(1.0)
                 _snap(log_path, index, "STUCK")
@@ -230,7 +244,17 @@ def run_step(step, ctx, log_path, index):
                          + _vision_note(log_path, index, label))
 
     if op in ("tap", "optional_tap", "wait", "publish"):
-        node, nodes = ui.wait_any(selectors, timeout=timeout)
+        pause_xy = step.get("pause_xy")
+        node, nodes = ui.wait_any(selectors, timeout=timeout if not pause_xy else
+                                  min(timeout, step.get("pause_after", 12)))
+        if node is None and pause_xy and len(nodes or []) < 5:
+            # В редакторе TikTok на новом телефоне играет видео — дерево не
+            # снимается, и «Next» не видно (живьём 2026-10-20, оба поста).
+            # Касание по видео ставит его на паузу, тогда кнопки видны.
+            w, h = adb.screen_size()
+            adb.tap(int(w * pause_xy[0]), int(h * pause_xy[1]))
+            human.pause(1.2, 1.8)
+            node, nodes = ui.wait_any(selectors, timeout=max(10, timeout - 12))
 
         if node is None:
             # Классика: маршрут перекрыт внезапным окном. Пробуем убрать и повторить.
@@ -291,6 +315,69 @@ def run_step(step, ctx, log_path, index):
         return f"введён текст ({len(value)} символов)"
 
     raise StepFailed(f"неизвестная операция: {op}")
+
+
+# ------------------------------------- всплывающая реклама поверх экрана
+#
+# Instagram показывает поверх редактора рекламу своего приложения Edits
+# («Сделайте свои видео лучше с помощью Edits», «Установить приложение») —
+# живьём 2026-10-21 на Redmi и 2026-10-20 на новом телефоне. В дереве экрана
+# её НЕТ: Android отдаёт редактор под ней, и «Далее» жалось сквозь рекламу —
+# в её же кнопку «Установить приложение». Видна она только на снимке.
+
+ASK_OVERLAY = """Снимок экрана телефона. Поверх основного экрана открыто
+всплывающее окно или шторка — реклама, подсказка, предложение установить
+приложение (например Edits)? Ответь ТОЛЬКО JSON: {"окно": true, "что": "коротко"}
+или {"окно": false}."""
+
+
+def _overlay_on_screen():
+    """Есть ли поверх экрана всплывающее окно (по снимку). None — не узнать."""
+    import escape
+
+    png, _, _ = escape._full_shot()
+    if png is None:
+        return None
+    try:
+        raw = vision.ask(png, ASK_OVERLAY, max_tokens=60, temperature=0.0)
+    except vision.VisionError:
+        return None
+    data = vision._json_from(raw)
+    if isinstance(data, dict):
+        return data.get("окно") in (True, "true", "да")
+    return None
+
+
+def _clear_overlay(step, log_path, index):
+    """Ждём следующий экран; стоим на месте — по снимку ищем всплывающее окно,
+    закрываем «назад» (его кнопки не жмём никогда) и повторяем «вперёд»."""
+    until = step.get("until", [])
+    still = step.get("still", [])
+    end = time.time() + step.get("timeout", 12)
+    tries = step.get("tries", 2)
+    notes = []
+    while True:
+        node, nodes = ui.wait_any(until, timeout=max(2, end - time.time()))
+        if node is not None:
+            return "; ".join(notes + ["следующий экран открылся"])
+        here = ui.find_any(nodes, still) if still else None
+        if here is None or tries <= 0:
+            return "; ".join(notes + ["дальше разберётся следующий шаг"])
+        tries -= 1
+        seen = _overlay_on_screen()
+        if not seen:
+            notes.append("окна поверх нет (по снимку)")
+            return "; ".join(notes)
+        _snap(log_path, index, "overlay")
+        device.back()                          # шторку закрывает «назад», не кнопки
+        human.pause(1.2, 1.8)
+        nodes = ui.dump(retries=2, tolerant=True)
+        again = ui.find_any(nodes, still)
+        if again is not None:
+            ui.tap_node(again)
+            human.pause(1.5, 2.2)
+        notes.append("закрыл всплывающее окно поверх экрана («назад») и нажал ещё раз")
+        end = time.time() + step.get("timeout", 12)
 
 
 # ----------------------------------------- YouTube: описание и теги
@@ -964,7 +1051,14 @@ def _upload_on_screen(package):
     return False
 
 
-def wait_upload(package, video_path, log):
+# Какая доля файла должна уйти в сеть, чтобы считать загрузку состоявшейся:
+# YouTube грузит исходник, Instagram и TikTok пережимают (меньше), а Instagram
+# ещё и начинает грузить заранее, пока набирается подпись. Поэтому счёт — с
+# открытия приложения, а не с нажатия кнопки.
+UPLOAD_SHARE = {"shorts": 0.5, "reels": 0.04, "tiktok": 0.04}
+
+
+def wait_upload(package, video_path, log, since=None, target=""):
     """Дождаться, пока опубликованное видео уйдёт в сеть. True — дождались.
 
     После «Опубликовать» приложение ещё минуты грузит видео в фоне. Раньше
@@ -986,6 +1080,8 @@ def wait_upload(package, video_path, log):
     first = device.tx_bytes()
     last_bytes, last_at = first, started
     known = first is not None
+    base = since if (since is not None and known) else first
+    need = size * UPLOAD_SHARE.get(target, 0.04) if size else 0
     # Без счётчиков сети — хотя бы по объёму: ~2 Мбит/с отправки.
     floor = config.UPLOAD_MIN_SEC if known else \
         max(config.UPLOAD_MIN_SEC, min(600, size / 1024 / 1024 * 4))
@@ -1000,7 +1096,7 @@ def wait_upload(package, video_path, log):
         tx = device.tx_bytes() if known else None
         if tx is not None and last_bytes is not None:
             rate = max(0, tx - last_bytes) / max(0.5, now - last_at)
-            sent = tx - first
+            sent = tx - base
             peak = max(peak, rate)
         last_bytes, last_at = tx, now
         progress = device.upload_progress(package)
@@ -1008,15 +1104,23 @@ def wait_upload(package, video_path, log):
             or _upload_on_screen(package)
         idle_since = None if busy else (idle_since or now)
         elapsed = now - started
-        early = known and size and sent < size * 0.3 and elapsed < 120
+        # Ушло меньше, чем должно было, — это не конец, а ещё не начало
+        # (живьём 2026-10-20: YouTube за 125 с отправил 0,1 МБ из сотни, а мы
+        # объявили «закончилась» и удалили файл).
+        short = known and need and sent < need
         if idle_since and now - idle_since >= config.UPLOAD_IDLE_SEC \
-                and elapsed >= floor and not early:
+                and elapsed >= floor and not short:
             how = f", ушло {sent / 1024 / 1024:.1f} МБ" if known else ""
             log.append(f"  загрузка закончилась: ждал {elapsed:.0f} с{how}")
             return True
         if elapsed >= config.UPLOAD_WAIT_MAX:
-            log.append(f"  [!] загрузка не кончилась за {elapsed / 60:.0f} мин — "
-                       "дальше не жду, файл на телефоне оставляю")
+            if short:
+                log.append(f"  [!] видео, похоже, не ушло: за {elapsed / 60:.0f} мин отправлено "
+                           f"{sent / 1024 / 1024:.1f} МБ из ~{size / 1024 / 1024:.0f} — проверь "
+                           "публикацию в приложении; файл на телефоне оставляю")
+            else:
+                log.append(f"  [!] загрузка не кончилась за {elapsed / 60:.0f} мин — "
+                           "дальше не жду, файл на телефоне оставляю")
             return False
 
 
@@ -1066,6 +1170,7 @@ def post(video_path, caption, target, recipes=None, extra=None):
         remote = device.push_video(video_path)
         device.remember_pushed(remote)
         report.append(f"залито: {remote}")
+        tx_open = device.tx_bytes()            # счёт загрузки — с открытия приложения
 
         if recipe.get("open_uri"):
             # Instagram не принимает видео Intent'ом вовсе (проверено: и
@@ -1096,7 +1201,7 @@ def post(video_path, caption, target, recipes=None, extra=None):
         published = not config.DRY_RUN
         if published:
             report.append("  жду, пока видео догрузится…")
-            uploaded = wait_upload(package, video_path, report)
+            uploaded = wait_upload(package, video_path, report, since=tx_open, target=target)
         report.append("готово")
         # Маршрут прошёл — снимки шагов больше не нужны: они для разбора
         # СБОЯ, а сбоя не было. Остаётся текстовый отчёт. Иначе каждая
