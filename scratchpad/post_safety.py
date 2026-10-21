@@ -67,6 +67,7 @@ device.share_video = lambda *a, **k: None
 device.wait_for_app = lambda pkg, timeout=25: True
 device.stop_app = lambda pkg: закрыто.append(pkg)
 device.remove_remote = lambda path: None
+poster.wait_upload = lambda *a, **k: True      # телефон в этом тесте не трогаем
 saved_step, saved_dry = poster.run_step, config.DRY_RUN
 try:
     poster.run_step = lambda step, ctx, log_path, i: "шаг"
@@ -119,9 +120,39 @@ calls = iter([(None, []), (nxt, [nxt])])
 ui.wait_any = lambda selectors, timeout=20, interval=0.7: next(calls)
 tapped = []
 ui.tap_node = lambda n: tapped.append(n.text)
+TT = "com.zhiliaoapp.musically"
+front = {"pkg": TT}
+screen = {"state": "unlocked"}
+unlocked = []
+poster.adb.current_app = lambda: (front["pkg"], "x")
+poster.device.screen_state = lambda: screen["state"]
+poster.device.unlock = lambda: unlocked.append(1) or screen.update(state="unlocked") or True
 res = poster.run_step({"op": "tap", "timeout": 60, "pause_xy": [0.5, 0.42], "any": [{"text": "Next"}]},
-                      {}, ".", 3)
+                      {"package": TT}, ".", 3)
 say(taps == [(640, 1164)] and tapped == ["Next"], f"касание по видео ({taps}), потом «Next»: {res[:40]}")
+
+print("\n--- приложение ушло с экрана — вслепую не касаемся (живьём 2026-10-21) ---")
+taps.clear(); tapped.clear()
+front["pkg"] = "com.miui.home"
+calls = iter([(None, []), (nxt, [nxt])])
+try:
+    poster.run_step({"op": "tap", "timeout": 60, "pause_xy": [0.5, 0.42], "any": [{"text": "Next"}],
+                     "desc": "из редактора"}, {"package": TT}, ".", 3)
+    stopped = ""
+except poster.StepFailed as e:
+    stopped = str(e)
+say(not taps and "ушло с экрана" in stopped and "com.miui.home" in stopped,
+    f"на экране рабочий стол — касания нет, честная остановка: {stopped[:70]}")
+
+print("\n--- экран погас, пока TikTok открывал большой файл — будим и ждём дальше ---")
+taps.clear(); tapped.clear(); unlocked.clear()
+front["pkg"] = TT
+screen["state"] = "off"
+calls = iter([(None, []), (nxt, [nxt])])
+res = poster.run_step({"op": "tap", "timeout": 60, "pause_xy": [0.5, 0.42], "any": [{"text": "Next"}]},
+                      {"package": TT}, ".", 3)
+say(unlocked == [1] and tapped == ["Next"] and not taps,
+    f"разбудил и разблокировал, «Next» нашёлся без касаний вслепую: {res[:30]}")
 print("\n--- Instagram: реклама Edits поверх редактора (в дереве её нет) ---")
 editor_next = type("N", (), {"text": "Далее", "desc": "", "rid": "com.instagram.android:id/clips_right_action_button",
                              "bounds": (807, 2144, 1047, 2177), "clickable": True, "enabled": True,

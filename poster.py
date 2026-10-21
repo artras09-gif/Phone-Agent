@@ -109,6 +109,39 @@ def _vision_note(log_path, index, label):
     return "\n" + text
 
 
+def _ensure_front(ctx, label):
+    """Перед касанием ВСЛЕПУЮ (по месту, не по кнопке): на экране то самое
+    приложение? Экран погас — разбудить и разблокировать. Приложения нет —
+    честная остановка, а не касание по рабочему столу или мессенджеру
+    (живьём 2026-10-21 на новом телефоне: «пауза» YouTube пришлась мимо
+    приложения, модель увидела настройки мессенджера)."""
+    package = ctx.get("package")
+    if not package:
+        return
+    front = adb.current_app()[0]
+    if front == package:
+        return
+    state = device.screen_state()
+    if state in ("off", "locked"):
+        device.unlock()
+        human.pause(1.5, 2.2)
+        front = adb.current_app()[0]
+        if front == package:
+            return
+    raise StepFailed(f"«{label}»: приложение ушло с экрана — сейчас открыто "
+                     f"{front or 'неизвестно что'} (экран: {state}). Вслепую не нажимаю.")
+
+
+def _awake_if_dark(ctx):
+    """Дерево пустое, а экран погас (TikTok долго открывает большой файл) —
+    разбудить и разблокировать: в темноте кнопок не дождаться."""
+    if device.screen_state() in ("off", "locked"):
+        device.unlock()
+        human.pause(1.5, 2.2)
+        return True
+    return False
+
+
 def run_step(step, ctx, log_path, index):
     """Выполнить один шаг маршрута. Возвращает описание для лога."""
     if abort.requested():
@@ -136,6 +169,7 @@ def run_step(step, ctx, log_path, index):
     if op == "tap_xy":
         # Доля экрана, а не пиксели: у кнопки нет ни текста, ни id (миниатюра
         # галереи в камере Instagram), но место у неё постоянное.
+        _ensure_front(ctx, label)
         w, h = adb.screen_size()
         x, y = int(w * step["x"]), int(h * step["y"])
         adb.tap(x, y)
@@ -247,10 +281,13 @@ def run_step(step, ctx, log_path, index):
         pause_xy = step.get("pause_xy")
         node, nodes = ui.wait_any(selectors, timeout=timeout if not pause_xy else
                                   min(timeout, step.get("pause_after", 12)))
+        if node is None and len(nodes or []) < 5 and _awake_if_dark(ctx):
+            node, nodes = ui.wait_any(selectors, timeout=max(10, timeout // 2))
         if node is None and pause_xy and len(nodes or []) < 5:
             # В редакторе TikTok на новом телефоне играет видео — дерево не
             # снимается, и «Next» не видно (живьём 2026-10-20, оба поста).
             # Касание по видео ставит его на паузу, тогда кнопки видны.
+            _ensure_front(ctx, label)
             w, h = adb.screen_size()
             adb.tap(int(w * pause_xy[0]), int(h * pause_xy[1]))
             human.pause(1.2, 1.8)
@@ -664,6 +701,7 @@ def _reel_gallery(step, ctx, log_path, index):
         tx, ty = step.get("thumb_xy", (0.09, 0.885))
         spots.append((int(w * tx), int(h * ty), "старое место"))
         for x, y, where in spots:
+            _ensure_front(ctx, "миниатюра галереи")
             adb.tap(x, y)
             human.pause(1.5, 2.2)
             nodes, ok = settle(12)
@@ -692,6 +730,7 @@ def _reel_gallery(step, ctx, log_path, index):
     else:
         w, h = adb.screen_size()
         px, py = step.get("plus_xy", (0.06, 0.071))
+        _ensure_front(ctx, "«+» на главной")
         adb.tap(int(w * px), int(h * py))
         tried.append("«+» на главной (по месту)")
     human.pause(2.0, 3.0)
@@ -713,6 +752,7 @@ def _reel_gallery(step, ctx, log_path, index):
     human.pause(3.0, 5.0)
     cx, cy = step.get("camera_xy", (0.061, 0.071))
     w, h = adb.screen_size()
+    _ensure_front(ctx, "камера из Reels")
     adb.tap(int(w * cx), int(h * cy))
     human.pause(3.0, 4.5)
     tried.append("камера из Reels")
@@ -886,6 +926,7 @@ def _advance_by_sight(advance, ctx, notes):
         return None
     if low in ("done", "готово") and ctx.get("video"):
         _length_by_sight(ctx, notes)
+    _ensure_front(ctx, label)
     adb.tap(x, y)
     return label
 
@@ -960,6 +1001,8 @@ def _advance_until(step, ctx, log_path, index):
             blind = time.time() - blind_since if blind_since is not None else 0.0
             pause_xy = step.get("pause_xy")
             if pause_xy and not paused and blind > step.get("pause_after", 6):
+                _awake_if_dark(ctx)
+                _ensure_front(ctx, label)
                 w, h = adb.screen_size()
                 adb.tap(int(w * pause_xy[0]), int(h * pause_xy[1]))
                 paused = True
@@ -1193,7 +1236,7 @@ def post(video_path, caption, target, recipes=None, extra=None):
             raise StepFailed(f"{package} не открылся")
         report.append("приложение открыто на экране публикации")
 
-        ctx = {"caption": caption, "video": video_path, **(extra or {})}
+        ctx = {"caption": caption, "video": video_path, "package": package, **(extra or {})}
         for i, step in enumerate(recipe["steps"], start=1):
             line = run_step(step, ctx, log_path, i)
             report.append(f"  {i:2d}. {line}")
