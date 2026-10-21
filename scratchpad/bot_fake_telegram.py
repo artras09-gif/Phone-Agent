@@ -251,14 +251,21 @@ release_snap = threading.Event()
 release_snap.set()
 
 
-def fake_collect(nets=None, log=None):
-    """Съёмка на «телефоне»: кладёт три снимка, как настоящая."""
-    snapped.append(1)
+def fake_collect(nets=None, log=None, days=None):
+    """Съёмка на «телефоне»: кладёт три снимка и пояснения к ним, как настоящая."""
+    snapped.append(days)
     release_snap.wait(5)
     folder = accstats.shots_dir()
     os.makedirs(folder, exist_ok=True)
+    try:
+        os.remove(os.path.join(folder, "notes.json"))
+    except OSError:
+        pass
     for name in ("youtube", "tiktok", "instagram"):
         open(os.path.join(folder, name + ".png"), "wb").write(b"\x89PNG\r\n\x1a\n" + os.urandom(20000))
+    if days:
+        accstats._note(folder, "tiktok", "за 20 окт" if days == 1 else "за 19 окт - 20 окт")
+        accstats._note(folder, "youtube", "последние 48 часов")
     return {}
 
 
@@ -799,17 +806,63 @@ say(day and "Сессий: 2" in day["text"] and "Роликов: 60" in day["te
     "в итоге дня — сессии, ролики, посты: " + repr(day and day["text"][:120]))
 say(not scheduler.maybe_day_stats(late), "второй раз за день — не шлёт")
 say(not scheduler.maybe_day_stats(late.replace(hour=21)), "до 22:00 — не шлёт")
+print("\n--- /stats: период — 1 день, 2 дня или как обычно (2026-10-22) ---")
+m = FAKE.mark()
+snapped.clear()
+say_to(GROUP, FRIEND, "/stats", thread=STATS)
+ask = last_text(GROUP, m, "за какой период")
+marks = json.loads(ask["reply_markup"]) if ask else {}
+datas = [b["callback_data"] for row in marks.get("inline_keyboard", []) for b in row]
+say(ask and str(ask.get("message_thread_id")) == str(STATS) and datas == ["s:1", "s:2", "s:0"],
+    f"/stats без периода — спрашивает кнопками в теме «Статистика»: {datas}")
+say(not snapped, "пока не выбрали — не снимает")
+press(ask, "s:1", FRIEND, chat=GROUP)
+ed = wait(lambda: [p for _, p in FAKE.calls("editMessageText", m)
+                   if "за 1 день" in str(p.get("text"))])
+say(ed and str(ed[-1]["message_id"]) == str(ask["_id"]) and "reply_markup" not in ed[-1],
+    "кнопка «За 1 день» — то же сообщение стало «снимаю … за 1 день», кнопок больше нет: "
+    + repr(ed and ed[-1]["text"]))
+album = wait(lambda: [p for _, p in FAKE.calls("sendMediaGroup", m)])
+media = json.loads(album[-1]["media"]) if album else []
+say(snapped == [1] and media and str(album[-1].get("message_thread_id")) == str(STATS),
+    f"снял за 1 день и прислал альбом в «Статистика»: {snapped}")
+say(media and [m_["caption"] for m_ in media] == ["YouTube Studio — аналитика, последние 48 часов",
+                                                   "Instagram — статистика",
+                                                   "TikTok Studio — аналитика, за 20 окт"],
+    f"в подписях — период: {[m_['caption'] for m_ in media]}")
+idle()
+m = FAKE.mark()
+snapped.clear()
+say_to(GROUP, FRIEND, "/stats 2", thread=STATS)
+say(last_text(GROUP, m, "Снимаю статистику со всех сетей за 2 дня"), "/stats 2 — сразу, без вопроса")
+say(wait(lambda: snapped == [2]), f"снимает за 2 дня: {snapped}")
+idle()
+m = FAKE.mark()
+snapped.clear()
+say_to(GROUP, FRIEND, "/stats 7", thread=STATS)
+say(last_text(GROUP, m, "Снимаю статистику со всех сетей —"), "/stats 7 — обычный период приложений")
+say(wait(lambda: snapped == [None]), f"без выбора дат: {snapped}")
+idle()
 m = FAKE.mark()
 say_to(GROUP, FRIEND, "/stats", thread=STATS)
-say(last_text(GROUP, m, "Снимаю статистику"), "/stats в «Статистика» — снимает статистику сейчас")
+ask = last_text(GROUP, m, "за какой период")
+press(ask, "s:2", FRIEND, chat=GROUP)
+say(wait(lambda: [p for _, p in FAKE.calls("editMessageText", m) if "за 2 дня" in str(p.get("text"))]),
+    "кнопка «За 2 дня»")
 idle()
+m = FAKE.mark()
+moved = dict(ask, message_thread_id=str(LINKS))
+press(moved, "s:1", FRIEND, chat=GROUP)
+alert_ = wait(lambda: [p for _, p in FAKE.calls("answerCallbackQuery", m) if p.get("show_alert")])
+say(alert_ and "другой чат или тему" in alert_[-1]["text"] and not texts(GROUP, m),
+    "кнопка статистики в чужой теме — всплывашка, в чат ни слова")
 idle()
 snapped.clear()
 release_snap.clear()
 m = FAKE.mark()
-say_to(GROUP, FRIEND, "/stats", thread=STATS)
+say_to(GROUP, FRIEND, "/stats 0", thread=STATS)
 say(last_text(GROUP, m, "Снимаю статистику"), "/stats — сразу «снимаю статистику», без «ждите 21:30»")
-say_to(GROUP, FRIEND, "/stats", thread=STATS)
+say_to(GROUP, FRIEND, "/stats 1", thread=STATS)
 say(last_text(GROUP, m, "Уже снимаю"), "второй /stats во время съёмки — «уже снимаю», не вторая съёмка")
 release_snap.set()
 album = wait(lambda: [p for _, p in FAKE.calls("sendMediaGroup", m)])
@@ -826,11 +879,12 @@ idle()
 busy_ev = threading.Event()
 webui.RUNNER.start("сессия tiktok 10 мин", lambda: busy_ev.wait(10))
 m = FAKE.mark()
-say_to(GROUP, FRIEND, "/stats", thread=STATS)
+say_to(GROUP, FRIEND, "/stats 2", thread=STATS)
 say(last_text(GROUP, m, "занят"), "телефон занят сессией — «сниму, как освободится»")
 say(os.path.isfile(accstats._request_path()), "просьба записана — сторож снимет, когда телефон освободится")
 asked = accstats.take_request()
-say(asked and asked["address"] == f"{GROUP}:{STATS}", f"ответ уйдёт туда, откуда просили: {asked}")
+say(asked and asked["address"] == f"{GROUP}:{STATS}" and asked.get("days") == 2,
+    f"ответ уйдёт туда, откуда просили, и за тот период: {asked}")
 busy_ev.set()
 idle()
 m = FAKE.mark()

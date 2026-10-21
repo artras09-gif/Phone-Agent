@@ -35,30 +35,34 @@ TITLES = {"tiktok": "TikTok", "reels": "Instagram", "shorts": "YouTube"}
 NETS = {
     "tiktok": {
         "package": "com.zhiliaoapp.musically",
-        "steps": [{"find": ["Профиль", "Profile"], "bottom": True, "exact": True}],
+        "steps": [{"find": ["Профиль", "Profile", "Perfil"], "bottom": True, "exact": True}],
         # Лента играет видео — дерево экрана не снимается (живьём 2026-10-17).
         # Касание по центру ставит на паузу, тогда кнопки видны. Не помогло —
         # «Профиль» стоит справа в нижней панели (доли экрана, снято живьём).
         "pause_xy": [0.5, 0.42],
         "tap_xy": [[0.9, 0.92]],
-        "own": ["Изменить профиль", "Edit profile", "Редактировать профиль"],
+        "own": ["Изменить профиль", "Edit profile", "Редактировать профиль", "Editar perfil"],
     },
     "reels": {
         "package": "com.instagram.android",
-        "steps": [{"find": ["Профиль", "Profile"], "bottom": True, "exact": True}],
+        "steps": [{"find": ["Профиль", "Profile", "Perfil"], "bottom": True, "exact": True}],
         # В сетке «Публикации» просмотров нет — они на вкладке Reels профиля.
         "grid_tab": ["Reels"],
-        "own": ["Редактировать профиль", "Изменить профиль", "Edit profile"],
+        "own": ["Редактировать профиль", "Изменить профиль", "Edit profile", "Editar perfil"],
     },
     "shorts": {
         "package": "com.google.android.youtube",
-        "steps": [{"find": ["Вы", "You"], "bottom": True, "exact": True},
-                  {"find": ["Перейти на канал", "View channel", "Ваш канал", "Your channel"]}],
+        "steps": [{"find": ["Вы", "You", "Tú"], "bottom": True, "exact": True},
+                  {"find": ["Перейти на канал", "View channel", "Ваш канал", "Your channel",
+                            "Ver canal", "Tu canal"]}],
         "grid_tab": ["Shorts"],
         # Живьём 2026-10-17 на своём канале — «Аналитика» и «Параметры канала».
         "own": ["Параметры канала", "Channel settings", "Аналитика", "Analytics",
                 "Управление видео", "Управлять видео", "Manage videos", "Настроить канал",
-                "Customize channel", "Изменить канал", "Edit channel"],
+                "Customize channel", "Изменить канал", "Edit channel",
+                # Телефон пользователя — на испанском (его снимки 2026-10-18).
+                "Configuración del canal", "Estadísticas", "Gestionar vídeos",
+                "Personalizar canal", "Editar canal"],
     },
 }
 
@@ -99,8 +103,9 @@ def _is_own(nodes, cfg):
 
 NAV_WORDS = {"главная", "home", "интересное", "discover", "друзья", "friends", "создать",
              "create", "входящие", "inbox", "профиль", "profile", "вы", "you", "подписки",
-             "subscriptions", "поиск", "search", "reels", "shorts"}
-FOLLOWERS = re.compile(r"подписчик|followers|subscribers|фолловер", re.I)
+             "subscriptions", "поиск", "search", "reels", "shorts", "inicio", "amigos",
+             "crear", "bandeja de entrada", "perfil", "tú", "suscripciones", "buscar"}
+FOLLOWERS = re.compile(r"подписчик|followers|subscribers|фолловер|seguidores|suscriptores", re.I)
 # «просмотрел» (фраза «ваш профиль просмотрел 1 человек») — НЕ просмотры видео.
 VIEWS_WORD = re.compile(r"просмотр(?:а|ов)?\b|views?\b|воспроизведени|plays?\b", re.I)
 JUST_NUMBER = re.compile(r"^\s*▶?\s*\d[\d   .,]*\s*(тыс\.?|млн\.?|млрд\.?|[kmbкм]\.?)?\s*$", re.I)
@@ -302,20 +307,26 @@ def _read_profile(net, cfg, result):
         result["why"] = result["why"] or "цифр на экране профиля не нашёл"
 
 
-def collect(net, log=None, shots=False):
-    """Снять цифры профиля одной сети. {"followers", "videos", "why"}."""
+def collect(net, log=None, shots=False, days=None):
+    """Снять цифры профиля одной сети. {"followers", "videos", "why"}.
+    days — период снимков статистики: 1 или 2 дня, None — как в приложении."""
     cfg = NETS[net]
     say = log.append if log is not None else (lambda s: None)
     result = {"followers": None, "videos": [], "why": ""}
     try:
         _read_profile(net, cfg, result)
-        if shots and "не мой профиль" not in result["why"] and net in SHOTS:
+        # Снимки — только со СВОЕГО открытого профиля: иначе «☰ справа вверху»
+        # нажалось бы на любом экране, где агент застрял.
+        if shots and not result["why"] and net in SHOTS:
             try:
                 w, h = adb.screen_size()
-                result["shot"] = SHOTS[net](shots_dir(), w, h)
+                result["shot"] = SHOTS[net](shots_dir(), w, h, days)
             except (adb.AdbError, RuntimeError, OSError) as e:
                 result["shot"] = None
                 say(f"  {TITLES[net]}: снимок статистики не вышел — {str(e)[:80]}")
+            note = notes().get(SHOT_FILES[net])
+            if note:
+                say(f"  {TITLES[net]}: {note}")
     except (adb.AdbError, RuntimeError) as e:
         result["why"] = str(e)[:120]
     finally:
@@ -358,51 +369,359 @@ def _installed(package):
     return bool((adb.shell(f"pm path {package}", check=False) or "").strip())
 
 
-def _shot_tiktok(folder, w, h):
-    """С своего профиля: ☰ → TikTok Studio → «Статистика» → снимок."""
-    nodes = ui.dump(retries=2, tolerant=True)
-    menu = [n for n in nodes if n.clickable and n.bounds[1] < h * 0.12 and n.bounds[0] > w * 0.82]
-    if not menu:
+def _label(n):
+    return (n.text or n.desc or "").strip()
+
+
+def _clickable_at(nodes, label):
+    """Самая мелкая нажимаемая область, внутри которой стоит подпись (сама
+    подпись часто не нажимается). Нет такой — сама подпись."""
+    cx, cy = _center(label)
+    boxes = [n for n in nodes if n.clickable and n.bounds[0] <= cx <= n.bounds[2]
+             and n.bounds[1] <= cy <= n.bounds[3]]
+    return min(boxes, key=lambda n: (n.bounds[2] - n.bounds[0]) * (n.bounds[3] - n.bounds[1])) \
+        if boxes else label
+
+
+def _reading_order(nodes):
+    """Узлы по порядку чтения: строками сверху вниз, в строке слева направо.
+    Строка — узлы, чьи середины по высоте почти совпадают (у обведённой
+    «сегодня» клетка на пару пикселей больше соседних)."""
+    rows = []
+    for n in sorted(nodes, key=lambda n: _center(n)[1]):
+        tall = n.bounds[3] - n.bounds[1]
+        if rows and abs(_center(rows[-1][0])[1] - _center(n)[1]) < max(8, tall / 3):
+            rows[-1].append(n)
+        else:
+            rows.append([n])
+    return [n for row in rows for n in sorted(row, key=lambda n: _center(n)[0])]
+
+
+def _raw_screen():
+    """Снимок экрана пикселями, без PIL: (ширина, высота, RGBA-байты) или None.
+    `screencap` без `-p` отдаёт заголовок (12 байт, с Android 10 — 16) и
+    сырые пиксели."""
+    import struct
+    data = adb.exec_out("screencap", timeout=30)
+    if len(data) < 16:
         return None
-    ui.tap_node(max(menu, key=lambda n: n.bounds[0]))      # крайняя правая — ☰
+    w, h, fmt = struct.unpack_from("<III", data, 0)
+    head = len(data) - w * h * 4
+    if head not in (12, 16) or fmt not in (1, 2, 5):
+        return None
+    px = memoryview(data)[head:]
+    if fmt == 5:                                          # BGRA — переставить
+        px = bytearray(px)
+        px[0::4], px[2::4] = px[2::4], px[0::4]
+    return w, h, px
+
+
+def _wide_band(test, low=0.7):
+    """Кнопка во всю ширину внизу экрана, найденная ПО ЦВЕТУ: y её середины
+    или None (нет такой — значит, и кнопка не горит).
+
+    Дереву экрана внизу верить нельзя: на Redmi оно обрезано по высоте окна
+    приложения (2177 из 2400, `dumpsys window`: app=1080x2177), а TikTok
+    рисует «Обновить» ниже — в дереве от неё полоска в 27 пикселей не там."""
+    shot = _raw_screen()
+    if shot is None:
+        return None
+    w, h, px = shot
+    xs = range(w // 20, w - w // 20, 6)
+    band = []
+    for y in range(h - 1, int(h * low), -2):
+        row = y * w * 4
+        hits = sum(1 for x in xs if test(px[row + 4 * x], px[row + 4 * x + 1], px[row + 4 * x + 2]))
+        if hits > 0.6 * len(xs):
+            band.append(y)
+        elif band:
+            break
+    if not band or band[0] - band[-1] < h * 0.015:
+        return None
+    return (band[0] + band[-1]) // 2
+
+
+# ------------------------------------------------------- период снимков
+#
+# «Надо выбор, чтобы он мог показать стату за один день или за два дня»
+# (2026-10-22). Как выбирается период, снято живьём на Redmi:
+# - TikTok Studio → «Аналитика»: «7 дней · 28 · 60 · 365 · Другое». «Другое» —
+#   календарь; один день — два касания по одной дате, затем «Обновить».
+#   Даты у TikTok сдвинуты: выбрал 21 окт. — показывает 20-е, тот же
+#   последний полный день, которым кончаются его «7 дней». Поэтому конец
+#   диапазона — вчера. Чисел в дереве нет, только клетки: сегодня — та
+#   единственная, что на пару пикселей больше (обведена кольцом).
+# - Instagram «Статистика»: «30 дней ▾» → «Пользовательский диапазон» →
+#   календарь с числами; одно касание — один день, два — диапазон,
+#   «Применить». Последний доступный день — позавчера (21 окт. 22-го ещё
+#   серое). Выбор Instagram запоминает — обычный снимок возвращает 30 дней.
+# - YouTube Studio: периоды 7/28/90/365 дней, короче нет. Ближе всего —
+#   «В реальном времени»: 48 часов по часам и лучшие видео за них.
+
+PERIOD_WORDS = {1: "1 день", 2: "2 дня"}
+
+
+def notes(day=None):
+    """Пояснения к снимкам: {"tiktok": "за 19 окт", ...}."""
+    try:
+        with open(os.path.join(shots_dir(day), "notes.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _note(folder, name, text):
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, "notes.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    data[name] = text
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+
+def _span(first, last):
+    """«19.10» или «19.10–20.10»."""
+    return f"{first:%d.%m}" if first == last else f"{first:%d.%m}–{last:%d.%m}"
+
+
+TT_TITLE = "TikTok Studio"
+TT_OTHER = ["Другое", "Custom", "Personalizado", "Personalizar", "Otro", "Otros"]
+TT_CHIP = re.compile(r"^\s*(7|28|60|365)\s*(дн|day|día|dia)", re.I)
+# «14 окт - 20 окт», «Oct 14 - Oct 20», «14 oct - 20 oct».
+TT_RANGE = re.compile(r"^(\d{1,2}[^-–\d]{1,10}|[^-–\d]{2,10}\d{1,2})\s[-–]\s"
+                      r"(\d{1,2}[^-–\d]{1,10}|[^-–\d]{2,10}\d{1,2})$")
+
+
+def _tiktok_red(r, g, b):
+    """Фирменный красный TikTok (#FE2C55) — горящая «Обновить». Бледно-розовая
+    (не выбрана дата) сюда не подходит."""
+    return r > 200 and g < 110 and 40 < b < 150
+
+
+def _tt_cells(w):
+    """Клетки календаря TikTok по порядку дат и номер сегодняшней в нём.
+    ([], None) — календарь не разобран."""
+    for _ in range(5):
+        nodes = ui.dump(retries=2, tolerant=True)
+        cells = [n for n in nodes or [] if not _label(n)
+                 and 0.07 * w < n.bounds[2] - n.bounds[0] < w / 7 - 6
+                 and abs((n.bounds[2] - n.bounds[0]) - (n.bounds[3] - n.bounds[1])) <= 8]
+        if len(cells) >= 20:
+            break
+        time.sleep(1.0)
+    else:
+        return [], None
+    cells = _reading_order(cells)
+    sizes = {}
+    for c in cells:
+        sizes[c.bounds[2] - c.bounds[0]] = sizes.get(c.bounds[2] - c.bounds[0], 0) + 1
+    usual = max(sizes, key=sizes.get)
+    odd = [i for i, c in enumerate(cells) if abs(c.bounds[2] - c.bounds[0] - usual) >= 3]
+    if len(odd) != 1:
+        return [], None
+    # Проверка, что «другая» клетка и правда сегодня: она стоит в столбце
+    # сегодняшнего дня недели (неделя с воскресенья или с понедельника).
+    col = int(_center(cells[odd[0]])[0] // (w / 7))
+    wd = dt.date.today().weekday()
+    if col not in ((wd + 1) % 7, wd):
+        return [], None
+    return cells, odd[0]
+
+
+def _tt_pick_range(days, w):
+    """В открытом календаре TikTok выбрать `days` последних дней и нажать
+    «Обновить». True — выбрано."""
+    for back in (1, 2):              # конец — вчера; не выбирается — позавчера
+        for k in (back + days - 1, back):     # начало, конец (день — дважды та же дата)
+            cells, today = _tt_cells(w)      # после касания календарь сдвигается
+            if today is None or today - k < 0:
+                return False
+            ui.tap_node(cells[today - k])
+            human.pause(1.0, 1.4)
+        y = _wide_band(_tiktok_red)
+        if y is not None:
+            adb.tap(w // 2, y)
+            human.pause(4, 5)
+            return True
+    return False
+
+
+def _tt_range_text(nodes, h):
+    """Подпись периода под «Основные метрики»: «19 окт - 19 окт» -> «19 окт»."""
+    for n in nodes or []:
+        text = _label(n)
+        if n.bounds[1] < h * 0.4 and TT_RANGE.match(text):
+            a, _, b = re.split(r"\s([-–])\s", text, maxsplit=1)
+            return a if a.strip() == b.strip() else text
+    return ""
+
+
+def _tt_period(days, w, h):
+    """На «Аналитике» TikTok выбрать период. Подпись периода («19 окт»; "" —
+    выбран, но подписи не прочитать) или None — не вышло."""
+    nodes = ui.dump(retries=2, tolerant=True)
+    other = next((n for n in nodes or [] if _label(n) in TT_OTHER and n.bounds[1] < h * 0.3), None)
+    if other is None:
+        return None
+    ui.tap_node(_clickable_at(nodes, other))
+    human.pause(2, 2.5)
+    if not _tt_pick_range(days, w):
+        device.back()                                 # закрыть календарь
+        human.pause(1, 1.5)
+        return None
+    return _tt_range_text(ui.dump(retries=2, tolerant=True), h)
+
+
+def _menu_icon(nodes, w, h):
+    """☰ в правом верхнем углу профиля: крайний правый значок.
+
+    Не обязательно «нажимаемый»: живьём 2026-10-22 у TikTok ☰ — простой
+    ImageView, а нажимаемой рядом оказалась «Просмотры профиля» (следы) —
+    её брать нельзя. Поэтому — самый правый узел размером со значок."""
+    icons = [n for n in nodes or [] if n.bounds[0] > w * 0.82 and 0 < n.bounds[1] < h * 0.12
+             and w * 0.04 < n.bounds[2] - n.bounds[0] < w * 0.16
+             and 0 < n.bounds[3] - n.bounds[1] < h * 0.08]
+    if not icons:
+        return None
+    right = max(n.bounds[2] for n in icons)
+    return min((n for n in icons if n.bounds[2] >= right - 4),
+               key=lambda n: (not n.clickable, n.bounds[2] - n.bounds[0]))
+
+
+def _shot_tiktok(folder, w, h, days=None):
+    """С своего профиля: ☰ → TikTok Studio → «Статистика» → снимок."""
+    menu = _menu_icon(ui.dump(retries=2, tolerant=True), w, h)
+    if menu is None:
+        _note(folder, "tiktok", "не нашёл меню ☰ в профиле")
+        return None
+    ui.tap_node(menu)
     human.pause(1.5, 2.2)
-    studio = _pick(ui.dump(retries=2, tolerant=True), ["TikTok Studio"], h, exact=True) or \
-        next((n for n in ui.dump(retries=1, tolerant=True)
-              if (n.text or n.desc).strip() == "TikTok Studio"), None)
+    studio = _pick(ui.dump(retries=2, tolerant=True), [TT_TITLE], h, exact=True) or \
+        next((n for n in ui.dump(retries=1, tolerant=True) if _label(n) == TT_TITLE), None)
     if studio is None:
         device.back()
+        _note(folder, "tiktok", "в меню профиля нет TikTok Studio")
         return None
     ui.tap_node(studio)
     human.pause(4, 5)
+
+    def studio_title():
+        return next((n for n in ui.dump(retries=2, tolerant=True)
+                     if _label(n) == TT_TITLE and n.bounds[1] < h * 0.15), None)
+
     # Карточка «Статистика» — сразу под заголовком (её текста в дереве нет).
-    title = next((n for n in ui.dump(retries=2, tolerant=True)
-                  if (n.text or n.desc).strip() == "TikTok Studio" and n.bounds[1] < h * 0.15), None)
+    title = studio_title()
     below = (title.bounds[3] if title else int(h * 0.081)) + int(h * 0.062)
     adb.tap(int(w * 0.5), below)
     human.pause(6, 7)
-    opened = any(w_ in (n.text or n.desc) for n in ui.dump(retries=2, tolerant=True)
-                 for w_ in ("Аналитика", "Analytics", "Analíticas", "Estadísticas"))
+    nodes = ui.dump(retries=2, tolerant=True)
+    if not any(TT_CHIP.match(_label(n)) or _label(n) in TT_OTHER for n in nodes or []):
+        # Под заголовком оказалось не то (у других аккаунтов сверху бывает
+        # баннер). Главная TikTok Studio — тоже статистика: просмотры,
+        # подписчики и лайки за 7 дней. Снимаем её, а не что попало.
+        if studio_title() is None:
+            device.back()
+            human.pause(1.5, 2)
+        if studio_title() is None:
+            _note(folder, "tiktok", "«Аналитика» в TikTok Studio не открылась")
+            return None
+        path = _snap(folder, "tiktok")
+        _note(folder, "tiktok", "главная TikTok Studio, 7 дней (раздел «Аналитика» не открылся)")
+        device.back()
+        return path
+    span = _tt_range_text(nodes, h)
+    note = f"за {span}" if span else ""
+    if days:
+        picked = _tt_period(days, w, h)
+        if picked is None:
+            note = f"за {PERIOD_WORDS[days]} выбрать не вышло" + (f" — показано {span}" if span else "")
+        else:
+            note = f"за {picked or PERIOD_WORDS[days]}"
     path = _snap(folder, "tiktok")
-    for _ in range(3 if opened else 2):                     # обратно к профилю
+    if note:
+        _note(folder, "tiktok", note)
+    for _ in range(3):                                      # обратно к профилю
         device.back()
         human.pause(0.8, 1.2)
     return path
 
 
-def _shot_youtube(folder, w, h):
-    """YouTube Studio → вкладка «Аналитика» (как снимок человека)."""
+YT_TABS = ["Обзор", "Overview", "Resumen", "Descripción general", "Visión general"]
+YT_REALTIME = re.compile(r"^\s*60\s*(мин|min)", re.I)
+
+
+def _yt_analytics(w, h):
+    """Вкладка «Аналитика» YouTube Studio — средняя внизу. True — открыта.
+
+    Сразу после запуска касание теряется (живьём 2026-10-22 первое попало
+    в загрузку и осталась «Главная»), поэтому — с проверкой и повтором."""
+    for _ in range(3):
+        nodes = ui.dump(retries=2, tolerant=True)
+        if any(_label(n) in YT_TABS and n.bounds[1] < h * 0.2 for n in nodes or []):
+            return True
+        bar = [n for n in nodes or [] if n.clickable and n.bounds[1] > h * 0.85
+               and n.bounds[0] <= w / 2 <= n.bounds[2] and n.bounds[2] - n.bounds[0] < w / 2]
+        if bar:
+            ui.tap_node(bar[0])
+        else:
+            low = [n.bounds[1] for n in nodes or [] if n.clickable and n.bounds[1] > h * 0.85]
+            adb.tap(w // 2, (min(low) + 20) if low else int(h * 0.9))
+        human.pause(4, 5)
+    return False
+
+
+def _yt_realtime(w, h):
+    """С «Обзора» — в карточку «В реальном времени» (48 часов). True — открыта.
+    Подписи карточки в дереве нет: это последняя большая карточка страницы,
+    а узнаём её по переключателю «60 мин · 48 ч» внутри."""
+    for _ in range(2):
+        adb.shell(f"input swipe {w // 2} {int(h * 0.75)} {w // 2} {int(h * 0.25)} 400", check=False)
+        human.pause(1.2, 1.6)
+    nodes = ui.dump(retries=2, tolerant=True)
+    cards = [n for n in nodes or [] if n.clickable and n.bounds[2] - n.bounds[0] > w * 0.8
+             and n.bounds[3] - n.bounds[1] > h * 0.15 and n.bounds[1] > h * 0.08]
+    for card in sorted(cards, key=lambda n: -n.bounds[1])[:2]:
+        # По заголовку карточки, а не в случайное место: внутри строки видео.
+        adb.tap(w // 2, card.bounds[1] + int(h * 0.03))
+        human.pause(3, 4)
+        if any(YT_REALTIME.match(_label(n)) for n in ui.dump(retries=2, tolerant=True) or []):
+            return True
+        device.back()
+        human.pause(1.5, 2)
+    return False
+
+
+def _shot_youtube(folder, w, h, days=None):
+    """YouTube Studio → вкладка «Аналитика» (как снимок человека); за 1–2 дня —
+    «В реальном времени», 48 часов."""
     if not _installed(STUDIO):
+        _note(folder, "youtube", "YouTube Studio не установлен — снята страница канала")
         return _snap(folder, "youtube")                      # хотя бы страница канала
+    # С чистого листа: иначе Studio открывается там, где его бросили
+    # (живьём — внутри «Просмотров»), и вкладка «Аналитика» уже нажата.
+    # Загрузки идут через приложение YouTube, Studio закрывать можно.
+    device.stop_app(STUDIO)
     device.open_app(STUDIO)
     if not device.wait_for_app(STUDIO, timeout=25):
+        _note(folder, "youtube", "YouTube Studio не открылся")
         return None
     human.pause(5, 6)
-    nodes = ui.dump(retries=2, tolerant=True)
-    bottom = sorted((n for n in nodes if n.clickable and n.bounds[1] > h * 0.86), key=lambda n: n.bounds[0])
-    y = (bottom[0].bounds[1] + bottom[0].bounds[3]) // 2 if bottom else int(h * 0.9)
-    adb.tap(int(w * 0.5), y)                                 # «Аналитика» — средняя из пяти
-    human.pause(6, 7)
+    if not _yt_analytics(w, h):
+        path = _snap(folder, "youtube")
+        _note(folder, "youtube", "вкладка «Аналитика» не открылась — снята главная Studio")
+        device.go_home()
+        return path
+    human.pause(2, 3)
+    note = "последние 28 дней"
+    if days:
+        note = "последние 48 часов (короче периода в YouTube Studio нет)" \
+            if _yt_realtime(w, h) else f"за {PERIOD_WORDS[days]} выбрать не вышло — 28 дней"
     path = _snap(folder, "youtube")
+    _note(folder, "youtube", note)
     device.go_home()
     return path
 
@@ -444,23 +763,112 @@ def _find_scrolling(words, w, h, swipes=8):
     return None, nodes
 
 
-def _shot_instagram(folder, w, h):
+IG_DROP = re.compile(r"\d+\s*(дн|day|día|dia)|пользовательск|custom|personaliz", re.I)
+IG_CUSTOM = re.compile(r"пользовательск|custom|personaliz", re.I)
+IG_MONTH = re.compile(r"^30\s*(дн|day|día|dia)|^(last|últimos|ultimos|последние)\s*30", re.I)
+IG_APPLY = ["Применить", "Apply", "Aplicar"]
+
+
+def _ig_days(nodes, w):
+    """Числа календаря Instagram по порядку дат: [(число, клетка или None — серое)]."""
+    nums = _reading_order([n for n in nodes or [] if re.fullmatch(r"\d{1,2}", (n.text or "").strip())])
+    cells = [n for n in nodes or [] if n.clickable and n.bounds[2] - n.bounds[0] < w / 5]
+    out = []
+    for n in nums:
+        cx, cy = _center(n)
+        cell = next((c for c in cells if c.bounds[0] <= cx <= c.bounds[2]
+                     and c.bounds[1] <= cy <= c.bounds[3]), None)
+        out.append((int(n.text.strip()), cell))
+    return out
+
+
+def _ig_pick_range(days, w):
+    """В календаре Instagram выбрать `days` последних доступных дней.
+    (первый, последний) день или None.
+
+    Календарь — сплошной ряд дат: конец прошлого месяца, потом этот. Сегодня
+    — ПОСЛЕДНЕЕ вхождение сегодняшнего числа; дата клетки — сегодня минус
+    расстояние до неё. Последний доступный день — последняя нажимаемая
+    клетка перед сегодня."""
+    today = dt.date.today()
+    picked = None
+    for step in range(2 if days > 1 else 1):
+        seq = _ig_days(ui.dump(retries=2, tolerant=True), w)
+        now = max((i for i, (d, _) in enumerate(seq) if d == today.day), default=None)
+        if now is None:
+            return None
+        live = [i for i, (_, cell) in enumerate(seq[:now]) if cell is not None]
+        if not live:
+            return None
+        end = live[-1]
+        start = end - (days - 1)
+        first = today - dt.timedelta(days=now - start)
+        last = today - dt.timedelta(days=now - end)
+        if start not in live or seq[start][0] != first.day or seq[end][0] != last.day:
+            return None                                # ряд дат не сплошной — не трогаем
+        ui.tap_node(seq[start if step == 0 else end][1])
+        human.pause(1.0, 1.4)
+        picked = (first, last)
+    return picked
+
+
+def _ig_period(days, w, h):
+    """На «Статистике» Instagram выбрать период. Пояснение к снимку или None —
+    не вышло. Без days — вернуть обычные 30 дней (выбор Instagram помнит)."""
+    nodes = ui.dump(retries=2, tolerant=True)
+    drop = next((n for n in nodes or [] if IG_DROP.search(_label(n))
+                 and h * 0.1 < n.bounds[1] < h * 0.35 and n.bounds[0] > w * 0.25), None)
+    if drop is None:
+        return None
+    if not days and IG_MONTH.search(_label(drop)):
+        return "последние 30 дней"
+    ui.tap_node(_clickable_at(nodes, drop))
+    human.pause(1.5, 2)
+    nodes = ui.dump(retries=2, tolerant=True)
+    want = IG_CUSTOM if days else IG_MONTH
+    option = next((n for n in nodes or [] if want.search(_label(n))
+                   and n.bounds[1] > drop.bounds[3]), None)
+    if option is None:
+        device.back()
+        human.pause(1, 1.5)
+        return None
+    ui.tap_node(_clickable_at(nodes, option))
+    human.pause(2, 2.5)
+    if not days:
+        human.pause(2, 3)
+        return "последние 30 дней"
+    span = _ig_pick_range(days, w)
+    apply = next((n for n in ui.dump(retries=2, tolerant=True) or []
+                  if _label(n) in IG_APPLY and n.clickable), None)
+    if span is None or apply is None:
+        device.back()                                  # закрыть календарь, ничего не применяя
+        human.pause(1, 1.5)
+        return None
+    ui.tap_node(apply)
+    human.pause(5, 6)
+    return f"за {_span(*span)}"
+
+
+def _shot_instagram(folder, w, h, days=None):
     """«Статистика · Обзор» Instagram (как «Estadísticas · Resumen» у человека)."""
     nodes = ui.dump(retries=2, tolerant=True)
     menu = [n for n in nodes if n.clickable and n.bounds[1] < h * 0.12 and n.bounds[0] > w * 0.82]
     if not menu:
+        _note(folder, "instagram", "не нашёл меню ☰ — снят профиль")
         return _snap(folder, "instagram")
     ui.tap_node(max(menu, key=lambda n: n.bounds[0]))       # ☰ — «Параметры»
     human.pause(2, 2.5)
     entry, nodes = _find_scrolling(IG_ENTRY, w, h)
     if entry is None:
         device.back()
+        _note(folder, "instagram", "в настройках нет «Статистики» — снят профиль")
         return _snap(folder, "instagram")                    # хотя бы профиль
     ui.tap_node(_row(nodes, entry))
     human.pause(4, 5)
     backs = 2                                                # к настройкам и к профилю
     nodes = ui.dump(retries=2, tolerant=True)
-    if (entry.text or entry.desc).strip() not in IG_INSIGHTS_TITLE:
+    insights = (entry.text or entry.desc).strip() in IG_INSIGHTS_TITLE
+    if not insights:
         # Панель. Первый раз поверх неё шторка «Посмотрите статистику…» с
         # «Продолжить» — закрываем «назад», ничего не принимая. Ссылку
         # «Выключить статистику» не трогаем никогда.
@@ -474,6 +882,15 @@ def _shot_instagram(folder, w, h):
             ui.tap_node(views)
             human.pause(6, 7)
             backs = 3
+            insights = True
+    if insights:
+        note = _ig_period(days, w, h)
+        if note is None:
+            note = (f"за {PERIOD_WORDS[days]} выбрать не вышло — обычный период" if days
+                    else "")
+        _note(folder, "instagram", note)
+    else:
+        _note(folder, "instagram", "статистика не открылась — снята панель")
     path = _snap(folder, "instagram")
     for _ in range(backs):
         device.back()
@@ -520,16 +937,19 @@ SHOT_TITLES = {"tiktok": "TikTok Studio — аналитика", "shorts": "YouT
 
 
 def latest_shots():
-    """Снимки последнего дня: ([(путь, подпись)], дата) или ([], None)."""
+    """Снимки последнего дня: ([(путь, подпись)], дата) или ([], None).
+    В подписи — период («за 19.10–20.10») или что не вышло."""
     root = os.path.join(os.path.dirname(config.QUEUE_DIR), "analytics")
-    days = sorted(d for d in os.listdir(root)) if os.path.isdir(root) else []
-    for day in reversed(days):
+    dates = sorted(d for d in os.listdir(root)) if os.path.isdir(root) else []
+    for day in reversed(dates):
         folder = os.path.join(root, day)
+        said = notes(dt.date.fromisoformat(day)) if re.fullmatch(r"\d{4}-\d\d-\d\d", day) else {}
         items = []
         for net in ("shorts", "reels", "facebook", "tiktok"):
             path = os.path.join(folder, f"{SHOT_FILES[net]}.png")
             if os.path.isfile(path):
-                items.append((path, SHOT_TITLES[net]))
+                note = said.get(SHOT_FILES[net])
+                items.append((path, SHOT_TITLES[net] + (f", {note}" if note else "")))
         if items:
             return items, day
     return [], None
@@ -550,16 +970,19 @@ def save(net, data, at=None):
                      json.dumps(data.get("videos") or [], ensure_ascii=False)))
 
 
-def collect_all(nets=None, log=None):
+def collect_all(nets=None, log=None, days=None):
     """Пройти все сети по очереди и записать. Возвращает {сеть: данные}.
+    days — период снимков: 1 или 2 дня, None — как в приложениях.
 
     Если снимали по просьбе «/stats сейчас» — снимки и цифры уходят туда,
-    откуда просили."""
+    откуда просили, и за тот период, что просили."""
     asked = take_request()
     if asked is None:
         jobs.log_event("account_stats", "попытка")      # плановая — две в день
+    elif days is None:
+        days = asked.get("days")
     try:
-        return _collect_all(nets, log)
+        return _collect_all(nets, log, days)
     finally:
         if asked is not None:
             _answer(asked.get("address", ""))
@@ -581,11 +1004,11 @@ def _answer(address):
         pass
 
 
-def _collect_all(nets=None, log=None):
+def _collect_all(nets=None, log=None, days=None):
     # Только свежее: в альбом не должны попасть снимки прошлой съёмки, если
     # эта где-то не удалась.
     import glob
-    for old in glob.glob(os.path.join(shots_dir(), "*.png")):
+    for old in glob.glob(os.path.join(shots_dir(), "*.png")) +             glob.glob(os.path.join(shots_dir(), "notes.json")):
         try:
             os.remove(old)
         except OSError:
@@ -600,7 +1023,7 @@ def _collect_all(nets=None, log=None):
         for net in nets or config.FEED_APPS:
             if net not in NETS:
                 continue
-            data = collect(net, log, shots=True)
+            data = collect(net, log, shots=True, days=days)
             if data["followers"] is not None or data["videos"]:
                 save(net, data)
             out[net] = data
@@ -749,16 +1172,16 @@ def _request_path():
     return os.path.join(os.path.dirname(config.QUEUE_DIR), "analytics", "requested.json")
 
 
-def request_now(address=""):
+def request_now(address="", days=None):
     """Попросили «/stats сейчас» — снять при первой свободной минуте телефона и
-    прислать туда, откуда попросили."""
+    прислать туда, откуда попросили (days — за сколько дней)."""
     os.makedirs(os.path.dirname(_request_path()), exist_ok=True)
     with open(_request_path(), "w", encoding="utf-8") as f:
-        json.dump({"address": address, "at": time.time()}, f)
+        json.dump({"address": address, "at": time.time(), "days": days}, f)
 
 
 def take_request():
-    """Забрать просьбу (адрес, откуда просили) или None."""
+    """Забрать просьбу ({"address", "days"}) или None."""
     try:
         with open(_request_path(), encoding="utf-8") as f:
             data = json.load(f)

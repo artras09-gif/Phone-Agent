@@ -738,7 +738,7 @@ GROUP_HELLO = ("Работаю в этом чате — как в личке:\n"
                "• /queue, /cancel 5, /status, /stop, /links\n"
                "• Темы: /here — всё в этой теме; /here видео, /here ссылки, "
                "/here статистика — одно дело сюда; /everywhere — во всех темах\n"
-               "• /stats — снять статистику всех сетей сейчас (снимки экранов)\n\n"
+               "• /stats — статистика снимками экранов (/stats 1 — за день, /stats 2 — за два)\n\n"
                "Публиковать может любой участник этого чата.")
 PRIVACY_HINT = ("\n\n⚠ Сейчас я вижу в этом чате только команды и ответы на мои сообщения. "
                 "Чтобы видел все видео и ссылки: сделай меня администратором чата — или в "
@@ -1483,7 +1483,8 @@ def _command(text, addressed, chat_id, sender):
              f"/links — подборка (сама приходит: {when})\n"
              "/links 20 — последние 20, даже если уже присылал\n"
              "/status — что происходит\n"
-             "/stats — снять статистику всех сетей сейчас и прислать снимками экранов\n"
+             "/stats — статистика всех сетей снимками экранов: за 1 день, за 2 дня или "
+             "как обычно (выбор кнопками; сразу — /stats 1, /stats 2)\n"
              "/stop — прервать текущее действие", keyboard=True)
         return True
     if text.startswith("/status"):
@@ -1505,7 +1506,11 @@ def _command(text, addressed, chat_id, sender):
         send(postspec.TEMPLATE_HELP)
         return True
     if text.startswith("/stats") or (addressed and low.startswith("статистика")):
-        _snap_stats()
+        days = stats_days(text)
+        if days is None:
+            _ask_stats_period()
+        else:
+            _snap_stats(days or None)
         return True
     if text.startswith("/cancel"):
         _cmd_cancel(text)
@@ -1536,9 +1541,51 @@ def _command(text, addressed, chat_id, sender):
     return False
 
 
-def _snap_stats():
+# Период статистики (2026-10-22: «надо выбор, чтобы он мог показать стату за
+# один день или за два дня»). 0 — как в приложениях: YouTube 28 дней,
+# TikTok 7, Instagram 30.
+STATS_PERIODS = {1: "за 1 день", 2: "за 2 дня", 0: ""}
+
+
+def stats_days(text):
+    """Период из «/stats 2», «статистика за день»: 1, 2, 0 — обычный, None —
+    не сказано (тогда спросить кнопками)."""
+    parts = text.split(maxsplit=1)
+    rest = parts[1].strip().lower() if len(parts) > 1 else ""
+    if not rest:
+        return None
+    num = re.search(r"\d+", rest)
+    if num:
+        return int(num.group()) if int(num.group()) in (1, 2) else 0
+    if re.search(r"\bдва\b|\bдвое\b|\bдвух\b|\btwo\b", rest):
+        return 2
+    if re.search(r"\bд(ень|ня)\b|сутки|вчера|сегодня|\bday\b", rest):
+        return 1
+    return 0
+
+
+def _stats_markup():
+    return json.dumps({"inline_keyboard": [
+        [{"text": "За 1 день", "callback_data": "s:1"},
+         {"text": "За 2 дня", "callback_data": "s:2"}],
+        [{"text": "Как обычно (7–30 дней)", "callback_data": "s:0"}]]}, ensure_ascii=False)
+
+
+def _ask_stats_period():
+    """/stats без периода — выбор кнопками."""
+    target = current_chat() or load_settings()["owner"]
+    params = {"chat_id": target, "text": "Статистику за какой период?",
+              "reply_markup": _stats_markup()}
+    thread = _thread_for(target)
+    if thread:
+        params["message_thread_id"] = thread
+    _call("sendMessage", params, timeout=20)
+
+
+def _snap_stats(days=None, say=None):
     """/stats — снять экраны статистики ВСЕХ сетей прямо сейчас и прислать
     альбомом сюда же (2026-10-18: «нужны именно тогда, когда я их запрошу»).
+    days — 1 или 2 дня, None — обычный период приложений.
 
     Съёмка — действие с телефоном, поэтому через общую очередь действий.
     Телефон занят — просьба записывается, и сторож снимет сразу, как он
@@ -1547,14 +1594,17 @@ def _snap_stats():
     import accstats
     import runlog
 
+    say = say or send
     address = reply_address()
     role = getattr(_REPLY, "role", None) or "stats"
+    period = STATS_PERIODS.get(days or 0, "")
+    what = "статистику со всех сетей" + (f" {period}" if period else "")
 
     def work():
         reply_to(address, role)
         try:
             log = runlog.Log("статистика по запросу")
-            accstats.collect_all(log=log)
+            accstats.collect_all(log=log, days=days)
             if not send_shots(fresh=True):
                 lines = [ln.strip() for ln in log.text().splitlines() if ln.strip()]
                 send("Снимки статистики не получились: "
@@ -1563,24 +1613,45 @@ def _snap_stats():
         finally:
             set_reply(None)
 
+    # Живьём на Redmi 2026-10-22: за 1 день все три сети — 5 минут (выбор
+    # дат в календарях), обычный снимок — около трёх.
+    soon = "5 минут" if days else "3–4 минуты"
     if SUBMIT is None:
-        send("Снимаю статистику со всех сетей — пришлю снимками через 2–3 минуты.")
+        say(f"Снимаю {what} — пришлю снимками через {soon}.")
         work()
         return
     try:
         SUBMIT("статистика по запросу", work)
-        send("Снимаю статистику со всех сетей — пришлю снимками через 2–3 минуты.")
+        say(f"Снимаю {what} — пришлю снимками через {soon}.")
     except Deferred:
-        accstats.request_now(address)
-        send("Сниму статистику, как только служба телефона его освободит, — пришлю сюда.")
+        accstats.request_now(address, days)
+        say(f"Сниму {what}, как только служба телефона его освободит, — пришлю сюда.")
     except RuntimeError as e:
         busy = str(e).split(": ", 1)[-1].strip()
         if "статистик" in busy:
-            send("Уже снимаю статистику — пришлю, как будет готово.")
+            say("Уже снимаю статистику — пришлю, как будет готово.")
         else:
-            accstats.request_now(address)
-            send(f"Телефон сейчас занят ({busy}) — сниму статистику сразу, как "
-                 "освободится, и пришлю сюда.")
+            accstats.request_now(address, days)
+            say(f"Телефон сейчас занят ({busy}) — сниму {what} сразу, как "
+                "освободится, и пришлю сюда.")
+
+
+def _stats_button(cq, data, chat_id, message_id, group, thread):
+    """Кнопка периода под «Статистику за какой период?»."""
+    _REPLY.role = "stats"
+    home = role_home("stats")
+    if home and group and (home[0] != chat_id or (thread or GENERAL) != home[1]):
+        _call("answerCallbackQuery", {"callback_query_id": cq.get("id", ""),
+                                      "text": "статистику я теперь присылаю в другой чат или тему — спроси там",
+                                      "show_alert": "true"}, timeout=10)
+        return
+    _call("answerCallbackQuery", {"callback_query_id": cq.get("id", "")}, timeout=10)
+    try:
+        days = int(data.split(":", 1)[1]) or None
+    except ValueError:
+        days = None
+    # Ответ — правкой того же сообщения: кнопки исчезают, второй раз не нажать.
+    _snap_stats(days, say=lambda text: _edit(chat_id, message_id, text))
 
 
 def _take_video(video, text, spec, size_mb=0, where=None):
@@ -1871,6 +1942,9 @@ def _handle_callback(cq):
         # Кнопки под старым сообщением в чате, откуда бота уже убрали.
         _call("answerCallbackQuery", {"callback_query_id": cq.get("id", ""),
                                       "text": "этот чат не подключён"}, timeout=10)
+        return
+    if data.startswith("s:"):
+        _stats_button(cq, data, chat_id, message_id, group, thread)
         return
     home = role_home("posts")
     _REPLY.role = "posts"
