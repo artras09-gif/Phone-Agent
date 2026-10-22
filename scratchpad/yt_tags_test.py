@@ -84,16 +84,28 @@ print("\n--- черновик в боте показывает теги ---")
 import telegram_bot  # noqa: E402
 row = jobs.by_id(jid)
 text = telegram_bot._draft_text(row)
-say("Теги YouTube (подобрал DeepSeek): sfx, монтаж" in text, "в черновике — строка с тегами")
+say("Теги YouTube: sfx, монтаж" in text, "в черновике — строка с тегами (откуда — не записано: без приписки)")
+for src, label in (("model", "Теги YouTube (подобрал DeepSeek): sfx"),
+                   ("hashtags", "Теги YouTube (из хэштегов описания — модель не ответила): sfx")):
+    j = jobs.add(video, CAPTION, "shorts", exact=True,
+                 captions={"shorts_tags": ["sfx", "монтаж"], "shorts_tags_from": src})
+    say(label in telegram_bot._draft_text(jobs.by_id(j)), f"теги {src}: «{label[:45]}…»")
+import vision  # noqa: E402
+_ask = vision.ask_text
+vision.ask_text = lambda *a, **k: ""
+say(yttags.suggest("ролик #sfx #монтаж #звуки") and yttags.LAST_SOURCE == "hashtags",
+    "модель молчит — теги из хэштегов, и это записано")
+vision.ask_text = _ask
 
 
 print("\n--- ввод в приложении YouTube (экран как живьём) ---")
 
 
 class N:
-    def __init__(self, text="", b=(0, 0, 0, 0), clickable=True, rid=""):
+    def __init__(self, text="", b=(0, 0, 0, 0), clickable=True, rid="", cls="android.view.ViewGroup"):
         self.text, self.desc, self.bounds, self.clickable, self.rid = text, "", b, clickable, rid
         self.enabled = self.selected = False
+        self.cls = cls
 
     @property
     def area(self):
@@ -101,13 +113,19 @@ class N:
 
 
 UPLOAD = N("Загрузить", (33, 2127, 1047, 2177), rid="com.google.android.youtube:id/upload_bottom_button")
-TITLE = N(CAPTION.splitlines()[0], (302, 324, 1047, 480), rid="com.google.android.youtube:id/title_edit_text")
+TITLE = N(CAPTION.splitlines()[0], (302, 324, 1047, 480), rid="com.google.android.youtube:id/title_edit_text",
+          cls="android.widget.EditText")
 details = [TITLE, N("Развернуть", (33, 1198, 1047, 1330)), UPLOAD]
 expanded = [N("", (0, 879 + i * 154, 1080, 1033 + i * 154)) for i in range(7)] + \
            [N("", (0, 1957, 1080, 2094)), TITLE, UPLOAD]
 scrolled = [N("", (0, 939, 1080, 1093)), N("", (0, 1247, 1080, 1451)), N("", (0, 1451, 1080, 1605)),
             N("Свернуть", (33, 1616, 1047, 1748)), TITLE, UPLOAD]
-desc_editor = [N("Назад", (22, 93, 154, 225)), N("", (44, 244, 1036, 348))]
+# Живьём 2026-10-22: у экрана ввода описания в дереве — «Назад», одно поле
+# ввода без подсказки и чип «Хештеги»; заголовка «Добавьте описание» нет.
+desc_editor = [N("Назад", (22, 93, 154, 225)), N("", (44, 244, 1036, 348), cls="android.widget.EditText"),
+               N("Хештеги", (66, 1481, 293, 1547))]
+location = [N("Назад", (22, 93, 154, 225)), N("", (44, 244, 1036, 348), cls="android.widget.EditText")] + \
+    [N(f"место {i}", (0, 700 + i * 150, 1080, 850 + i * 150)) for i in range(5)]
 attrs = [N("Назад", (22, 93, 154, 225)), N("Добавьте теги", (0, 379, 1080, 523))]
 state = {"screen": details, "typed": [], "chips": [], "taps": []}
 
@@ -124,6 +142,8 @@ def tap_node(n):
         state["screen"] = expanded
     elif n.bounds == (0, 1451, 1080, 1605):
         state["screen"] = attrs
+    elif n.bounds == (0, 1187, 1080, 1341):                # третья строка — «Описание»
+        state["screen"] = state.get("third", desc_editor)
     elif n.text == "Добавьте теги":
         state["field"] = True
 
@@ -157,7 +177,7 @@ def type_text(t):
 
 
 def back():
-    if state["screen"] in (desc_editor,):
+    if state["screen"] in (desc_editor, location):
         state["screen"] = expanded
     elif state["screen"] is attrs:
         state["screen"] = scrolled
@@ -201,6 +221,29 @@ say("теги: 3 из 3" in note and "описание:" in note and "[!]" not i
 say(state["screen"] in (scrolled, expanded) and UPLOAD in state["screen"], "в конце — снова экран с «Загрузить»")
 say("строка 1451" in state["taps"] and "строка 1247" not in state["taps"],
     "«Атрибуты» — строка ровно над «Свернуть», а не соседняя (там «Добавить в плейлист»)")
+say("строка 1187" in state["taps"] and not any(isinstance(t, tuple) for t in state["taps"]),
+    "описание — третья строка под названием, без модели зрения")
+
+print("\n--- на ПК без ключа (модели нет) — описание всё равно вписывается ---")
+poster._vision_point = lambda prompt: None
+state.update(screen=details, chips=[], typed=[], taps=[])
+note = poster._yt_details(step, ctx, tmp, 8)
+say(state["typed"] == [CAPTION] and "описание:" in note, f"по порядку строк: {note}")
+
+print("\n--- третьей строкой открылось не то (другая раскладка) — спросить модель ---")
+asked = []
+poster._vision_point = lambda prompt: asked.append(1) or (540, 1264, "Добавьте описание")
+state.update(screen=details, chips=[], typed=[], taps=[], third=location)
+note = poster._yt_details(step, ctx, tmp, 8)
+say(asked and state["typed"] == [CAPTION] and "описание:" in note,
+    "экран со списком мест — не редактор: назад, модель нашла строку, описание вписано")
+poster._vision_point = lambda prompt: None
+state.update(screen=details, chips=[], typed=[], taps=[], third=location)
+note = poster._yt_details(step, ctx, tmp, 8)
+say(not state["typed"] and "строку описания не нашёл" in note and "теги: 3 из 3" in note,
+    "не узнали экран и модели нет — описание НЕ печатается куда попало, теги ставятся: " + note)
+state.pop("third")
+poster._vision_point = lambda prompt: (540, 1264, "Добавьте описание")
 
 say(keyboard["hidden"] >= 1, f"клавиатуру убирал перед прокруткой: {keyboard['hidden']} раз")
 

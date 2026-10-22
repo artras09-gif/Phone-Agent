@@ -813,7 +813,7 @@ say_to(GROUP, FRIEND, "/stats", thread=STATS)
 ask = last_text(GROUP, m, "за какой период")
 marks = json.loads(ask["reply_markup"]) if ask else {}
 datas = [b["callback_data"] for row in marks.get("inline_keyboard", []) for b in row]
-say(ask and str(ask.get("message_thread_id")) == str(STATS) and datas == ["s:1", "s:2", "s:0"],
+say(ask and str(ask.get("message_thread_id")) == str(STATS) and datas == ["s:1", "s:2", "s:-1", "s:0"],
     f"/stats без периода — спрашивает кнопками в теме «Статистика»: {datas}")
 say(not snapped, "пока не выбрали — не снимает")
 press(ask, "s:1", FRIEND, chat=GROUP)

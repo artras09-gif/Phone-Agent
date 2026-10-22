@@ -61,6 +61,8 @@ ui.tap_node = lambda n: taps.append(n) or accstats._center(n)
 adb.tap = lambda x, y: taps.append((x, y))
 backs = []
 device.back = lambda: backs.append(1)
+FRONT = ["com.zhiliaoapp.musically"]
+adb.current_app = lambda: (FRONT[0], "")
 W, H = 1080, 2400
 
 # ------------------------------------------------------- календарь TikTok
@@ -123,6 +125,12 @@ taps.clear()
 accstats._wide_band = lambda test, low=0.7: None
 say(not accstats._tt_pick_range(1, W) and not any(isinstance(t, tuple) for t in taps),
     "кнопка так и не загорелась — «Обновить» не жмёт, сдаётся")
+taps.clear()
+accstats._wide_band = lambda test, low=0.7: 2313
+FRONT[0] = "com.google.android.youtube"
+say(not accstats._tt_pick_range(1, W) and not any(isinstance(t, tuple) for t in taps),
+    "на экране не TikTok — по цвету не жмёт (красная полоса могла быть чужой)")
+FRONT[0] = "com.zhiliaoapp.musically"
 
 print("\n--- «Обновить» ищется по цвету на снимке ---")
 importlib = __import__("importlib")
@@ -271,6 +279,40 @@ items, day = accstats.latest_shots()
 say([c for _, c in items] == ["YouTube Studio — аналитика, последние 48 часов (короче периода в YouTube Studio нет)",
                              "Instagram — статистика, за 20.10", "TikTok Studio — аналитика, за 20 окт"],
     f"{[c for _, c in items]}")
+
+print("\n--- снимок — только своего приложения (живьём 22.10: в альбом легла переписка) ---")
+shots = []
+adb.screenshot = lambda path: shots.append(path) or open(path, "wb").write(b"p" * 20000)
+folder = accstats.shots_dir()
+FRONT[0] = "com.instagram.android"
+got = accstats._snap(folder, "youtube")
+say(got is None and not shots and "другое приложение" in accstats.notes().get("youtube", ""),
+    "YouTube Studio, а на экране Instagram — снимка нет, в подписи — почему: "
+    + accstats.notes().get("youtube", "")[:60])
+FRONT[0] = "com.google.android.apps.youtube.creator"
+say(accstats._snap(folder, "youtube") and len(shots) == 1, "на экране Studio — снят")
+FRONT[0] = "com.instagram.android"
+say(accstats._snap(folder, "instagram_tiles2") and accstats._snap(folder, "instagram"),
+    "плитки и статистика Instagram — его же")
+say(accstats._snap(folder, "tiktok_tiles") is None, "плитки TikTok при открытом Instagram — нет")
+seq = iter(["com.google.android.apps.youtube.creator", "com.instagram.android"])
+adb.current_app = lambda: (next(seq), "")
+say(accstats._snap(folder, "youtube") is None, "пока снимали, вылезло другое приложение — снимок выброшен")
+adb.current_app = lambda: (FRONT[0], "")
+
+print("\n--- имя аккаунта в подписи (живьём 22.10: Instagram переключился на личный) ---")
+ig_head = [N("easyease.studio", b=(330, 282, 632, 328)), N("4", b=(330, 350, 357, 406)),
+           N("ontwos.studio", b=(315, 93, 719, 247))]
+say(accstats._account_name(ig_head, W, H) == "ontwos.studio",
+    "Instagram: логин из шапки, а не отображаемое имя под аватаром")
+tt_head = [N("Ease.motion", b=(369, 134, 689, 195)), N("Мысль...", b=(525, 261, 716, 343))]
+say(accstats._account_name(tt_head, W, H) == "Ease.motion", "TikTok: заголовок профиля")
+accstats._note(folder, "instagram_account", "ontwos.studio")
+items, day = accstats.latest_shots()
+caps = [c for _, c in items]
+say(any(c.startswith("Instagram (ontwos.studio) — статистика") for c in caps)
+    and any(c.startswith("Instagram (ontwos.studio) — плитки") for c in caps),
+    "в подписях снимков Instagram — его логин: " + next((c for c in caps if "Instagram" in c), ""))
 
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)

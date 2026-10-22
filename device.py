@@ -459,6 +459,10 @@ def close_overlays(packages, keep=None):
     """
     for package in packages:
         if package and package != keep:
+            if upload_progress(package) is not None:
+                # Ещё грузит прошлое видео (живьём 2026-10-22: YouTube через VPN
+                # грузил дольше 15 минут ожидания) — force-stop оборвал бы загрузку.
+                continue
             adb.shell(f"am force-stop {package}", check=False)
 
 

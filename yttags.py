@@ -48,9 +48,17 @@ def from_hashtags(caption):
     return clean(", ".join(h for h in re.findall(r"#([\w-]+)", caption or "")))
 
 
+# Откуда теги последнего `suggest`: "model" или "hashtags". Черновик бота
+# говорит об этом вслух: «подобрал DeepSeek» при тегах из хэштегов — неправда
+# (живьём 2026-10-22: без ключа теги совпали с хэштегами, а надпись осталась).
+LAST_SOURCE = ""
+
+
 def suggest(caption, timeout=40):
     """Теги к ролику: от модели, а не вышло — из хэштегов описания."""
+    global LAST_SOURCE
     caption = str(caption or "").strip()
+    LAST_SOURCE = ""
     if not caption:
         return []
     try:
@@ -59,7 +67,9 @@ def suggest(caption, timeout=40):
                                  max_tokens=300, temperature=0.3, timeout=timeout)
         tags = clean(answer)
         if len(tags) >= 3:
+            LAST_SOURCE = "model"
             return tags
     except Exception:
         pass
+    LAST_SOURCE = "hashtags"
     return from_hashtags(caption)

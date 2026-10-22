@@ -738,7 +738,8 @@ GROUP_HELLO = ("Работаю в этом чате — как в личке:\n"
                "• /queue, /cancel 5, /status, /stop, /links\n"
                "• Темы: /here — всё в этой теме; /here видео, /here ссылки, "
                "/here статистика — одно дело сюда; /everywhere — во всех темах\n"
-               "• /stats — статистика снимками экранов (/stats 1 — за день, /stats 2 — за два)\n\n"
+               "• /stats — статистика снимками экранов (/stats 1 — за день, /stats 2 — за два, "
+               "/stats все — за всё время + плитки профилей с просмотрами)\n\n"
                "Публиковать может любой участник этого чата.")
 PRIVACY_HINT = ("\n\n⚠ Сейчас я вижу в этом чате только команды и ответы на мои сообщения. "
                 "Чтобы видел все видео и ссылки: сделай меня администратором чата — или в "
@@ -1483,8 +1484,9 @@ def _command(text, addressed, chat_id, sender):
              f"/links — подборка (сама приходит: {when})\n"
              "/links 20 — последние 20, даже если уже присылал\n"
              "/status — что происходит\n"
-             "/stats — статистика всех сетей снимками экранов: за 1 день, за 2 дня или "
-             "как обычно (выбор кнопками; сразу — /stats 1, /stats 2)\n"
+             "/stats — статистика всех сетей снимками экранов: за 1 день, за 2 дня, за всё "
+             "время или как обычно (выбор кнопками; сразу — /stats 1, /stats 2, /stats все). "
+             "В альбоме и плитки профилей — под каждым видео его просмотры\n"
              "/stop — прервать текущее действие", keyboard=True)
         return True
     if text.startswith("/status"):
@@ -1544,7 +1546,7 @@ def _command(text, addressed, chat_id, sender):
 # Период статистики (2026-10-22: «надо выбор, чтобы он мог показать стату за
 # один день или за два дня»). 0 — как в приложениях: YouTube 28 дней,
 # TikTok 7, Instagram 30.
-STATS_PERIODS = {1: "за 1 день", 2: "за 2 дня", 0: ""}
+STATS_PERIODS = {1: "за 1 день", 2: "за 2 дня", 0: "", -1: "за всё время"}
 
 
 def stats_days(text):
@@ -1554,6 +1556,8 @@ def stats_days(text):
     rest = parts[1].strip().lower() if len(parts) > 1 else ""
     if not rest:
         return None
+    if re.search(r"вс[её]\s*врем|\bвсё\b|\bвсе\b|\bвесь\b|\ball\b|lifetime", rest):
+        return -1                     # за всё время
     num = re.search(r"\d+", rest)
     if num:
         return int(num.group()) if int(num.group()) in (1, 2) else 0
@@ -1568,6 +1572,7 @@ def _stats_markup():
     return json.dumps({"inline_keyboard": [
         [{"text": "За 1 день", "callback_data": "s:1"},
          {"text": "За 2 дня", "callback_data": "s:2"}],
+        [{"text": "За всё время", "callback_data": "s:-1"}],
         [{"text": "Как обычно (7–30 дней)", "callback_data": "s:0"}]]}, ensure_ascii=False)
 
 
@@ -1710,6 +1715,7 @@ def _take_video(video, text, spec, size_mb=0, where=None):
             # до того, как нажмёт «Сейчас».
             import yttags
             extra["shorts_tags"] = yttags.suggest(caption)
+            extra["shorts_tags_from"] = yttags.LAST_SOURCE
         job_id = jobs.add(path, caption=caption, targets=",".join(targets),
                           status="draft", chat=reply_address(), device=device,
                           captions=extra or None)
@@ -1848,9 +1854,12 @@ def _draft_text(job):
         title = postspec.fit(postspec.shorts_title(caption), "shorts")
         if title != caption:
             text += f"Название на YouTube: {title}\n\n"
-    tags = jobs.captions_of(job).get("shorts_tags") if "shorts" in picked else None
+    caps = jobs.captions_of(job)
+    tags = caps.get("shorts_tags") if "shorts" in picked else None
     if tags:
-        text += "Теги YouTube (подобрал DeepSeek): " + ", ".join(tags) + "\n\n"
+        by = {"model": " (подобрал DeepSeek)",
+              "hashtags": " (из хэштегов описания — модель не ответила)"}.get(caps.get("shorts_tags_from"), "")
+        text += f"Теги YouTube{by}: " + ", ".join(tags) + "\n\n"
     skipped = [postspec.TITLES[t] for t in TARGET_ORDER if t not in picked]
     if skipped:
         text += "Не публикую в: " + ", ".join(skipped) + "\n\n"

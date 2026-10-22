@@ -142,6 +142,9 @@ def _awake_if_dark(ctx):
     return False
 
 
+HASHTAG_END = re.compile(r"[#@][^\s#@]+$")
+
+
 def run_step(step, ctx, log_path, index):
     """Выполнить один шаг маршрута. Возвращает описание для лога."""
     if abort.requested():
@@ -349,6 +352,13 @@ def run_step(step, ctx, log_path, index):
         if not value:
             return "текста нет, пропускаю"
         device.type_text(value)
+        if HASHTAG_END.search(value):
+            # Подпись кончается хэштегом или упоминанием — курсор стоит в нём, и
+            # TikTok держит поверх формы список подсказок «#videoediting 1.1M
+            # публикаций», а под ним прячется «Опубликовать» (живьём 2026-10-22:
+            # «не нашёл ФИНАЛЬНУЮ КНОПКУ»). Пробел завершает хэштег — список уходит.
+            device.type_text(" ")
+            return f"введён текст ({len(value)} символов) + пробел после хэштега"
         return f"введён текст ({len(value)} символов)"
 
     raise StepFailed(f"неизвестная операция: {op}")
@@ -470,6 +480,30 @@ def _title_text(nodes, step):
     return (field.text if field is not None else "").strip()
 
 
+def _yt_desc_row(nodes, w):
+    """Строка «Описание» на развёрнутом экране сведений: третья строка во всю
+    ширину под полем названия — «Доступ», «Аудитория», «Описание» (живьём
+    2026-10-22, Redmi; подписей у строк в дереве нет). None — строк меньше."""
+    field = next((n for n in nodes or [] if str(getattr(n, "cls", "")).endswith("EditText")
+                  and 0 < n.bounds[1] < 900), None)
+    fold = _exact(nodes, YT_COLLAPSE)
+    rows = _full_rows(nodes, w, field.bounds[3] if field is not None else 0,
+                      fold.bounds[1] if fold is not None else 10 ** 6)
+    return rows[2] if len(rows) >= 3 else None
+
+
+def _is_desc_editor(nodes, step, h):
+    """Открылся экран ввода описания: «Загрузить» нет, а поле ввода ровно одно и
+    вверху (у «Местоположения» под полем поиска — список мест, у других строк
+    поля нет вовсе). Заголовка «Добавьте описание» в дереве нет."""
+    if _on_details(nodes, step):
+        return False
+    fields = [n for n in nodes or [] if str(getattr(n, "cls", "")).endswith("EditText")]
+    lists = [n for n in nodes or [] if n.clickable and n.bounds[1] > h * 0.25
+             and not str(getattr(n, "cls", "")).endswith("EditText")]
+    return len(fields) == 1 and fields[0].bounds[1] < h * 0.25 and len(lists) < 3
+
+
 def _back_to_details(step):
     for _ in range(3):
         nodes = ui.dump(retries=2, tolerant=True)
@@ -497,19 +531,32 @@ def _yt_details(step, ctx, log_path, index):
         human.pause(1.5, 2.2)
 
     if desc:
-        hit = _vision_point(ASK_ROW_AT.replace(
-            "{labels}", "«Добавьте описание» (или «Описание», «Add description», «Agrega una descripción»)"))
-        if hit and any(word in hit[2].lower() for word in YT_DESC_WORDS):
-            adb.tap(hit[0], hit[1])
+        # Сперва по порядку строк — модель зрения есть не везде (живьём
+        # 2026-10-22: на ПК без ключа описание не вписалось вовсе). Не
+        # узнали экран ввода — спросить модель по снимку.
+        opened = False
+        row = _yt_desc_row(ui.dump(retries=2, tolerant=True), w)
+        if row is not None:
+            ui.tap_node(row)
             human.pause(2.5, 3)
-            if _on_details(ui.dump(retries=2, tolerant=True), step):
-                notes.append("строка описания не открылась")
-            else:
-                device.type_text(desc)
-                human.pause(0.8, 1.2)
-                device.hide_keyboard()
-                notes.append(f"описание: {len(desc)} знаков"
-                             + ("" if _back_to_details(step) else " [!] не вернулся к сведениям"))
+            opened = _is_desc_editor(ui.dump(retries=2, tolerant=True), step, h)
+            if not opened:
+                _back_to_details(step)
+        if not opened:
+            hit = _vision_point(ASK_ROW_AT.replace(
+                "{labels}", "«Добавьте описание» (или «Описание», «Add description», «Agrega una descripción»)"))
+            if hit and any(word in hit[2].lower() for word in YT_DESC_WORDS):
+                adb.tap(hit[0], hit[1])
+                human.pause(2.5, 3)
+                opened = _is_desc_editor(ui.dump(retries=2, tolerant=True), step, h)
+                if not opened:
+                    _back_to_details(step)
+        if opened:
+            device.type_text(desc)
+            human.pause(0.8, 1.2)
+            device.hide_keyboard()
+            notes.append(f"описание: {len(desc)} знаков"
+                         + ("" if _back_to_details(step) else " [!] не вернулся к сведениям"))
         else:
             notes.append("строку описания не нашёл — описание только в названии")
 
