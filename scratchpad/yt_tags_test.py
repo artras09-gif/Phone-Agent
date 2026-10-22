@@ -50,8 +50,8 @@ say(yttags.from_hashtags(CAPTION) == ["shorts", "монтаж", "звуки", "s
 import vision  # noqa: E402
 vision.ask_text = lambda prompt, max_tokens, temperature, timeout, model=None: \
     "звуковые эффекты, sound effects, sfx, монтаж видео, whoosh"
-say(yttags.suggest(CAPTION) == ["звуковые эффекты", "sound effects", "sfx", "монтаж видео", "whoosh"],
-    "теги от модели")
+say(yttags.suggest(CAPTION) == ["звуковые эффекты", "sfx", "монтаж видео", "whoosh"],
+    "теги от модели — на языке описания: «sound effects» не из описания выброшен, «sfx» и «whoosh» оттуда")
 vision.ask_text = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("нет связи"))
 say(yttags.suggest(CAPTION) == ["shorts", "монтаж", "звуки", "sfx"], "модель недоступна — из хэштегов, без падения")
 
@@ -79,6 +79,31 @@ jid3 = jobs.add(video, CAPTION, "shorts", exact=True)
 scheduler.run_post_job(job_id=jid3)
 say(calls[0][2]["tags"] == [], "YT_TAGS = False — без тегов")
 config.YT_TAGS = True
+
+print("\n--- теги на языке описания (2026-10-23: к испанскому описанию — русские теги) ---")
+ES = ("🇺🇳 UN VOTO CONTRA 14\n\nEl 20 de noviembre de 2024, el Consejo de Seguridad de la ONU votó "
+      "una resolución que exigía un alto el fuego inmediato en Gaza y la liberación de los rehenes.")
+RU = "7 трендовых звуков для монтажа 🔊 Какой твой любимый — 01 или 07?\n\n#звукидлямонтажа #sfx"
+for cap, want in ((ES, "es"), (RU, "ru"),
+                  ("5 shape layer modifiers in After Effects that save you hours of keyframing", "en"),
+                  ("O vídeo mais rápido do mundo e a música que ninguém conhece", "pt"), ("🔥🔥", "")):
+    say(yttags.language(cap) == want, f"язык «{cap[:28]}…» -> {yttags.language(cap)!r}")
+asked_prompts = []
+import importlib  # noqa: E402
+importlib.reload(yttags)            # выше suggest подменён для публикации — нужен настоящий
+_prev_ask = vision.ask_text
+vision.ask_text = lambda prompt, **k: asked_prompts.append(prompt) or \
+    "ООН, Consejo de Seguridad, перемирие, Gaza, veto Estados Unidos, голосование"
+tags = yttags.suggest(ES)
+say("на испанском" in asked_prompts[-1] and "смесь" not in asked_prompts[-1].lower(),
+    "просим теги ТОЛЬКО на языке описания (испанский), без «смеси русских и английских»")
+say(tags == ["Consejo de Seguridad", "Gaza", "veto Estados Unidos"],
+    f"модель подмешала кириллицу — выброшена: {tags}")
+vision.ask_text = lambda prompt, **k: "звуки для монтажа, sfx, sound effects, монтаж видео, free sounds"
+tags = yttags.suggest(RU)
+say(tags == ["звуки для монтажа", "sfx", "монтаж видео"],
+    f"русское описание: английское «sound effects» — нет, «sfx» из описания — да: {tags}")
+vision.ask_text = _prev_ask
 
 print("\n--- черновик в боте показывает теги ---")
 import telegram_bot  # noqa: E402
