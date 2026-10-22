@@ -661,10 +661,11 @@
             "desc": "Upload"
           }
         ],
-        "desc": "ФИНАЛЬНАЯ КНОПКА"
+        "desc": "ФИНАЛЬНАЯ КНОПКА",
+        "verify_gone": true
       }
     ],
-    "rev": 6,
+    "rev": 7,
     "needs_storage": true
   },
   "_feed_apps": {

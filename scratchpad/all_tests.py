@@ -76,6 +76,7 @@ TESTS = [
     ("scratchpad/yt_tags_test.py", "YouTube: описание и теги от DeepSeek вбиваются при загрузке"),
     ("scratchpad/post_dupes.py", "одно видео — одна публикация; бот без журнала сессий"),
     ("scratchpad/post_youtube.py", "YouTube: доступ к файлам, аудитория, серая кнопка — не «готово»"),
+    ("scratchpad/publish_keyboard.py", "финальная кнопка под клавиатурой: убрать, нажать, проверить, что экран ушёл"),
     ("scratchpad/post_new_phone.py", "новый телефон: обрезка YouTube, окно микрофона Instagram"),
     ("scratchpad/post_exclude.py", "подпись: название YouTube + описание, во все сети, «без ютуба»"),
     ("scratchpad/post_targets_bot.py", "пост из окна — в отмеченные сети; бот берёт новый токен"),

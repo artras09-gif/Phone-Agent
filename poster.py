@@ -145,6 +145,40 @@ def _awake_if_dark(ctx):
 HASHTAG_END = re.compile(r"[#@][^\s#@]+$")
 
 
+def _button_gone(selectors, wait):
+    """Финальная кнопка ушла с экрана (приложение перешло дальше)."""
+    end = time.time() + wait
+    while time.time() < end:
+        nodes = ui.dump(retries=1, tolerant=True)
+        if nodes and ui.find_any(nodes, selectors) is None:
+            return True
+        time.sleep(1.0)
+    return False
+
+
+def _publish_went(step, selectors, node, label, log_path, index):
+    """После финальной кнопки экран должен уйти. Не ушёл — касание пропало
+    (клавиатура, загрузка): убрать клавиатуру и нажать ещё раз. Не ушёл и
+    тогда — честная ошибка, а не «жду загрузку» того, что не загружается."""
+    wait = step.get("gone_timeout", 12)
+    if _button_gone(selectors, wait):
+        return f"тап «{label}» -> {node}; экран ушёл"
+    device.hide_keyboard()
+    human.pause(0.8, 1.2)
+    again, nodes = ui.wait_any(selectors, timeout=5)
+    if again is not None:
+        ui.tap_node(again)
+        human.pause(0.8, 1.8)
+        if _button_gone(selectors, wait):
+            return f"тап «{label}» со второго раза (первое касание не прошло) -> {again}"
+    nodes = ui.dump(retries=2, tolerant=True)
+    _snap(log_path, index, "STUCK")
+    with open(os.path.join(log_path, f"{index:02d}_screen.txt"), "w", encoding="utf-8") as f:
+        f.write(ui.describe(nodes, limit=80))
+    raise StepFailed(f"нажал «{label}» дважды, но экран не ушёл — видео НЕ загружено. "
+                     f"Дерево экрана сохранено в {log_path}")
+
+
 def run_step(step, ctx, log_path, index):
     """Выполнить один шаг маршрута. Возвращает описание для лога."""
     if abort.requested():
@@ -281,6 +315,15 @@ def run_step(step, ctx, log_path, index):
                          + _vision_note(log_path, index, label))
 
     if op in ("tap", "optional_tap", "wait", "publish"):
+        if op == "publish" and device.keyboard_shown():
+            # Финальная кнопка — внизу, а клавиатура закрывает низ экрана.
+            # Живьём 2026-10-23 на телефоне пользователя: после сведений
+            # YouTube курсор встал в название, клавиатура выехала поверх
+            # «Upload», касание ушло в клавиатуру — а отчёт сказал «нажал,
+            # жду загрузку». На Redmi экран при клавиатуре ужимается, и
+            # кнопка оставалась видна, поэтому там это не ловилось.
+            device.hide_keyboard()
+            human.pause(0.8, 1.2)
         pause_xy = step.get("pause_xy")
         node, nodes = ui.wait_any(selectors, timeout=timeout if not pause_xy else
                                   min(timeout, step.get("pause_after", 12)))
@@ -343,6 +386,8 @@ def run_step(step, ctx, log_path, index):
 
         ui.tap_node(node)
         human.pause(0.8, 1.8)
+        if op == "publish" and step.get("verify_gone"):
+            return _publish_went(step, selectors, node, label, log_path, index)
         return f"тап «{label}» -> {node}"
 
     if op == "type":
