@@ -726,9 +726,20 @@ def _for_me(text, msg):
         text = re.sub(r"[ \t]{2,}", " ", text).strip()
         addressed = True
     reply = (msg.get("reply_to_message") or {}).get("from") or {}
-    if name and str(reply.get("username") or "").lower() == name:
+    if not addressed and name and str(reply.get("username") or "").lower() == name \
+            and BARE_COMMAND.match(text.strip().lower()):
+        # Ответ на сообщение бота — обращение, только если это голая команда.
+        # Иначе это разговор людей: «Оо, на сорокет зашло» в ответ на альбом
+        # статистики получало «Пришли видео файлом…» (живьём 2026-10-23).
         addressed = True
     return text.strip(), addressed, False
+
+
+# Слова-команды, которые принимаются ответом на сообщение бота (в группе с
+# privacy mode бот видит только ответы ему): ровно команда и, может быть,
+# число или период — «статистика 2», «ссылки 20», «отмена 5», «очередь».
+BARE_COMMAND = re.compile(r"^(ссылки|очередь|шаблон|статистика|стата|отмена)"
+                          r"(\s+(\d+|вс[её]|вс[её] время|за\s+\S+(\s+\S+)?))?$")
 
 
 GROUP_HELLO = ("Работаю в этом чате — как в личке:\n"
@@ -1297,6 +1308,11 @@ def _handle(msg):
             return
 
     video = msg.get("video") or msg.get("document") or msg.get("animation")
+    hailed = addressed
+    if group and addressed and text and not text.startswith("/") \
+            and not BARE_COMMAND.match(text.lower()):
+        # «@бот, статистика огонь» — разговор, а не команда «статистика».
+        addressed = False
     role = _role_of(text, msg, video, chat_id, sender, addressed)
     if group:
         roles = _roles(chat_id)
@@ -1325,8 +1341,11 @@ def _handle(msg):
 
     if not video:
         # Фото вместо видео — частая промашка; в группе на обычную болтовню
-        # и картинки не отвечаем — только если обратились.
-        if addressed and (text or msg.get("photo")):
+        # и картинки не отвечаем — только если обратились. А в группе и
+        # обращение «@бот, классно» — разговор, не вопрос боту: подсказка
+        # только на голое «@бот» или фото ему.
+        hint = (text or msg.get("photo")) if not group else (not text or msg.get("photo"))
+        if hailed and hint:
             send("Пришли видео файлом — опубликую, или ссылку — сохраню.",
                  keyboard=True)
         return
@@ -1492,7 +1511,7 @@ def _command(text, addressed, chat_id, sender):
     if text.startswith("/status"):
         send(
             f"В очереди: {len(jobs.pending())}\n"
-            f"Постов сегодня: {jobs.count_today('done')}/{config.MAX_POSTS_PER_DAY}\n"
+            f"Постов сегодня: {jobs.count_today('done')}\n"
             f"Сессий сегодня: {jobs.sessions_today()}\n"
             f"Ссылок ждёт подборки: {jobs.links_waiting()}"
         )
@@ -1724,7 +1743,8 @@ def _take_video(video, text, spec, size_mb=0, where=None):
 
     job_id = jobs.add(path, caption=spec["caption"], targets=",".join(spec["targets"]),
                       run_at=spec["when"].timestamp() if spec["when"] else None,
-                      captions=spec["captions"], exact=spec["exact"],
+                      # Прислал человек — его решение: дневной лимит не держит.
+                      captions=spec["captions"], exact=True,
                       chat=reply_address(), device=device)
     send(postspec.describe(spec, job_id) + f"\n\nОтменить: /cancel {job_id}")
     if spec["when"] is None:
@@ -1815,8 +1835,13 @@ def _time_choices(now=None):
 def _when_of(code, now=None):
     """Код кнопки -> (datetime или None, точное ли)."""
     now = now or dt.datetime.now()
+    # Всё, что человек выбрал кнопкой, — его решение, а не разгон: дневной
+    # лимит (`MAX_POSTS_PER_DAY`, против автоочереди) такие посты не держит.
+    # Раньше четвёртый за день пост по «Сейчас» молча уезжал на завтра.
     if code == "now":
-        return None, False
+        return None, True
+    if code.startswith("@"):
+        return dt.datetime.fromtimestamp(int(code[1:])), True
     if code == "1h":
         return (now + dt.timedelta(hours=1)).replace(second=0, microsecond=0), True
     if code == "eve":
@@ -1884,16 +1909,68 @@ def _edit(chat_id, message_id, text, markup=None):
     return _call("editMessageText", params, timeout=20)
 
 
+def _moment(when):
+    """«сегодня в 20:32», «завтра в 9:00», «24.10 в 18:00»; None — «сейчас»."""
+    if when is None:
+        return "сейчас"
+    days = (when.date() - dt.date.today()).days
+    day = {0: "сегодня", 1: "завтра", 2: "послезавтра"}.get(days, f"{when:%d.%m}")
+    return f"{day} в {when:%H:%M}"
+
+
+def _confirm_text(job, when):
+    """Короткий ответ ВНИЗУ чата, когда время выбрано: черновик правится там,
+    где он был, — выше по чату, и человек этого не видел. Жалоба 2026-10-21:
+    «никакой обратной связи» после «сегодня в 20:32»."""
+    import postspec
+
+    where = ", ".join(postspec.TITLES[t] for t in job["targets"].split(",") if t)
+    return (f"✅ Пост #{job['id']} выйдет {_moment(when)} — {where}.\n"
+            f"Передумал — «Отменить пост» под ним или /cancel {job['id']}")
+
+
+def _time_picker(jid, now=None):
+    """Кнопки «Своё время»: ближайшие часы сегодня и завтра, чтобы не печатать.
+    Код кнопки — «@» и время в секундах."""
+    now = (now or dt.datetime.now()).replace(second=0, microsecond=0)
+
+    def button(label, when):
+        return {"text": label, "callback_data": f"w:{jid}:@{int(when.timestamp())}"}
+
+    rows = [[button("Через 30 мин", now + dt.timedelta(minutes=30)),
+             button("Через 2 ч", now + dt.timedelta(hours=2)),
+             button("Через 3 ч", now + dt.timedelta(hours=3))]]
+    hour = now.replace(minute=0) + dt.timedelta(hours=1)
+    if hour - now < dt.timedelta(minutes=40):
+        hour += dt.timedelta(hours=1)
+    today = []
+    while hour.date() == now.date() and len(today) < 6:
+        today.append(button(f"Сегодня {hour:%H:%M}", hour))
+        hour += dt.timedelta(hours=1)
+    rows += [today[i:i + 3] for i in range(0, len(today), 3)]
+    tomorrow = now.date() + dt.timedelta(days=1)
+    slots = [button(f"Завтра {h}:00", dt.datetime.combine(tomorrow, dt.time(h)))
+             for h in (9, 12, 15, 18, 20, 21)]
+    rows += [slots[:3], slots[3:]]
+    return json.dumps({"inline_keyboard": rows}, ensure_ascii=False)
+
+
+def _send_buttons(text, markup):
+    """Сообщение с кнопками туда, кого сейчас обслуживаем. id сообщения или None."""
+    target = current_chat() or load_settings()["owner"]
+    params = {"chat_id": target, "text": text, "reply_markup": markup}
+    thread = _thread_for(target)
+    if thread:
+        params["message_thread_id"] = thread
+    res = _call("sendMessage", params, timeout=20)
+    return ((res or {}).get("result") or {}).get("message_id")
+
+
 def _scheduled_text(job, when):
     import postspec
 
     where = ", ".join(postspec.TITLES[t] for t in job["targets"].split(",") if t)
-    if when is None:
-        moment = "сейчас"
-    else:
-        days = (when.date() - dt.date.today()).days
-        day = {0: "сегодня", 1: "завтра", 2: "послезавтра"}.get(days, f"{when:%d.%m}")
-        moment = f"{day} в {when:%H:%M}"
+    moment = _moment(when)
     caption = (job["caption"] or "").strip() or "(без описания)"
     if len(caption) > 600:
         caption = caption[:600] + "…"
@@ -2001,12 +2078,28 @@ def _handle_callback(cq):
             note = "отметь хотя бы одну сеть"
         elif code == "ask":
             who = str((cq.get("from") or {}).get("id", "") or chat_id)
-            _ASK_TIME[f"{chat_id}:{who}"] = (job["id"], message_id, time.time())
-            send("Напиши время одним сообщением: 18:30, завтра 9:00, 12.10 18:30 или пт 20:00"
-                 + (" — ответом на это сообщение" if group else ""))
+            # Время — кнопками ближайших часов; своё можно и написать.
+            prompt = _send_buttons(
+                f"Когда опубликовать пост #{job['id']}? Нажми время — или напиши своё "
+                "одним сообщением: 18:30, завтра 9:00, 12.10 18:30, пт 20:00"
+                + (" (ответом на это сообщение)" if group else ""), _time_picker(job["id"]))
+            _ASK_TIME[f"{chat_id}:{who}"] = (job["id"], message_id, time.time(), prompt)
         else:
             when, exact = _when_of(code)
-            _schedule(job["id"], when, exact, chat_id, message_id)
+            draft = next((v[1] for v in _ASK_TIME.values() if v[0] == job["id"]), None)
+            if code.startswith("@") and when < dt.datetime.now() - dt.timedelta(minutes=1):
+                note = "это время уже прошло — выбери другое"
+            elif code.startswith("@"):
+                # Кнопка из списка времени: черновик выше по чату становится
+                # «✅ Пост … — сегодня в 20:00», а список — подтверждением,
+                # чтобы ответ был там, где нажали.
+                for key in [k for k, v in _ASK_TIME.items() if v[0] == job["id"]]:
+                    _ASK_TIME.pop(key, None)
+                _schedule(job["id"], when, exact, chat_id, draft or message_id)
+                if draft:
+                    _edit(chat_id, message_id, _confirm_text(jobs.by_id(job["id"]), when))
+            else:
+                _schedule(job["id"], when, exact, chat_id, message_id)
     _call("answerCallbackQuery", {"callback_query_id": cq.get("id", ""),
                                   "text": note}, timeout=10)
 
@@ -2023,7 +2116,8 @@ def _take_time_answer(chat_id, text, sender=None):
         return False
     import postspec
 
-    job_id, message_id, asked = waiting
+    job_id, message_id, asked = waiting[:3]
+    prompt = waiting[3] if len(waiting) > 3 else None
     job = jobs.by_id(job_id)
     if job is None or job["status"] != "draft" or time.time() - asked > ASK_TIME_SEC:
         _ASK_TIME.pop(key, None)       # время уже выбрали кнопкой или забыли
@@ -2037,6 +2131,11 @@ def _take_time_answer(chat_id, text, sender=None):
         return True
     _ASK_TIME.pop(key, None)
     _schedule(job_id, when, exact, chat_id, message_id)
+    if prompt:
+        # Список времени больше не нужен — без кнопок, чтобы не нажали зря.
+        _edit(chat_id, prompt, f"Время для поста #{job_id}: {_moment(when)}")
+    # Ответ ВНИЗУ: черновик поправился выше по чату, этого не видно.
+    send(_confirm_text(jobs.by_id(job_id), when))
     return True
 
 
@@ -2045,8 +2144,7 @@ def _queue_text():
     import postspec
 
     rows = jobs.pending()
-    head = (f"Опубликовано сегодня: {jobs.count_today('done')}/"
-            f"{config.MAX_POSTS_PER_DAY} (с точным временем — сверх лимита)")
+    head = f"Опубликовано сегодня: {jobs.count_today('done')}"
     if not rows:
         return head + "\nВ очереди пусто."
     lines = [head, f"В очереди: {len(rows)}"]

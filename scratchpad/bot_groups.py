@@ -133,8 +133,8 @@ bot._handle_callback({"id": "cb", "data": f"w:{job['id']}:ask", "from": {"id": i
                                   "message_thread_id": 7}})
 bot.set_reply(None)
 ask = sent(GROUP)
-say(ask and "Напиши время" in ask[-1]["text"] and ask[-1].get("message_thread_id") == 7,
-    "«Напиши время» — в ту же тему, где кнопка")
+say(ask and "Когда опубликовать" in ask[-1]["text"] and ask[-1].get("message_thread_id") == 7,
+    "«Когда опубликовать?» — в ту же тему, где кнопка")
 handle(message(GROUP, OTHER, "18:30"))
 say(jobs.by_id(job["id"])["status"] == "draft", "«18:30» от другого участника — не принято")
 handle(message(GROUP, MEMBER, "18:30"))
@@ -149,8 +149,26 @@ say(sent(GROUP) and "В очереди" in sent(GROUP)[-1]["text"], "/status@б�
 calls.clear()
 handle(message(GROUP, OTHER, "/status@other_bot"))
 say(not sent(), "команда другому боту — не наша")
+handle(message(GROUP, OTHER, "@Videopost23bot"))
+say(sent(GROUP) and "Пришли видео" in sent(GROUP)[-1]["text"], "голое «@бот» — подсказка")
+calls.clear()
 handle(message(GROUP, OTHER, "@Videopost23bot ты тут?"))
-say(sent(GROUP) and "Пришли видео" in sent(GROUP)[-1]["text"], "обратились к боту — ответил")
+say(not sent(), "«@бот, ты тут?» — разговор, не команда: молчит")
+calls.clear()
+bot_msg = {"message_id": 501, "from": {"id": 7000000001, "is_bot": True, "username": "Videopost23bot"}}
+handle(message(GROUP, OTHER, "Оо на сорокет зашло", reply_to_message=bot_msg))
+say(not sent(), "ответ на сообщение бота обычной фразой — молчит (живьём 2026-10-23: "
+    "«Оо на сорокет зашло» на альбом получало «Пришли видео файлом…»)")
+handle(message(GROUP, OTHER, "А зачем он тебе отвечает?)", reply_to_message=bot_msg))
+say(not sent(), "и второй раз молчит")
+handle(message(GROUP, OTHER, "статистика огонь", reply_to_message=bot_msg))
+say(not sent(), "«статистика огонь» ответом — не команда «статистика»")
+handle(message(GROUP, OTHER, "очередь", reply_to_message=bot_msg))
+say(sent(GROUP) and "В очереди" in sent(GROUP)[-1]["text"],
+    "а голое «очередь» ответом боту — команда")
+q = [p["text"] for p in sent(GROUP)]
+say(q and "/3" not in q[-1] and "лимит" not in q[-1], f"без «0/3 (с точным временем — сверх лимита)»: {q[-1][:40]!r}")
+calls.clear()
 say(all("reply_markup" not in p for p in sent(GROUP)), "клавиатура внизу в группе не вешается")
 
 print("\n--- ссылка в чате ---")

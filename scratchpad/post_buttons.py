@@ -95,8 +95,15 @@ print("\n--- следующее видео: снова все сети, «Сво
 bot._handle({"chat": {"id": 1}, "video": {"file_id": "f", "file_size": 1000}, "caption": "кот"})
 rows = markup_of([c for c in calls if c[0] == "sendMessage"][-1])
 say([b["text"] for b in rows[0]] == ["✅ TikTok", "✅ Reels", "✅ Shorts"], "снова отмечены все")
+calls.clear()
 press("w:2:ask")
-say(sent and "Напиши время" in sent[-1], "«Своё время» — просит написать")
+prompt_msg = [c for c in calls if c[0] == "sendMessage"][-1]
+say("Когда опубликовать" in prompt_msg[1]["text"], "«Своё время» — спрашивает, когда")
+picker = markup_of(prompt_msg)
+codes = [b["callback_data"] for row in picker for b in row]
+labels = [b["text"] for row in picker for b in row]
+say(codes and all(c.startswith("w:2:@") for c in codes) and "Через 30 мин" in labels
+    and "Завтра 9:00" in labels, f"…и даёт кнопки времени, печатать не обязательно: {labels[:4]}…")
 sent.clear()
 bot._handle({"chat": {"id": 1}, "text": "в восемь"})
 say(sent and "Не понял" in sent[-1] and jobs.by_id(2)["status"] == "draft", "непонятное время — переспрос")
@@ -105,11 +112,14 @@ bot._handle({"chat": {"id": 1}, "text": "завтра 9:30"})
 job = jobs.by_id(2)
 say(job["status"] == "pending" and dt.datetime.fromtimestamp(job["run_at"]).strftime("%H:%M") == "09:30",
     "«завтра 9:30» — поставлено")
+say(sent and "✅ Пост #2 выйдет завтра в 09:30" in sent[-1],
+    "и ответ ВНИЗУ чата: «✅ Пост #2 выйдет завтра в 09:30» (жалоба: «никакой обратной связи»)")
 
 print("\n--- «Сейчас» и отмена ---")
 bot._handle({"chat": {"id": 1}, "video": {"file_id": "f", "file_size": 1000}, "caption": ""})
 press("w:3:now")
-say(started == ["публикация #3"] and not jobs.by_id(3)["exact"], "«Сейчас» — публикация пошла сразу")
+say(started == ["публикация #3"] and jobs.by_id(3)["exact"],
+    "«Сейчас» — публикация пошла сразу, и дневной лимит её не держит (решение человека)")
 bot._handle({"chat": {"id": 1}, "video": {"file_id": "f", "file_size": 1000}, "caption": "x"})
 press("x:4")
 say(jobs.by_id(4)["status"] == "cancelled", "«Отмена» в черновике — отменено")
