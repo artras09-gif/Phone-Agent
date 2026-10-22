@@ -453,6 +453,51 @@ def _snap_app(name):
     return SNAP_APPS.get(name.split("_")[0])
 
 
+# Всплывашки внутри приложения: «КОЧЕР подписался(ась) на вас · Добавить в
+# ответ» поверх плиток TikTok (живьём 2026-10-22, альбом пользователя). Сами
+# уходят за несколько секунд — ждём, ничего не нажимая.
+BANNER = re.compile(r"подписал(ся|ась|ся\(ась\))? на вас|followed you|started following|"
+                    r"te sigue|comenz[óo] a seguirte|empez[óo] a seguirte|понравил|liked your|"
+                    r"прокомментировал|commented|упомянул|mentioned you|отметил", re.I)
+
+
+def _screen_sample():
+    """Грубая выборка пикселей экрана (каждый 16-й в каждой 12-й строке) и
+    доля почти чёрных среди них в нижних двух третях. None — не снялось."""
+    shot = _raw_screen()
+    if shot is None:
+        return None
+    w, h, px = shot
+    sample = bytes(px[(y * w + x) * 4 + c] for y in range(0, h, 12) for x in range(0, w, 16)
+                   for c in (0, 1, 2))
+    low = [(y * w + x) * 4 for y in range(h // 3, h, 12) for x in range(0, w, 16)]
+    dark = sum(1 for i in low if px[i] < 24 and px[i + 1] < 24 and px[i + 2] < 24) / max(1, len(low))
+    return sample, dark
+
+
+def _wait_clean(tiles=False, limit=10.0):
+    """Перед снимком: всплывашка приложения ушла и экран перестал меняться
+    (превью догрузились). Плитки — ещё и не почти сплошь чёрные: Instagram
+    рисует сетку чёрными квадратами, пока не придут превью (живьём 22.10)."""
+    end = time.time() + limit
+    while time.time() < end:
+        nodes = ui.dump(retries=1, tolerant=True)
+        h = max((n.bounds[3] for n in nodes or []), default=2400) or 2400
+        if not any(BANNER.search(f"{n.text} {n.desc}") and n.bounds[1] < h * 0.25 for n in nodes or []):
+            break
+        time.sleep(1.0)
+    prev = _screen_sample()
+    while prev is not None and time.time() < end:
+        time.sleep(1.0)
+        cur = _screen_sample()
+        if cur is None:
+            break
+        same = sum(1 for a, b in zip(prev[0], cur[0]) if abs(a - b) < 12) / max(1, len(cur[0]))
+        prev = cur
+        if same > 0.985 and not (tiles and cur[1] > 0.85):
+            break
+
+
 def _snap(folder, name, package=None):
     """Снимок экрана в папку дня. None — не снят: в том числе если на экране
     оказалось чужое приложение (тогда — пояснение к снимку)."""
@@ -462,6 +507,10 @@ def _snap(folder, name, package=None):
         _note(folder, name.rstrip("2"), f"снимок не сделан: на экране оказалось другое приложение "
                                         f"({front or 'неизвестно'}) — чужой экран не отправляю")
         return None
+    try:
+        _wait_clean(tiles="tiles" in name)
+    except (adb.AdbError, RuntimeError, OSError):
+        pass                       # не дождались — снимаем как есть
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, f"{name}.png")
     adb.screenshot(path)

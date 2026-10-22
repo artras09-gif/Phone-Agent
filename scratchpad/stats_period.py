@@ -283,6 +283,8 @@ say([c for _, c in items] == ["YouTube Studio — аналитика, после
 print("\n--- снимок — только своего приложения (живьём 22.10: в альбом легла переписка) ---")
 shots = []
 adb.screenshot = lambda path: shots.append(path) or open(path, "wb").write(b"p" * 20000)
+ui.dump = lambda *a, **k: []
+adb.exec_out = lambda cmd, timeout=60: b""
 folder = accstats.shots_dir()
 FRONT[0] = "com.instagram.android"
 got = accstats._snap(folder, "youtube")
@@ -299,6 +301,58 @@ seq = iter(["com.google.android.apps.youtube.creator", "com.instagram.android"])
 adb.current_app = lambda: (next(seq), "")
 say(accstats._snap(folder, "youtube") is None, "пока снимали, вылезло другое приложение — снимок выброшен")
 adb.current_app = lambda: (FRONT[0], "")
+
+print("\n--- перед снимком: всплывашка ушла, экран успокоился (альбом пользователя 22.10) ---")
+clock = [0.0]
+accstats.time.time = lambda: clock[0]
+accstats.time.sleep = lambda s: clock.__setitem__(0, clock[0] + s)
+banner = [N("КОЧЕР [Sativa] подписался(ась) на вас.", b=(300, 120, 900, 200)),
+          N("Добавить в ответ", b=(900, 120, 1050, 200), clickable=True)]
+seen_at = []
+
+
+def dump_with_banner(*a, **k):
+    seen_at.append(clock[0])
+    return banner + [N("низ", b=(0, 2300, 1080, 2400))] if clock[0] < 4 else [N("низ", b=(0, 2300, 1080, 2400))]
+
+
+ui.dump = dump_with_banner
+taps.clear()
+adb.exec_out = lambda cmd, timeout=60: b""
+accstats._wait_clean()
+say(clock[0] >= 4 and not taps, f"«подписался на вас» вверху — ждал {clock[0]:.0f} с, пока уйдёт, ничего не нажимая")
+
+
+def frames(seq):
+    """Подменённые снимки экрана: каждый вызов — следующий кадр из seq."""
+    it = iter(seq)
+
+    def raw(cmd, timeout=60):
+        color = next(it, seq[-1])
+        w, h = 64, 96
+        head = w.to_bytes(4, "little") + h.to_bytes(4, "little") + (1).to_bytes(4, "little") + bytes(4)
+        return head + bytes(color) * (w * h)
+    return raw
+
+
+ui.dump = lambda *a, **k: []
+clock[0] = 0
+adb.exec_out = frames([(0, 0, 0, 255)] * 3 + [(200, 200, 200, 255)] * 3)
+accstats._wait_clean(tiles=True)
+say(3 <= clock[0] <= 6, f"плитки чёрные (превью не пришли) — ждал, пока появятся: {clock[0]:.0f} с")
+clock[0] = 0
+adb.exec_out = frames([(200, 200, 200, 255)] * 6)
+accstats._wait_clean(tiles=True)
+say(clock[0] <= 1, f"экран не меняется и не чёрный — снимает сразу: {clock[0]:.0f} с")
+clock[0] = 0
+adb.exec_out = frames([(0, 0, 0, 255)] * 30)
+accstats._wait_clean(tiles=True)
+say(9 <= clock[0] <= 11, f"чёрные навсегда (тёмные видео) — не дольше 10 с: {clock[0]:.0f} с")
+clock[0] = 0
+adb.exec_out = frames([(0, 0, 0, 255)] * 30)
+accstats._wait_clean(tiles=False)
+say(clock[0] <= 1, "тёмная тема Studio (не плитки) — чёрный экран не повод ждать")
+accstats.time.time = time_real = __import__("time").time
 
 print("\n--- имя аккаунта в подписи (живьём 22.10: Instagram переключился на личный) ---")
 ig_head = [N("easyease.studio", b=(330, 282, 632, 328)), N("4", b=(330, 350, 357, 406)),
