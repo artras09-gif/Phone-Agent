@@ -108,6 +108,40 @@ except poster.StepFailed as e:
     failed = str(e)
 say("НЕ загружено" in failed and len(state["taps"]) == 2, f"честная остановка: {failed[:70]}")
 
+print("\n--- YouTube ушёл на страницу канала, где у «+» подпись «Загрузить» (живьём 2026-10-24) ---")
+PLUS = N("", b=(400, 2600, 600, 2700))
+PLUS.desc = "Загрузить"
+CHANNEL = [N("Ease.motion", b=(300, 400, 900, 480)), N("Загрузка · 51%", b=(360, 900, 700, 1000)), PLUS]
+yt_step = dict(step, any=[{"rid": "upload_bottom_button"}, {"text": "Загрузить"},
+                          {"text": "Upload"}, {"desc": "Загрузить"}, {"desc": "Upload"}])
+UPLOAD.text = "Загрузить"
+reset(keyboard=False)
+
+
+def tap_to_channel(n):
+    state["taps"].append((n.text or n.desc, state["keyboard"]))
+    if n is UPLOAD:
+        state["screen"] = CHANNEL
+
+
+ui.tap_node = tap_to_channel
+line = poster.run_step(yt_step, {}, log, 9)
+say("экран ушёл" in line and state["taps"] == [("Загрузить", False)],
+    f"по id кнопки — ушёл; «+» с той же подписью второй раз НЕ нажат: {state['taps']}")
+ui.tap_node = tap_node
+UPLOAD.text = "Upload"
+
+print("\n--- TikTok/Instagram: «клавиатура убрана» только что, dumpsys ещё врёт «показана» ---")
+backs = []
+plain = dict(step)
+plain.pop("verify_gone")
+reset(keyboard=True)
+device.hide_keyboard = lambda: backs.append(1) or True
+state["screen"] = DETAILS
+line = poster.run_step(plain, {}, log, 10)
+say(not backs, "второго «назад» нет — с экрана описания в редактор не выбрасывает (живьём 2026-10-24)")
+device.hide_keyboard = hide_keyboard
+
 print("\n--- без verify_gone (TikTok, Instagram) — как раньше ---")
 reset(keyboard=False, tap_works=False)
 plain = dict(step)
@@ -123,6 +157,45 @@ line = poster.run_step(step, {}, log, 9)
 say("СУХОЙ ПРОГОН" in line and not state["taps"] and state["hides"] == 1,
     "кнопку видно (клавиатура убрана), нажатия нет")
 config.DRY_RUN = False
+
+print("\n--- сбой ПОСЛЕ финальной кнопки: приложение не закрывать, файл не удалять ---")
+stopped, removed, homes = [], [], []
+for name, fn in {"unlock": lambda: True, "keep_awake": lambda on=True: None,
+                 "close_overlays": lambda *a, **k: None, "has_storage_access": lambda p: True,
+                 "push_video": lambda path: "/sdcard/Movies/v.mp4",
+                 "remember_pushed": lambda p: None, "forget_pushed": lambda p: None,
+                 "cleanup_pushed": lambda keep_sec=None: 0, "tx_bytes": lambda: 0,
+                 "share_video": lambda *a, **k: None, "wait_for_app": lambda pkg, timeout=25: True,
+                 "stop_app": lambda pkg: stopped.append(pkg), "go_home": lambda: homes.append(1),
+                 "remove_remote": lambda path: removed.append(path)}.items():
+    setattr(device, name, fn)
+video = os.path.join(tempfile.mkdtemp(), "v.mp4")
+open(video, "wb").write(b"x")
+recipe = {"yt": {"package": "com.google.android.youtube", "title": "yt", "steps": [step]}}
+real_run_step = poster.run_step
+
+
+def failing_after_tap(st, ctx, lp, i):
+    poster.FINAL["tapped"] = True
+    raise poster.StepFailed("экран не ушёл")
+
+
+poster.run_step = failing_after_tap
+good, rep = poster.post(video, "x", "yt", recipes=recipe)
+say(not good and not stopped and homes and not removed and "не закрываю" in rep,
+    "после нажатой «Загрузить» — на рабочий стол, YouTube не убит, файл на месте (загрузка могла пойти)")
+
+
+def failing_before_tap(st, ctx, lp, i):
+    raise poster.StepFailed("кнопки нет")
+
+
+stopped.clear(); removed.clear()
+poster.run_step = failing_before_tap
+poster.post(video, "x", "yt", recipes=recipe)
+say(stopped == ["com.google.android.youtube"] and removed,
+    "сбой ДО финальной кнопки — как раньше: приложение закрыто, файл удалён")
+poster.run_step = real_run_step
 
 print("\n--- маршрут YouTube в recipes.json проверяет, что экран ушёл ---")
 import json  # noqa: E402

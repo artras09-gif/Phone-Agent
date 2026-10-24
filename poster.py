@@ -145,6 +145,22 @@ def _awake_if_dark(ctx):
 HASHTAG_END = re.compile(r"[#@][^\s#@]+$")
 
 
+def _keyboard_really_shown():
+    """Клавиатура показана — и это не запоздалый ответ `dumpsys` после
+    недавнего «назад»: спросить дважды с паузой."""
+    if not device.keyboard_shown():
+        return False
+    time.sleep(1.2)
+    return device.keyboard_shown()
+
+
+def _own_button(selectors):
+    """Селекторы, по которым кнопку не спутать с чужой: по id. Подпись
+    «Загрузить» есть и у «+» внизу страницы канала — после настоящей
+    загрузки он считался «кнопка не ушла» (живьём 2026-10-24)."""
+    return [s for s in selectors if "rid" in s] or selectors
+
+
 def _button_gone(selectors, wait):
     """Финальная кнопка ушла с экрана (приложение перешло дальше)."""
     end = time.time() + wait
@@ -161,10 +177,12 @@ def _publish_went(step, selectors, node, label, log_path, index):
     (клавиатура, загрузка): убрать клавиатуру и нажать ещё раз. Не ушёл и
     тогда — честная ошибка, а не «жду загрузку» того, что не загружается."""
     wait = step.get("gone_timeout", 12)
+    selectors = _own_button(selectors)
     if _button_gone(selectors, wait):
         return f"тап «{label}» -> {node}; экран ушёл"
-    device.hide_keyboard()
-    human.pause(0.8, 1.2)
+    if _keyboard_really_shown():
+        device.hide_keyboard()
+        human.pause(0.8, 1.2)
     again, nodes = ui.wait_any(selectors, timeout=5)
     if again is not None:
         ui.tap_node(again)
@@ -315,13 +333,17 @@ def run_step(step, ctx, log_path, index):
                          + _vision_note(log_path, index, label))
 
     if op in ("tap", "optional_tap", "wait", "publish"):
-        if op == "publish" and device.keyboard_shown():
+        if op == "publish" and step.get("verify_gone") and _keyboard_really_shown():
             # Финальная кнопка — внизу, а клавиатура закрывает низ экрана.
             # Живьём 2026-10-23 на телефоне пользователя: после сведений
             # YouTube курсор встал в название, клавиатура выехала поверх
             # «Upload», касание ушло в клавиатуру — а отчёт сказал «нажал,
             # жду загрузку». На Redmi экран при клавиатуре ужимается, и
             # кнопка оставалась видна, поэтому там это не ловилось.
+            # ТОЛЬКО там, где шаг об этом просит (YouTube): у TikTok и
+            # Instagram прямо перед этим шаг «клавиатура убрана» уже нажал
+            # «назад», dumpsys ещё отвечал «показана» — и второе «назад»
+            # выбрасывало в редактор (живьём 2026-10-24, обе сети).
             device.hide_keyboard()
             human.pause(0.8, 1.2)
         pause_xy = step.get("pause_xy")
@@ -384,6 +406,8 @@ def run_step(step, ctx, log_path, index):
             _snap(log_path, index, "DRYRUN_publish")
             return f"СУХОЙ ПРОГОН: не нажимаю «{label}» (активна) -> {node}"
 
+        if op == "publish":
+            FINAL["tapped"] = True
         ui.tap_node(node)
         human.pause(0.8, 1.8)
         if op == "publish" and step.get("verify_gone"):
@@ -1139,6 +1163,11 @@ def _advance_until(step, ctx, log_path, index):
 
 # Папка разбора последней НЕУДАЧНОЙ публикации — для отчёта в Telegram.
 LAST_FAIL = {"dir": "", "target": ""}
+# Финальную кнопку уже нажимали в этой публикации. Тогда при сбое приложение
+# НЕ закрываем и файл не удаляем: загрузка могла пойти, а закрытие её рвёт
+# (живьём 2026-10-24: YouTube грузил ролик, программа сочла это ошибкой и
+# закрыла его — ролик, к счастью, успел).
+FINAL = {"tapped": False}
 
 
 def failure_files(log_path):
@@ -1280,6 +1309,7 @@ def post(video_path, caption, target, recipes=None, extra=None):
     published = False
     uploaded = False
     opened = False
+    FINAL["tapped"] = False
     try:
         if not device.unlock():
             report.append("не смог разблокировать телефон")
@@ -1347,6 +1377,10 @@ def post(video_path, caption, target, recipes=None, extra=None):
     except (StepFailed, adb.AdbError, RuntimeError) as e:
         # NeedsPermission — тоже RuntimeError: текст для человека готовый.
         report.append(f"ОШИБКА: {e}")
+        if FINAL["tapped"] and not config.DRY_RUN:
+            report.append("[!] финальная кнопка была нажата — приложение не закрываю и файл "
+                          "оставляю: загрузка могла пойти. Проверь в приложении, вышел ли пост, "
+                          "прежде чем публиковать заново")
         LAST_FAIL.update(dir=log_path, target=target)
         _snap(log_path, 99, "FAIL")
         return False, report.text()
@@ -1361,7 +1395,14 @@ def post(video_path, caption, target, recipes=None, extra=None):
         # нажимает в приложении ничего (в отличие от «назад», за которым у
         # Instagram идёт окно «Сохранить черновик / Удалить»), а
         # недоделанный ролик при этом не сохраняется.
-        if opened and not published:
+        if opened and not published and FINAL["tapped"] and not config.DRY_RUN:
+            # Финальную кнопку нажимали — ролик мог уйти и сейчас грузится.
+            # Закрыть приложение значит оборвать загрузку; на рабочий стол.
+            try:
+                device.go_home()
+            except adb.AdbError:
+                pass
+        elif opened and not published:
             try:
                 device.stop_app(package)
                 report.append("приложение закрыто: экран публикации не оставлен")
@@ -1372,7 +1413,7 @@ def post(video_path, caption, target, recipes=None, extra=None):
         # Файл удаляем, только когда приложение его больше не читает: не
         # публиковали — или загрузка кончилась. Не дождались — оставляем,
         # его уберёт `cleanup_pushed` через несколько часов.
-        if remote and (not published or uploaded):
+        if remote and ((not published and not FINAL["tapped"]) or uploaded):
             device.remove_remote(remote)
             device.forget_pushed(remote)
         with open(os.path.join(log_path, "report.txt"), "w", encoding="utf-8") as f:
