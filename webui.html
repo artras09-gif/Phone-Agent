@@ -371,7 +371,7 @@ pre.report{
         <div class="row" style="margin-top:14px">
           <label class="field" style="flex:1;min-width:240px">
             Описание для следующего файла
-            <input type="text" id="q-caption" placeholder="можно оставить пустым">
+            <textarea id="q-caption" rows="4" placeholder="можно оставить пустым · абзацы сохраняются" style="resize:vertical"></textarea>
           </label>
           <div class="field">
             Куда (можно несколько)
@@ -393,7 +393,7 @@ pre.report{
         <p class="hint">Полный путь — видео не копируется, берётся с места.</p>
         <div class="row">
           <input type="text" id="j-path" placeholder="C:\videos\clip.mp4" style="flex:1;min-width:260px">
-          <input type="text" id="j-caption" placeholder="описание" style="flex:1;min-width:180px">
+          <textarea id="j-caption" rows="3" placeholder="описание · абзацы сохраняются" style="flex:1;min-width:180px;resize:vertical"></textarea>
           <button class="btn" id="b-jobadd">В очередь</button>
         </div>
       </div>

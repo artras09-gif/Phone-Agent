@@ -336,6 +336,18 @@ def due(now=None):
         ).fetchone()
 
 
+def due_exact(now=None):
+    """Подошедшая задача с точным временем — даже если раньше неё в очереди
+    стоит обычная (`due` вернул бы ту, и пост ко времени ждал бы за ней)."""
+    now = now or time.time()
+    with connect() as con:
+        where, args = _mine()
+        return con.execute(
+            "SELECT * FROM jobs WHERE status='pending' AND exact=1 AND run_at<=?" + where
+            + " ORDER BY run_at LIMIT 1", (now,) + args
+        ).fetchone()
+
+
 def by_id(job_id):
     with connect() as con:
         return con.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()

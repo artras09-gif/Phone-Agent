@@ -399,30 +399,39 @@ class Dispatcher:
         while True:
             self._wake.wait(self.EVERY)
             self._wake.clear()
-            if self.runner.busy():
-                # Пост с точным временем не ждёт конца сессии (её остаток
-                # досмотрится потом, `Keeper._finished`). Остальное — ждёт:
-                # обрывать сессию ради «опубликуй, когда сможешь» незачем.
-                try:
-                    job = jobs.due()
-                    if job is not None and job["exact"]:
-                        self.runner.preempt(f"пора публиковать задачу #{job['id']}")
-                except Exception:
-                    pass
-                continue
+            self._tick()
+
+    def _tick(self):
+        if self.runner.busy():
+            # Публикация не ждёт конца сессии: сессия приостанавливается,
+            # её остаток досмотрится потом (`Keeper._finished`). Просьба
+            # 2026-10-27: «если постинг запланирован и в его время идёт
+            # сессия — сессия прерывается и происходит постинг». Раньше
+            # прерывал только пост с точным временем, а задача из окна
+            # ждала конца сессии. Не прерываем лишь ради поста, который
+            # дневной лимит автоочереди всё равно отложит на завтра.
             try:
-                # Телефон свободен, а задача «публикуется» — её публикацию
-                # оборвали (программа закрылась). Повторять сами не будем.
-                jobs.interrupt_running()
-                scheduler.scan_watch_dir()          # видео, брошенные в watch/
-                if jobs.due() is None:
-                    continue
-                self.runner.start("публикация из очереди",
-                                  lambda: scheduler.run_post_job(notify=_tell))
+                job = jobs.due_exact()
+                if job is None and jobs.count_today("done") < config.MAX_POSTS_PER_DAY:
+                    job = jobs.due()
+                if job is not None:
+                    self.runner.preempt(f"пора публиковать задачу #{job['id']}")
             except Exception:
-                # Сторож не имеет права падать: он единственный, кто
-                # разгребает очередь в простое.
                 pass
+            return
+        try:
+            # Телефон свободен, а задача «публикуется» — её публикацию
+            # оборвали (программа закрылась). Повторять сами не будем.
+            jobs.interrupt_running()
+            scheduler.scan_watch_dir()          # видео, брошенные в watch/
+            if jobs.due() is None:
+                return
+            self.runner.start("публикация из очереди",
+                              lambda: scheduler.run_post_job(notify=_tell))
+        except Exception:
+            # Сторож не имеет права падать: он единственный, кто
+            # разгребает очередь в простое.
+            pass
 
 
 class Probe:
