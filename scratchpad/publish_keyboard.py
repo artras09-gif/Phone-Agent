@@ -131,6 +131,32 @@ say("экран ушёл" in line and state["taps"] == [("Загрузить", F
 ui.tap_node = tap_node
 UPLOAD.text = "Upload"
 
+print("\n--- после «Загрузить» дерево пустое (страница канала с превью), живьём 2026-10-28 ---")
+UPLOAD.text = "Загрузить"
+reset(keyboard=False)
+dumps = iter([[], [], []])
+
+
+def tap_to_blank(n):
+    state["taps"].append((n.text or n.desc, state["keyboard"]))
+    if n is UPLOAD:
+        state["screen"] = None
+
+
+ui.tap_node = tap_to_blank
+ui.dump = lambda *a, **k: next(dumps, CHANNEL) if state["screen"] is None else state["screen"]
+line = poster.run_step(yt_step, {}, log, 9)
+say("ушёл" in line and len(state["taps"]) == 1,
+    f"пустые снимки — не «кнопка на месте»: одно касание, {line[-30:]!r}")
+reset(keyboard=False)
+ui.dump = lambda *a, **k: [] if state["screen"] is None else state["screen"]
+line = poster.run_step(yt_step, {}, log, 9)
+say("ушёл" in line and len(state["taps"]) == 1,
+    "дерево пустое до конца ожидания — кнопки не видно ни разу, значит ушла")
+ui.dump = lambda *a, **k: state["screen"]
+ui.tap_node = tap_node
+UPLOAD.text = "Upload"
+
 print("\n--- TikTok/Instagram: «клавиатура убрана» только что, dumpsys ещё врёт «показана» ---")
 backs = []
 plain = dict(step)

@@ -162,14 +162,22 @@ def _own_button(selectors):
 
 
 def _button_gone(selectors, wait):
-    """Финальная кнопка ушла с экрана (приложение перешло дальше)."""
+    """Финальная кнопка ушла с экрана (приложение перешло дальше).
+
+    Пустой снимок дерева — не «кнопка на месте»: экран сведений YouTube
+    снимается всегда, а страница канала с играющими превью — через раз
+    (живьём 2026-10-28: ролик грузился, 55 %, а программа насчитала «не
+    ушёл»). Не ушла — только если кнопку и правда видно на последнем снимке."""
     end = time.time() + wait
+    still = False
     while time.time() < end:
         nodes = ui.dump(retries=1, tolerant=True)
-        if nodes and ui.find_any(nodes, selectors) is None:
-            return True
+        if nodes:
+            if ui.find_any(nodes, selectors) is None:
+                return True
+            still = True
         time.sleep(1.0)
-    return False
+    return not still
 
 
 def _publish_went(step, selectors, node, label, log_path, index):
@@ -184,11 +192,13 @@ def _publish_went(step, selectors, node, label, log_path, index):
         device.hide_keyboard()
         human.pause(0.8, 1.2)
     again, nodes = ui.wait_any(selectors, timeout=5)
-    if again is not None:
-        ui.tap_node(again)
-        human.pause(0.8, 1.8)
-        if _button_gone(selectors, wait):
-            return f"тап «{label}» со второго раза (первое касание не прошло) -> {again}"
+    if again is None:
+        # Кнопки уже нет — экран всё-таки ушёл, просто позже ожидания.
+        return f"тап «{label}» -> {node}; экран ушёл (не сразу)"
+    ui.tap_node(again)
+    human.pause(0.8, 1.8)
+    if _button_gone(selectors, wait):
+        return f"тап «{label}» со второго раза (первое касание не прошло) -> {again}"
     nodes = ui.dump(retries=2, tolerant=True)
     _snap(log_path, index, "STUCK")
     with open(os.path.join(log_path, f"{index:02d}_screen.txt"), "w", encoding="utf-8") as f:
@@ -420,14 +430,16 @@ def run_step(step, ctx, log_path, index):
             value = ctx.get("caption", "")
         if not value:
             return "текста нет, пропускаю"
-        device.type_text(value)
         if HASHTAG_END.search(value):
             # Подпись кончается хэштегом или упоминанием — курсор стоит в нём, и
             # TikTok держит поверх формы список подсказок «#videoediting 1.1M
             # публикаций», а под ним прячется «Опубликовать» (живьём 2026-10-22:
             # «не нашёл ФИНАЛЬНУЮ КНОПКУ»). Пробел завершает хэштег — список уходит.
-            device.type_text(" ")
+            # Тем же вводом, не вторым: каждый ввод переключает клавиатуру туда
+            # и обратно, а второе переключение подряд путало «назад» (2026-10-28).
+            device.type_text(value + " ")
             return f"введён текст ({len(value)} символов) + пробел после хэштега"
+        device.type_text(value)
         return f"введён текст ({len(value)} символов)"
 
     raise StepFailed(f"неизвестная операция: {op}")

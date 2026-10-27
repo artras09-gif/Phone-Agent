@@ -29,9 +29,12 @@ for caption, tail in [
     typed.clear()
     line = poster.run_step({"op": "type", "value": "$caption"}, {"caption": caption},
                            config.BASE, 1)
-    good = typed == [caption] + tail
+    # Пробел — тем же вводом, одной строкой: второй ввод подряд переключал
+    # клавиатуру ещё раз, и «назад» после него уходило приложению (2026-10-28).
+    good = typed == [caption + "".join(tail)]
     ok &= good
-    print(f"  {'OK ' if good else 'НЕТ'} {caption[-28:]!r}: {typed[1:]} — {line}")
+    print(f"  {'OK ' if good else 'НЕТ'} {caption[-28:]!r}: одним вводом {len(typed)} раз, "
+          f"конец {typed[-1][-3:]!r} — {line}")
 
 print("\nИТОГ:", "всё сошлось" if ok else "ЕСТЬ ОШИБКИ")
 sys.exit(0 if ok else 1)

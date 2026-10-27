@@ -150,6 +150,13 @@ def hide_keyboard():
     """
     if not keyboard_shown():
         return False
+    # Спросить ещё раз через паузу: сразу после ввода клавиатура телефона
+    # переключается обратно с ADBKeyboard, `dumpsys` уже отвечает «показана»,
+    # а «назад» в эту секунду достаётся приложению — Instagram ушёл с экрана
+    # подписи в редактор (живьём 2026-10-28, «07 Пак пресетов»).
+    time.sleep(1.0)
+    if not keyboard_shown():
+        return False
     back()
     # «Назад» жмём РОВНО ОДИН раз, а потом ждём. `dumpsys` отстаёт: сразу
     # после нажатия он ещё какое-то время отвечает «клавиатура показана».
@@ -201,6 +208,9 @@ def type_text(text):
         human.pause(0.5, 1.0)
         if previous and "adbkeyboard" not in previous.lower():
             adb.shell(f"ime set {previous}", check=False)
+            # Дать своей клавиатуре подняться: пока она переключается, «назад»
+            # уходит приложению, а не ей (см. `hide_keyboard`).
+            human.pause(1.2, 1.6)
         return True
 
     if not text.isascii():
