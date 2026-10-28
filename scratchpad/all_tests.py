@@ -81,6 +81,7 @@ TESTS = [
     ("scratchpad/post_new_phone.py", "новый телефон: обрезка YouTube, окно микрофона Instagram"),
     ("scratchpad/post_exclude.py", "подпись: название YouTube + описание, во все сети, «без ютуба»"),
     ("scratchpad/post_targets_bot.py", "пост из окна — в отмеченные сети; бот берёт новый токен"),
+    ("scratchpad/stock_archive.py", "запасы и архив: опубликованное — в архив, из запасов прочь"),
     ("scratchpad/gate_test.py", "замки между процессами"),
     ("scratchpad/fleet_isolation.py", "разделение телефонов по пространствам"),
 ]
