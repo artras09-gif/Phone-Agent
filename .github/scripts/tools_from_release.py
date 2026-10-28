@@ -37,6 +37,8 @@ def entries(path):
 
 
 def main():
+    # Консоль Windows на машине сборки — cp1252: «КБ» в ней роняло скрипт.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     exe, dest = sys.argv[1], sys.argv[2]
     got = 0
     for name, _kind, blob, full in entries(exe):
