@@ -637,6 +637,11 @@ def groups_text():
                 name += ": " + ", ".join(
                     f"{ROLE_TITLES[r]} → «{roles[r]['name'] or 'Общая'}»"
                     for r in ROLES if r in roles)
+        shelves = _shelves(g["id"])
+        if shelves:
+            name += ("; " if roles else ": ") + ", ".join(
+                f"{SHELF_TITLES[k]} → «{shelves[k]['name'] or 'Общая'}»"
+                for k in SHELVES if k in shelves)
         out.append(name)
     return out
 
@@ -659,6 +664,163 @@ def post_stats(text):
     for chat, topic in destinations("stats"):
         sent = send(text, preview=False, chat_id=chat, thread=topic) or sent
     return sent
+
+
+# ------------------------------------------------- запасы и архив (2026-10-28)
+#
+# Просьба: «всё, что запостил, сначала пересылает в отдельный чат, а потом
+# удаляет из другого чата, в котором будут лежать запасы». Запасы — тема, где
+# копятся готовые видео; человек пересылает видео оттуда в тему постинга. Когда
+# оно вышло во ВСЕ выбранные сети, бот пересылает его в архив («запощено») и
+# удаляет из запасов. Вышло не везде — остаётся в запасах.
+#
+# Это не дела (`ROLES`): «/here» без слова сюда не относится — иначе тема
+# постинга стала бы и запасами, и бот удалял бы видео из неё же.
+SHELVES = ("stock", "archive")
+SHELF_WORDS = {
+    "stock": ("запас", "stock", "резерв", "склад"),
+    "archive": ("архив", "archive", "запощен", "опубликован", "posted"),
+}
+SHELF_TITLES = {"stock": "запасы", "archive": "архив"}
+
+
+def _shelves(chat_id):
+    """{"stock"|"archive": {"topic": номер|GENERAL, "name": название}} этого чата."""
+    for g in _groups():
+        if g["id"] == str(chat_id):
+            return {k: v for k, v in (g.get("shelves") or {}).items()
+                    if k in SHELVES and isinstance(v, dict) and v.get("topic")}
+    return {}
+
+
+def shelf_home(kind):
+    """Где запасы или архив по всем чатам бота: (чат, тема, название) или None."""
+    for g in _groups():
+        bound = _shelves(g["id"]).get(kind)
+        if bound:
+            return g["id"], bound["topic"], bound.get("name") or "Общая"
+    return None
+
+
+def _shelf_at(chat_id, here):
+    """Какая полка в этой теме: "stock", "archive" или None."""
+    for kind, v in _shelves(chat_id).items():
+        if v["topic"] == here:
+            return kind
+    return None
+
+
+def set_shelf(chat_id, kind, topic, name=""):
+    """Назначить полку теме; topic=None — снять."""
+    groups = _groups()
+    for g in groups:
+        if g["id"] != str(chat_id):
+            continue
+        shelves = _shelves(chat_id)
+        if topic:
+            shelves[kind] = {"topic": topic, "name": name}
+        else:
+            shelves.pop(kind, None)
+        g["shelves"] = shelves
+    _write_groups(groups)
+
+
+def _bot_rights(chat_id):
+    """(админ ли бот в чате, может ли удалять чужие сообщения). None — не узнал."""
+    me = _me().get("id")
+    if not me:
+        return None
+    res = _call("getChatMember", {"chat_id": chat_id, "user_id": me}, timeout=20)
+    if not res.get("ok"):
+        return None
+    member = res.get("result") or {}
+    admin = member.get("status") in ("administrator", "creator")
+    return admin, bool(admin and (member.get("status") == "creator"
+                                  or member.get("can_delete_messages")))
+
+
+def _remember_stock(msg, chat_id, thread):
+    """Видео в запасах — запомнить, где лежит. Больше в запасах ничего не делаем."""
+    video = msg.get("video") or msg.get("document") or msg.get("animation")
+    if not video or not _is_video(msg, video):
+        return
+    jobs.stock_add(video.get("file_unique_id", ""), chat_id, thread or "",
+                   msg.get("message_id"), (msg.get("from") or {}).get("id", ""),
+                   msg.get("date"))
+
+
+def _thread_param(topic):
+    return {} if not topic or topic == GENERAL else {"message_thread_id": topic}
+
+
+def _forward(to_chat, to_topic, from_chat, msg_id):
+    params = {"chat_id": to_chat, "from_chat_id": from_chat, "message_id": msg_id}
+    params.update(_thread_param(to_topic))
+    return _call("forwardMessage", params, timeout=60)
+
+
+def _why(res):
+    return str(res.get("description") or res.get("error") or "нет ответа")
+
+
+def shelve(job, ok_all):
+    """После публикации: переслать видео в архив и удалить из запасов.
+
+    Строка для отчёта о публикации или "" — если полки не назначены или видео
+    пришло не из Telegram. Порядок — как просили: сначала архив, потом
+    удаление; не удалось переслать — из запасов НЕ удаляем, видео не теряется.
+    """
+    src = jobs.tg_source(job)
+    if not src or not load_settings()["token"]:
+        return ""
+    stock, archive = shelf_home("stock"), shelf_home("archive")
+    if not stock and not archive:
+        return ""
+    found = jobs.stock_find(src.get("file")) if stock else []
+    if not ok_all:
+        if found:
+            return "📦 Вышло не во все сети — в запасах видео оставил."
+        return ""
+    if not archive:
+        if found:
+            return ("📦 Архив не назначен, поэтому из запасов видео не удаляю. "
+                    "Напиши /here архив в теме, куда складывать опубликованное.")
+        return ""
+
+    # В архив — из сообщения в теме постинга (пересылка пересылки сохраняет
+    # «Переслано от …» оригинала); его удалили — из самих запасов.
+    res = _forward(archive[0], archive[1], src.get("chat"), src.get("msg"))
+    if not res.get("ok") and found:
+        res = _forward(archive[0], archive[1], found[0]["chat"], found[0]["msg"])
+    if not res.get("ok"):
+        return (f"📦 В «{archive[2]}» переслать не смог ({_why(res)})"
+                + (" — из запасов поэтому не удалял." if found else "."))
+    line = f"📦 Переслал в «{archive[2]}»"
+
+    if not found:
+        if stock and src.get("fwd"):
+            return (line + f". В «{stock[2]}» это видео не нашёл — если оно там, удали "
+                    "вручную: видео, которые лежали в запасах до того, как я начал их "
+                    "запоминать, я не знаю.")
+        return line + "."
+
+    gone, failed = 0, []
+    for row in found:
+        res = _call("deleteMessage", {"chat_id": row["chat"], "message_id": row["msg"]},
+                    timeout=30)
+        if res.get("ok") or "message to delete not found" in _why(res).lower():
+            jobs.stock_drop(row["chat"], row["msg"])        # удалили или уже нет
+            gone += 1
+        else:
+            failed.append(_why(res))
+    if not failed:
+        copies = f" ({gone} копии)" if gone > 1 else ""
+        return line + f", из «{stock[2]}» удалил{copies}."
+    hint = (" Дай мне в группе права администратора с «Удалением сообщений»."
+            if any("right" in f.lower() or "can't be deleted" in f.lower() for f in failed)
+            else "")
+    return (line + f", а из «{stock[2]}» удалить не смог (Telegram: {failed[0]}).{hint} "
+            "Удали его вручную.")
 
 
 def day_stats(slot=""):
@@ -749,6 +911,8 @@ GROUP_HELLO = ("Работаю в этом чате — как в личке:\n"
                "• /queue, /cancel 5, /status, /stop, /links\n"
                "• Темы: /here — всё в этой теме; /here видео, /here ссылки, "
                "/here статистика — одно дело сюда; /everywhere — во всех темах\n"
+               "• /here запасы и /here архив — опубликованное пересылаю из запасов "
+               "в архив и удаляю из запасов\n"
                "• /stats — статистика снимками экранов (/stats 1 — за день, /stats 2 — за два, "
                "/stats все — за всё время + плитки профилей с просмотрами)\n\n"
                "Публиковать может любой участник этого чата.")
@@ -1306,6 +1470,14 @@ def _handle(msg):
         if text.startswith(("/here", "/everywhere")):
             _cmd_topic(text, chat, msg, sender, cfg)
             return
+        # Запасы и архив — не для разговоров и не для постинга: в запасах
+        # только запоминаем видео (опубликованное удалится отсюда), в архиве
+        # молчим вовсе. Видео из запасов не должно стать черновиком само.
+        shelf = _shelf_at(chat_id, thread or GENERAL)
+        if shelf == "stock":
+            _remember_stock(msg, chat_id, thread)
+        if shelf:
+            return
 
     video = msg.get("video") or msg.get("document") or msg.get("animation")
     hailed = addressed
@@ -1389,7 +1561,12 @@ def _handle(msg):
     # Куда класть — запоминаем СЕЙЧАС: пока видео качается, телефон в окне
     # могут переключить, и оно уехало бы в очередь другого телефона.
     where = (config.QUEUE_DIR, getattr(jobs, "DEVICE", ""))
-    _later(lambda: _take_video(video, text, spec, size_mb, where))
+    # Откуда видео: после публикации по этому оно уйдёт в архив и удалится
+    # из запасов (`shelve`). file_unique_id у пересылки тот же, что у оригинала.
+    src = {"chat": chat_id, "msg": msg.get("message_id"),
+           "file": video.get("file_unique_id", ""),
+           "fwd": bool(msg.get("forward_origin") or msg.get("forward_date"))}
+    _later(lambda: _take_video(video, text, spec, size_mb, where, src))
 
 
 VIDEO_EXT = (".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".3gp")
@@ -1431,11 +1608,22 @@ def _cmd_topic(text, chat, msg, sender, cfg):
             send("Выбрать тему для бота может только его владелец.")
         return                                      # в чужой теме — молчим
     word = text.split(maxsplit=1)[1].strip().lower() if " " in text.strip() else ""
+    shelf = next((k for k in SHELVES if word and any(word.startswith(w)
+                                                     for w in SHELF_WORDS[k])), None)
+    if shelf:
+        _cmd_shelf(shelf, text, chat, msg, thread)
+        return
     picked = [r for r in ROLES if any(word.startswith(w) for w in ROLE_WORDS[r])] \
         if word else list(ROLES)
     if word and not picked:
-        send("Не понял, какое дело. Так: /here видео, /here ссылки, /here статистика "
-             "или просто /here — всё сюда.")
+        send("Не понял, какое дело. Так: /here видео, /here ссылки, /here статистика, "
+             "/here запасы, /here архив или просто /here — всё сюда.")
+        return
+    if not text.startswith("/everywhere") and _shelf_at(chat_id, thread or GENERAL):
+        kind = _shelf_at(chat_id, thread or GENERAL)
+        send(f"Эта тема — {SHELF_TITLES[kind]}. Видео отсюда я не публикую "
+             f"(опубликованное удаляю из запасов). Сначала сними: /everywhere "
+             f"{SHELF_TITLES[kind]}.")
         return
     if text.startswith("/everywhere"):
         set_roles(chat_id, picked, None)
@@ -1464,6 +1652,57 @@ def _cmd_topic(text, chat, msg, sender, cfg):
     send(f"Готово: {place} — {ROLE_TITLES[picked[0]]}. {jobs_here} В других чатах и "
          "темах это дело больше не принимаю."
          + ("\nОстальное: " + ", ".join(others) if others else ""))
+
+
+def _cmd_shelf(kind, text, chat, msg, thread):
+    """/here запасы, /here архив — назначить тему; /everywhere запасы — снять."""
+    chat_id = str(chat.get("id"))
+    here = thread or GENERAL
+    title = SHELF_TITLES[kind]
+    if text.startswith("/everywhere"):
+        for g in _groups():
+            set_shelf(g["id"], kind, None)
+        send({"stock": "Запасы сняты: из них больше ничего не удаляю.",
+              "archive": "Архив снят: опубликованное больше никуда не пересылаю и из "
+                         "запасов не удаляю."}[kind])
+        return
+    posts = role_home("posts")
+    if posts and posts == (chat_id, here):
+        send(f"Здесь тема постинга — она не может быть ещё и «{title}». Назначь "
+             f"{title} в другой теме.")
+        return
+    other = "archive" if kind == "stock" else "stock"
+    if _shelf_at(chat_id, here) == other:
+        send(f"Эта тема уже {SHELF_TITLES[other]}. Запасы и архив — разные темы.")
+        return
+    for g in _groups():                       # полка одна на бота — переезжает сюда
+        if g["id"] != chat_id and _shelves(g["id"]).get(kind):
+            set_shelf(g["id"], kind, None)
+    name = _topic_name(msg) if (thread or chat.get("is_forum")) else (chat.get("title") or "этот чат")
+    set_shelf(chat_id, kind, here, name)
+    place = f"Тема «{name}»" if (thread or chat.get("is_forum")) else "Этот чат"
+    pair = shelf_home(other)
+    if kind == "stock":
+        lines = [f"Готово: {place} — запасы. Запоминаю каждое видео, которое сюда "
+                 "попадает (сам здесь молчу). Перешлёшь его на постинг — после выхода "
+                 "во все сети перешлю в архив и удалю отсюда. Вышло не везде — останется.",
+                 "Видео, которые лежат здесь уже сейчас, я не видел: Telegram не "
+                 "показывает ботам старые сообщения. Их после публикации удаляй вручную."]
+        if not pair:
+            lines.append("Архив пока не назначен — без него из запасов ничего не удаляю. "
+                         "Напиши /here архив в теме, куда складывать опубликованное.")
+        rights = _bot_rights(chat_id)
+        if rights is not None and not rights[1]:
+            lines.append("⚠ У меня нет права удалять сообщения в этом чате. Сделай меня "
+                         "администратором с «Удалением сообщений», иначе удалять "
+                         "отсюда не смогу.")
+    else:
+        lines = [f"Готово: {place} — архив. Каждое опубликованное видео пересылаю сюда"
+                 + (f" и удаляю из «{pair[2]}»." if pair else ".")]
+        if not pair:
+            lines.append("Запасы не назначены: напиши /here запасы в теме, откуда "
+                         "удалять опубликованное.")
+    send("\n\n".join(lines))
 
 
 def _is_video(msg, video):
@@ -1678,8 +1917,9 @@ def _stats_button(cq, data, chat_id, message_id, group, thread):
     _snap_stats(days, say=lambda text: _edit(chat_id, message_id, text))
 
 
-def _take_video(video, text, spec, size_mb=0, where=None):
-    """Скачать видео и сделать черновик (или задачу по шаблону)."""
+def _take_video(video, text, spec, size_mb=0, where=None, src=None):
+    """Скачать видео и сделать черновик (или задачу по шаблону).
+    `src` — откуда видео в Telegram, для архива и запасов (`shelve`)."""
     import postspec
 
     queue_dir, device = where or (config.QUEUE_DIR, None)
@@ -1737,7 +1977,7 @@ def _take_video(video, text, spec, size_mb=0, where=None):
             extra["shorts_tags_from"] = yttags.LAST_SOURCE
         job_id = jobs.add(path, caption=caption, targets=",".join(targets),
                           status="draft", chat=reply_address(), device=device,
-                          captions=extra or None)
+                          captions=extra or None, tg=src)
         _send_draft(job_id)
         return
 
@@ -1745,7 +1985,7 @@ def _take_video(video, text, spec, size_mb=0, where=None):
                       run_at=spec["when"].timestamp() if spec["when"] else None,
                       # Прислал человек — его решение: дневной лимит не держит.
                       captions=spec["captions"], exact=True,
-                      chat=reply_address(), device=device)
+                      chat=reply_address(), device=device, tg=src)
     send(postspec.describe(spec, job_id) + f"\n\nОтменить: /cancel {job_id}")
     if spec["when"] is None:
         _publish_now(job_id)

@@ -368,7 +368,23 @@ def _post_job(job, notify):
             _tell_failure(target, report)
 
     jobs.mark(job["id"], "done" if ok_all else "failed", "\n\n".join(results))
+    shelf = _shelve(job, ok_all)
+    if shelf:
+        results.append(shelf)
+        if notify:
+            notify(shelf)
     return "\n\n".join(results)
+
+
+def _shelve(job, ok_all):
+    """Видео из бота: в архив и из запасов (`telegram_bot.shelve`). Строка
+    для отчёта или "". Сбой здесь публикацию не портит — она уже вышла."""
+    try:
+        import telegram_bot
+
+        return telegram_bot.shelve(job, ok_all)
+    except Exception as e:                       # noqa: BLE001
+        return f"📦 Архив и запасы: сбой {type(e).__name__}: {e}"
 
 
 # Короче этого кусок не запускаем: две минуты — это разблокировка, открытие

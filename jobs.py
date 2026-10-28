@@ -56,6 +56,20 @@ CREATE TABLE IF NOT EXISTS content (
     raw        TEXT,
     at         REAL
 );
+-- Видео в теме «запасы» Telegram (просьба 2026-10-28): опубликованное бот
+-- удаляет оттуда. Из группы Telegram не говорит боту, какое сообщение
+-- переслали, поэтому бот сам запоминает каждое видео запасов, а пересланное
+-- узнаёт по file_unique_id — он у пересылки тот же, что у оригинала.
+CREATE TABLE IF NOT EXISTS stock (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    file   TEXT,                -- file_unique_id видео
+    chat   TEXT,
+    thread TEXT DEFAULT '',     -- тема; '' — «Общая» или чат без тем
+    msg    INTEGER,             -- номер сообщения в запасах
+    sender TEXT DEFAULT '',
+    at     REAL,
+    UNIQUE (chat, msg)
+);
 """
 
 
@@ -86,7 +100,11 @@ MIGRATIONS = {
              ("fingerprint", "TEXT DEFAULT ''"),
              # Откуда заказали из бота («чат» или «чат:тема»): отчёт о посте,
              # вышедшем по времени, идёт туда же — в группу, а не в личку.
-             ("chat", "TEXT DEFAULT ''")],
+             ("chat", "TEXT DEFAULT ''"),
+             # Сообщение Telegram, из которого взято видео (JSON: chat, msg,
+             # file — file_unique_id, fwd — переслано ли): по нему
+             # опубликованное уходит в архив и удаляется из запасов.
+             ("tg", "TEXT DEFAULT ''")],
     "events": [("device", "TEXT DEFAULT ''")],
     "links": [("sent", "REAL DEFAULT 0")],
 }
@@ -263,22 +281,72 @@ def interrupt_running():
 
 
 def add(video_path, caption="", targets="tiktok", run_at=None, captions=None,
-        exact=False, status="pending", fingerprint="", chat="", device=None):
+        exact=False, status="pending", fingerprint="", chat="", device=None, tg=None):
     """Задача в очередь. status="draft" — черновик из бота: видео скачано, но
-    сети и время человек ещё выбирает кнопками; публиковать его нельзя."""
+    сети и время человек ещё выбирает кнопками; публиковать его нельзя.
+    `tg` — откуда видео в Telegram (см. колонку `tg`)."""
     if not fingerprint and os.path.isfile(video_path):
         fingerprint = video_fingerprint(video_path)
     with connect() as con:
         cur = con.execute(
             "INSERT INTO jobs (video_path, caption, targets, run_at, created_at,"
-            " device, captions, exact, status, fingerprint, chat)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " device, captions, exact, status, fingerprint, chat, tg)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (video_path, caption, targets, run_at or time.time(), time.time(),
              DEVICE if device is None else device,
              json.dumps(captions or {}, ensure_ascii=False),
-             1 if exact else 0, status, fingerprint, chat or ""),
+             1 if exact else 0, status, fingerprint, chat or "",
+             json.dumps(tg, ensure_ascii=False) if tg else ""),
         )
         return cur.lastrowid
+
+
+def tg_source(job):
+    """Откуда видео задачи в Telegram: {"chat", "msg", "file", "fwd"} или {}."""
+    try:
+        raw = job["tg"]
+    except (IndexError, KeyError):
+        return {}
+    try:
+        data = json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+# ------------------------------------------------------------ запасы Telegram
+
+def stock_add(file, chat, thread, msg, sender="", at=None):
+    """Запомнить видео из запасов. Повтор того же сообщения — без второй строки."""
+    if not file or not msg:
+        return
+    with connect() as con:
+        con.execute("INSERT OR IGNORE INTO stock (file, chat, thread, msg, sender, at)"
+                    " VALUES (?,?,?,?,?,?)",
+                    (file, str(chat), str(thread or ""), int(msg), str(sender or ""),
+                     at or time.time()))
+
+
+def stock_find(file):
+    """Где в запасах лежит это видео: строки по порядку появления."""
+    if not file:
+        return []
+    with connect() as con:
+        return con.execute("SELECT * FROM stock WHERE file=? ORDER BY at, msg",
+                           (file,)).fetchall()
+
+
+def stock_drop(chat, msg):
+    with connect() as con:
+        con.execute("DELETE FROM stock WHERE chat=? AND msg=?", (str(chat), int(msg)))
+
+
+def stock_count(chat=None):
+    with connect() as con:
+        if chat is None:
+            return con.execute("SELECT COUNT(*) c FROM stock").fetchone()["c"]
+        return con.execute("SELECT COUNT(*) c FROM stock WHERE chat=?",
+                           (str(chat),)).fetchone()["c"]
 
 
 def set_targets(job_id, targets):
