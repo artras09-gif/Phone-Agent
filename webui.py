@@ -408,12 +408,9 @@ class Dispatcher:
             # 2026-10-27: «если постинг запланирован и в его время идёт
             # сессия — сессия прерывается и происходит постинг». Раньше
             # прерывал только пост с точным временем, а задача из окна
-            # ждала конца сессии. Не прерываем лишь ради поста, который
-            # дневной лимит автоочереди всё равно отложит на завтра.
+            # ждала конца сессии. Пост ко времени — первым, если подошли оба.
             try:
-                job = jobs.due_exact()
-                if job is None and jobs.count_today("done") < config.MAX_POSTS_PER_DAY:
-                    job = jobs.due()
+                job = jobs.due_exact() or jobs.due()
                 if job is not None:
                     self.runner.preempt(f"пора публиковать задачу #{job['id']}")
             except Exception:
@@ -891,7 +888,6 @@ def state(since=0):
             "sessions": jobs.sessions_today(),
             "max_sessions": config.MAX_SESSIONS_PER_DAY,
             "posts": jobs.count_today("done"),
-            "max_posts": config.MAX_POSTS_PER_DAY,
         },
         "queue": _queue(),
         "plan": _plan_state(),

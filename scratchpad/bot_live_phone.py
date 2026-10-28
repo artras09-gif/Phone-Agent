@@ -37,7 +37,6 @@ config.DB_PATH = os.path.join(TMP, "jobs.db")
 config.QUEUE_DIR = os.path.join(TMP, "queue")
 config.WATCH_DIR = os.path.join(TMP, "watch")
 config.DRY_RUN = True                     # без последней кнопки: ролик уже опубликован
-config.MAX_POSTS_PER_DAY = 100
 for d in (config.QUEUE_DIR, config.WATCH_DIR, OUT):
     os.makedirs(d, exist_ok=True)
 

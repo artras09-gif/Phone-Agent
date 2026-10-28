@@ -75,20 +75,20 @@ say(not r.why, "время поста не подошло — сессия ид�
 
 print("\n--- пост ко времени за обычной задачей ---")
 clear()
-old_limit = config.MAX_POSTS_PER_DAY
-config.MAX_POSTS_PER_DAY = 0                 # лимит автоочереди на сегодня исчерпан
 jobs.add("v.mp4", "обычная", "tiktok", run_at=time.time() - 600)
 timed = jobs.add("v.mp4", "ко времени", "reels", run_at=time.time() - 60, exact=True)
 r = tick("сессия tiktok")
 say(r.why == [f"пора публиковать задачу #{timed}"],
-    f"обычная (её лимит отложит) не заслоняет пост ко времени: {r.why}")
+    f"подошли обе — первым пост ко времени: {r.why}")
 
-print("\n--- лимит автоочереди исчерпан, а в очереди только обычная ---")
+print("\n--- дневного лимита постов нет: четвёртая за день тоже прерывает сессию ---")
 clear()
-jobs.add("v.mp4", "обычная", "tiktok")
+for _ in range(3):
+    jobs.mark(jobs.add("v.mp4", "уже вышла", "tiktok"), "done")
+fourth = jobs.add("v.mp4", "четвёртая", "tiktok")
 r = tick("сессия tiktok")
-say(not r.why, "её всё равно отложат на завтра — сессию ради неё не рвём")
-config.MAX_POSTS_PER_DAY = old_limit
+say(r.why == [f"пора публиковать задачу #{fourth}"],
+    f"три поста сегодня уже вышли, а четвёртую не откладываем: {r.why}")
 
 print("\n--- не сессия (статистика, публикация) — не прерываем ---")
 clear()

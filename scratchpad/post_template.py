@@ -113,20 +113,18 @@ job = jobs.add(video, "Общий текст", targets="tiktok,shorts",
 scheduler.run_post_job(job_id=job)
 say(posted == [("tiktok", "Общий текст"), ("shorts", "Название")], f"в каждую сеть своё: {posted}")
 
-config.MAX_POSTS_PER_DAY = 1
 told = []
 posted.clear()
-late = jobs.add(video, "сверх лимита", targets="tiktok")
-msg = scheduler.run_post_job(notify=told.append)
-row = jobs.by_id(late)
-moved_to = dt.datetime.fromtimestamp(row["run_at"])
-say(not posted and row["status"] == "pending" and moved_to.date() == dt.date.today() + dt.timedelta(days=1),
-    f"лимит: не публикую, переношу на завтра в {moved_to:%H:%M} — «{msg}»")
-say(told and "завтра" in told[0], "и говорю об этом в бот")
-say(jobs.due() is None, "до завтра задача не «подошла» — сторож не дёргается каждые 10 с")
+for n in range(4):                       # было 3 в день — четвёртая уезжала на завтра
+    jobs.mark(jobs.add(video, f"уже вышла {n}", targets="reels"), "done")
+plain = jobs.add(video, "без времени", targets="tiktok")
+scheduler.run_post_job(notify=told.append)
+say(posted == [("tiktok", "без времени")] and jobs.by_id(plain)["status"] == "done",
+    f"дневного лимита нет: после 5 постов за день и пост без времени выходит: {posted}")
+say(not any("лимит" in t or "завтра" in t for t in told), f"и никакого «перенесу на завтра»: {told}")
 exact = jobs.add(video, "ко времени", targets="tiktok", exact=True)
 scheduler.run_post_job(job_id=exact)
-say(posted == [("tiktok", "ко времени")], "пост с точным временем выходит сверх лимита")
+say(posted[-1] == ("tiktok", "ко времени"), "пост с точным временем выходит как раньше")
 
 scheduler.poster.post = lambda *a: (_ for _ in ()).throw(RuntimeError("телефон отвалился"))
 broken = jobs.add(video, "сломается", targets="tiktok", exact=True)
