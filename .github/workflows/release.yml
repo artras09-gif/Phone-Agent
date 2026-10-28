@@ -1,0 +1,109 @@
+# Сборка PhoneAgent.exe на Windows-машине GitHub и релиз с ним.
+#
+# Запуск: вкладка Actions → «Сборка exe и релиз» → Run workflow (тег, заголовок,
+# описание). adb, scrcpy и свой сервер Telegram Bot API берутся из прошлого
+# релиза (`.github/scripts/tools_from_release.py`): на чистой машине их нет, а
+# сервер Telegram собран из исходников и скачать его негде.
+name: Сборка exe и релиз
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Тег, например v2026.10.28.2"
+        required: true
+      title:
+        description: "Заголовок релиза"
+        required: true
+      notes:
+        description: "Описание релиза (Markdown)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: "1"
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      TITLE: ${{ inputs.title }}
+      NOTES: ${{ inputs.notes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Тег в порядке и ещё не занят
+        shell: bash
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+(\.[0-9]+)+$ ]] || { echo "тег «$TAG» не похож на v2026.10.28.2"; exit 1; }
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "релиз $TAG уже есть"; exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: PyInstaller
+        run: python -m pip install --disable-pip-version-check pyinstaller
+
+      - name: Инструменты из прошлого релиза
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/prev"
+          gh release download -R "$GITHUB_REPOSITORY" -p PhoneAgent.exe -D "$RUNNER_TEMP/prev"
+          python -I .github/scripts/tools_from_release.py "$RUNNER_TEMP/prev/PhoneAgent.exe" env/tools
+
+      - name: Самотест
+        shell: pwsh
+        run: |
+          # В копии: проверки не должны трогать файлы, которые уедут в exe.
+          Copy-Item -Recurse . "$env:RUNNER_TEMP\check"
+          Set-Location "$env:RUNNER_TEMP\check"
+          python selftest.py
+          if ($LASTEXITCODE -ne 0) { throw "selftest упал" }
+
+      - name: Сборка exe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$env:USERPROFILE\Desktop" | Out-Null
+          python build_exe.py
+          if ($LASTEXITCODE -ne 0) { throw "build_exe упал" }
+
+      - name: exe запускается и работает с вшитым adb
+        shell: pwsh
+        run: |
+          $exe = "$env:USERPROFILE\Desktop\PhoneAgent.exe"
+          "размер: {0:N1} МБ" -f ((Get-Item $exe).Length / 1MB)
+          foreach ($cmd in @("--help", "queue")) {
+            $p = Start-Process $exe -ArgumentList $cmd -PassThru
+            if (-not $p.WaitForExit(180000)) { $p.Kill(); throw "PhoneAgent.exe $cmd завис" }
+            "PhoneAgent.exe $cmd -> код $($p.ExitCode)"
+            if ($p.ExitCode -ne 0) {
+              Get-Content "$env:LOCALAPPDATA\PhoneAgent\logs\app.log" -ErrorAction SilentlyContinue | Select-Object -Last 40
+              throw "PhoneAgent.exe $cmd: код $($p.ExitCode)"
+            }
+          }
+          $tools = Get-ChildItem -Recurse "$env:LOCALAPPDATA\PhoneAgent\tools" -Filter *.exe | ForEach-Object Name
+          "распакованы: $($tools -join ', ')"
+          foreach ($need in @("adb.exe", "scrcpy.exe", "telegram-bot-api.exe")) {
+            if ($tools -notcontains $need) { throw "в exe нет $need" }
+          }
+
+      - name: Все проверки без телефона (для сведения)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Set-Location "$env:RUNNER_TEMP\check"
+          $env:PATH = "$env:GITHUB_WORKSPACE\env\tools\platform-tools;$env:PATH"
+          python scratchpad/all_tests.py
+
+      - name: Релиз
+        shell: bash
+        run: |
+          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" "$USERPROFILE/Desktop/PhoneAgent.exe" -R "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "$TITLE" --notes-file "$RUNNER_TEMP/notes.md"
