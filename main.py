@@ -601,7 +601,7 @@ def cmd_queue(args):
     for r in rows:
         when = time.strftime("%d.%m %H:%M", time.localtime(r["run_at"]))
         print(f"#{r['id']:3d} {when}  {r['targets']:12} {os.path.basename(r['video_path'])}")
-    print(f"\nсегодня опубликовано: {jobs.count_today('done')}/{config.MAX_POSTS_PER_DAY}")
+    print(f"\nсегодня опубликовано: {jobs.count_today('done')}")
     print(f"сессий сегодня: {jobs.sessions_today()}/{config.MAX_SESSIONS_PER_DAY}")
     return 0
 
