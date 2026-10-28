@@ -50,8 +50,17 @@ def read_pin():
     return pin or None
 
 
+def _falling_asleep():
+    """Телефон засыпает или спит — по `dumpsys power`. Живьём 29.10 на MIUI
+    сразу после «питания» `screen_state()` ещё говорил «unlocked», а здесь
+    уже было Dozing: разблокировка ему верила, и следующий сбор статистики
+    снимал чёрный экран."""
+    m = re.search(r"mWakefulness=(\w+)", adb.shell("dumpsys power", check=False) or "")
+    return bool(m) and m.group(1) in ("Asleep", "Dozing")
+
+
 def wake():
-    if screen_state() == "off":
+    if screen_state() == "off" or _falling_asleep():
         adb.keyevent("KEYCODE_WAKEUP")
         human.pause(0.6, 1.2)
 
@@ -108,6 +117,12 @@ def unlock():
 def lock():
     if screen_state() != "off":
         adb.keyevent("KEYCODE_POWER")
+        # Дождаться, пока правда погаснет: иначе разблокировка сразу следом
+        # застаёт его на полпути (см. _falling_asleep).
+        for _ in range(8):
+            human.pause(0.3, 0.4)
+            if screen_state() == "off":
+                break
 
 
 def keep_awake(on=True):

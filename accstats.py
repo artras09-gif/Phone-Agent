@@ -440,11 +440,11 @@ def shots_dir(day=None):
     return os.path.join(os.path.dirname(config.QUEUE_DIR), "analytics", day.isoformat())
 
 
-def daily_dir(day=None):
-    """Снимки ежедневной «статистики за вчера» — отдельно от снятых по /stats:
-    сеть, что не успела посчитать вчера, переснимается, а остальные ждут."""
-    day = day or dt.date.today()
-    return os.path.join(os.path.dirname(config.QUEUE_DIR), "analytics", "daily", day.isoformat())
+def report_dir(kind, first):
+    """Снимки отчёта сами по себе («day», «week», «month») — отдельно от снятых
+    по /stats: сеть, что не успела посчитать период, переснимается, а снимки
+    остальных ждут её в той же папке."""
+    return os.path.join(os.path.dirname(config.QUEUE_DIR), "analytics", kind, first.isoformat())
 
 
 # Чьё приложение должно быть на снимке. Живьём 2026-10-22: касание по
@@ -630,11 +630,11 @@ def _wide_band(test, low=0.7):
 # Живьём на Redmi 28.10 в 23:15:
 # - Instagram: 27-е (вчера) выбирается, с 28-го серые. Одно касание и
 #   «Применить» дают один день (снимок 24.10 — «23 окт.» на графике).
-# - TikTok отстаёт на два дня: «7 дней» подписаны «21 окт - 27 окт», но на
-#   графике последняя точка — 26-е, и выбор 27-го показывает «26 окт - 26
-#   окт». 22.10 в 12:23 было так же (20-е). Сегодняшнюю клетку выбрать
-#   нельзя. Поэтому TikTok — последний посчитанный им день, с подписью,
-#   какой именно (видно по «26 окт - 26 окт»).
+# - TikTok вчерашнего дня не даёт: «7 дней» подписаны «21 окт - 27 окт», но
+#   на графике последняя точка — 26-е, а выбор 27-го показывает «26 окт - 26
+#   окт» (календарь сдвинут на день, см. _tt_span). 22.10 в 12:23 было так
+#   же (20-е). Сегодняшнюю клетку выбрать нельзя. Поэтому TikTok — последний
+#   показанный им день, с подписью, какой именно.
 # - YouTube Studio: дня в чипах нет. Зато касание последней точки графика
 #   «Просмотры» за 28 дней показывает подсказку «27 окт. 2026 г.: 60» —
 #   число за день. Подсказка нарисована на холсте, в дереве её нет: дату
@@ -646,7 +646,27 @@ def _wide_band(test, low=0.7):
 # Поэтому к «всему времени» прилагаются плитки профиля: под каждым видео там
 # его просмотры с самого начала.
 ALL_TIME = -1
-PERIOD_WORDS = {1: "вчера", 2: "2 дня", ALL_TIME: "всё время"}
+# «Каждый день стата за вчера, каждую неделю за прошедшую неделю и каждый
+# месяц за прошедший месяц» (2026-10-29): «week» — прошлая неделя с
+# понедельника по воскресенье, «month» — прошлый календарный месяц.
+PERIOD_WORDS = {1: "вчера", 2: "2 дня", ALL_TIME: "всё время", "week": "прошлую неделю",
+                "month": "прошлый месяц"}
+MONTH_NAMES = ("январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август",
+               "сентябрь", "октябрь", "ноябрь", "декабрь")
+
+
+def report_span(kind, today=None):
+    """(первый, последний) день периода: «day» — вчера, «week» — прошлая
+    неделя пн–вс, «month» — прошлый месяц."""
+    today = today or dt.date.today()
+    if kind == "week":
+        last = today - dt.timedelta(days=today.weekday() + 1)
+        return last - dt.timedelta(days=6), last
+    if kind == "month":
+        last = today.replace(day=1) - dt.timedelta(days=1)
+        return last.replace(day=1), last
+    day = today - dt.timedelta(days=1)
+    return day, day
 
 
 def notes(day=None):
@@ -709,16 +729,38 @@ def _day_of(text):
 
 def _day_note(folder, name, day, shown, late):
     """Пояснение к снимку «за вчера»; late — почему день на снимке раньше
-    вчерашнего. Какой день на нём — отметкой `<name>_day`: по ней ежедневная
-    статистика решает, переснимать ли сеть позже."""
+    вчерашнего. Последний день на снимке — отметкой `<name>_end`: по ней
+    отчёт решает, переснимать ли сеть позже."""
     yesterday = dt.date.today() - dt.timedelta(days=1)
     if day is not None:
-        _note(folder, name + "_day", day.isoformat())
+        _note(folder, name + "_end", day.isoformat())
     if day == yesterday:
         return f"за вчера, {day:%d.%m}"
     if day is not None and day < yesterday:
         return f"за {day:%d.%m} — {late}"
     return f"за {shown}" if shown else "за вчера"
+
+
+def _range_note(folder, name, want, got, late):
+    """Пояснение к снимку за неделю или месяц. want — (первый, последний)
+    нужный, got — показанный (или None — не прочесть). late — почему
+    показанный кончается раньше."""
+    if got is None:
+        return f"за {_span(*want)}"
+    _note(folder, name + "_end", got[1].isoformat())
+    if got == want:
+        return f"за {_span(*got)}"
+    if got[0] == want[0] and got[1] < want[1]:
+        return f"за {_span(*got)} — {late}"
+    return f"за {_span(*got)} (просил {_span(*want)})"
+
+
+def _range_of(text):
+    """(первый, последний) из подписи «19 окт - 25 окт» или «26 окт». None — не дата."""
+    ends = [_day_of(part) for part in re.split(r"\s[-–]\s", text or "", maxsplit=1)]
+    if not ends or any(d is None for d in ends):
+        return None
+    return ends[0], ends[-1]
 
 
 TT_TITLE = "TikTok Studio"
@@ -785,6 +827,116 @@ def _tt_pick_range(days, w):
     return False
 
 
+# Неделя и месяц в календаре TikTok (2026-10-29). Открывается он на текущем
+# месяце, прошлый — выше, листается. Чисел и названий месяцев в дереве нет,
+# только клетки: внешние во всю ширину столбца (154x110 на Redmi) — у каждой
+# даты, и выбранной, и сегодняшней. Месяцы разделены заголовком — пустым
+# промежутком больше шага строк. Неделя — с воскресенья. Даты клеток
+# находятся по сегодняшнему кольцу или по началу месяца после промежутка и
+# сходятся, только если каждая дата стоит в столбце своего дня недели, а
+# каждое 1-е число — первым после промежутка.
+def _tt_map(w):
+    """Даты клеток календаря TikTok на экране: [(дата, клетка)] по порядку или
+    [] — не разобрать (или разбор неоднозначен).
+
+    Дата клетки — по строке и столбцу, а не по счёту: живьём 29.10 после
+    касания первой даты календарь сам пролистался, а у выбранной клетки
+    сменился размер — по порядку счёт съехал бы на ней."""
+    nodes = ui.dump(retries=2, tolerant=True) or []
+    # Клетки — от выбранного кружка (78 px) до внешней (154); крестик
+    # «закрыть» (66 px) — мимо.
+    boxes = [n for n in nodes if not _label(n) and 0.07 * w < n.bounds[2] - n.bounds[0] <= w / 7 + 6
+             and 60 < n.bounds[3] - n.bounds[1] < 140]
+    slots, rows = {}, []                              # (строка, столбец) -> клетка
+    for n in sorted(boxes, key=lambda n: -(n.bounds[2] - n.bounds[0])):   # внешние — первыми
+        cx, cy = _center(n)
+        row = next((r for r in rows if abs(r - cy) < 25), None)
+        if row is None:
+            rows.append(cy)
+            row = cy
+        slots.setdefault((row, int(cx // (w / 7))), n)
+    rows.sort()
+    if len(slots) < 7:
+        return []
+    pitch = min((b - a for a, b in zip(rows, rows[1:])), default=0)
+    # Неделя каждой строки. Через заголовок месяца неделя та же, если месяц
+    # начался не в воскресенье: «27–30 сент.» и «1–3 окт.» — одна неделя.
+    week, heads = {}, []                              # heads — строки сразу после заголовка
+    for i, row in enumerate(rows):
+        if not i:
+            week[row] = 0
+            continue
+        gap = pitch and row - rows[i - 1] > 1.5 * pitch
+        start = min(c for r, c in slots if r == row)
+        if gap:
+            heads.append(row)
+        week[row] = week[rows[i - 1]] + (0 if gap and start > 0 else 1)
+    today = dt.date.today()
+    sundays = []                                      # гипотезы: воскресенье недели №0
+    inner = [n for n in boxes if n.bounds[2] - n.bounds[0] < w / 7 - 6
+             and abs((n.bounds[2] - n.bounds[0]) - (n.bounds[3] - n.bounds[1])) <= 8]
+    sizes = {}
+    for c in inner:
+        sizes[c.bounds[2] - c.bounds[0]] = sizes.get(c.bounds[2] - c.bounds[0], 0) + 1
+    usual = max(sizes, key=sizes.get) if sizes else 0
+    ring = [c for c in inner if abs(c.bounds[2] - c.bounds[0] - usual) >= 3
+            and int(_center(c)[0] // (w / 7)) == (today.weekday() + 1) % 7]
+    for c in ring:                                    # сегодня — в своём столбце
+        row = next(r for r in rows if abs(r - _center(c)[1]) < 25)
+        sundays.append(today - dt.timedelta(days=7 * week[row] + (today.weekday() + 1) % 7))
+    # По 1-му числу: первым в первой строке или первым после заголовка.
+    # Этот месяц, прошлый, позапрошлый.
+    for row in [rows[0]] + heads:
+        col = min(c for r, c in slots if r == row)
+        month = today.replace(day=1)
+        for _ in range(3):
+            sundays.append(month - dt.timedelta(days=7 * week[row] + col))
+            month = (month - dt.timedelta(days=1)).replace(day=1)
+
+    def date_of(row, col, sunday):
+        return sunday + dt.timedelta(days=7 * week[row] + col)
+
+    found = set()
+    for sunday in sundays:
+        if sunday.weekday() != 6:
+            continue
+        firsts = {(r, c) for (r, c) in slots if date_of(r, c, sunday).day == 1}
+        need = {(r, min(c for rr, c in slots if rr == r)) for r in heads}
+        if not need <= firsts or any(r not in heads and r != rows[0] for r, _ in firsts):
+            continue                                  # 1-е число — только после заголовка
+        found.add(sunday)
+    if len(found) != 1:
+        return []
+    sunday = found.pop()
+    return sorted(((date_of(r, c, sunday), n) for (r, c), n in slots.items()), key=lambda p: p[0])
+
+
+def _tt_pick_dates(first, last, w):
+    """В открытом календаре TikTok выбрать first..last, листая к нужному
+    месяцу, и нажать «Обновить». True — нажато."""
+    for target in (first, last):
+        for _ in range(8):
+            seen = _tt_map(w)
+            hit = next((c for d, c in seen if d == target), None)
+            if hit is not None:
+                ui.tap_node(hit)
+                human.pause(1.0, 1.4)
+                break
+            # Нужная дата раньше видимых (или не разобрать) — листать к прошлому.
+            back = not seen or target < seen[0][0]
+            y1, y2 = (1000, 1500) if back else (1500, 1000)
+            adb.shell(f"input swipe {w // 2} {y1} {w // 2} {y2} 600", check=False)
+            human.pause(1.2, 1.5)
+        else:
+            return False
+    y = _wide_band(_tiktok_red)
+    if y is None or adb.current_app()[0] != SNAP_APPS["tiktok"]:
+        return False                                  # по цвету — только внутри TikTok
+    adb.tap(w // 2, y)
+    human.pause(4, 5)
+    return True
+
+
 def _tt_range_text(nodes, h):
     """Подпись периода под «Основные метрики»: «19 окт - 19 окт» -> «19 окт»."""
     for n in nodes or []:
@@ -802,6 +954,8 @@ def _tt_period(days, w, h):
     other = next((n for n in nodes or [] if _label(n) in TT_OTHER and n.bounds[1] < h * 0.3), None)
     if other is None:
         return None
+    if days in ("week", "month"):
+        return _tt_span(days, w, h)
     ui.tap_node(_clickable_at(nodes, other))
     human.pause(2, 2.5)
     if not _tt_pick_range(days, w):
@@ -809,6 +963,35 @@ def _tt_period(days, w, h):
         human.pause(1, 1.5)
         return None
     return _tt_range_text(ui.dump(retries=2, tolerant=True), h)
+
+
+def _tt_span(days, w, h):
+    """Неделя или месяц в TikTok Studio. Подпись периода или None.
+
+    Календарь TikTok сдвинут на день: выбрал 19–25 окт. — показал «18 окт -
+    24 окт» (живьём 29.10; так же и с одним днём). Поэтому выбираем на день
+    позже и сверяем подпись; сдвига нет — выбираем ещё раз, как есть.
+    Выбрать можно самое позднее вчера."""
+    first, last = report_span(days)
+    yesterday = dt.date.today() - dt.timedelta(days=1)
+    text = None
+    for shift in (1, 0):
+        nodes = ui.dump(retries=2, tolerant=True)
+        other = next((n for n in nodes or [] if _label(n) in TT_OTHER and n.bounds[1] < h * 0.3), None)
+        if other is None:
+            return text
+        ui.tap_node(_clickable_at(nodes, other))
+        human.pause(2, 2.5)
+        pick = (first + dt.timedelta(days=shift), min(last + dt.timedelta(days=shift), yesterday))
+        if not _tt_pick_dates(*pick, w):
+            device.back()                             # закрыть календарь
+            human.pause(1, 1.5)
+            return text
+        text = _tt_range_text(ui.dump(retries=2, tolerant=True), h)
+        got = _range_of(text)
+        if got is None or got[0] != pick[0]:
+            return text                               # сдвиг есть (или подписи нет)
+    return text
 
 
 def _tt_longest(w, h):
@@ -904,6 +1087,9 @@ def _shot_tiktok(folder, w, h, days=None):
             # (живьём 22.10 в 12:23 и 28.10 в 23:34).
             note = _day_note(folder, "tiktok", _day_of(picked), picked,
                              "TikTok Studio считает с отставанием, вчерашнего дня у него ещё нет")
+        elif days in ("week", "month"):
+            note = _range_note(folder, "tiktok", report_span(days), _range_of(picked),
+                               "последние дни TikTok Studio ещё не посчитал")
         else:
             note = f"за {picked or PERIOD_WORDS[days]}"
     path = _snap(folder, "tiktok")
@@ -965,6 +1151,7 @@ def _yt_realtime(w, h):
 # Все время» листается вбок, «Все время» — в самом конце (живьём 2026-10-22).
 YT_CHIP = re.compile(r"^\s*\d+\s*(дн|d|day|días?|dias?)\b", re.I)
 YT_MONTH = re.compile(r"^\s*28\s*(дн|d|day|días?|dias?)\b", re.I)
+YT_WEEK = re.compile(r"^\s*7\s*(дн|d|day|días?|dias?)\b", re.I)
 YT_LIFETIME = re.compile(r"вс[её]\s+врем|lifetime|desde siempre|desde el principio|todo el tiempo", re.I)
 
 
@@ -1050,6 +1237,42 @@ def _yt_lifetime(w, h):
     return False
 
 
+# Месяцы в чипах «Просмотров»: «Окт.», «Сент.» (живьём 29.10), по-английски
+# и по-испански — «Oct», «Sep», «sept.».
+YT_MONTHS = {1: ("янв", "jan", "ene"), 2: ("фев", "feb"), 3: ("мар", "mar"),
+             4: ("апр", "apr", "abr"), 5: ("май", "мая", "may"), 6: ("июн", "jun"),
+             7: ("июл", "jul"), 8: ("авг", "aug", "ago"), 9: ("сен", "sep", "set"),
+             10: ("окт", "oct"), 11: ("ноя", "nov"), 12: ("дек", "dec", "dic")}
+
+
+def _yt_chip(w, h, test):
+    """«Просмотры» → чип периода, на подписи которого test(подпись) — истина.
+    Ряд чипов листается вбок. True — нажат (и график, если он есть, дорисован)."""
+    if not _yt_views_card(w, h):
+        return False
+    for _ in range(4):
+        nodes = ui.dump(retries=2, tolerant=True)
+        chips = [n for n in nodes or [] if n.bounds[1] < h * 0.25 and n.bounds[3] > n.bounds[1]
+                 and 0 < len(_label(n)) <= 12 and n.bounds[1] > h * 0.08]
+        hit = next((n for n in chips if test(_label(n))), None)
+        if hit is not None:
+            ui.tap_node(_clickable_at(nodes, hit))
+            human.pause(3, 4)
+            # График за 7 дней на Redmi не рисуется совсем (живьём 28–29.10,
+            # ждал 30 с) — тогда снимаем список видео без него.
+            for _ in range(4):
+                if _yt_chart(ui.dump(retries=2, tolerant=True), w, h) is not None:
+                    break
+                time.sleep(1.5)
+            return True
+        if not chips:
+            return False
+        y = _center(chips[0])[1]
+        adb.shell(f"input swipe {int(w * 0.85)} {y} {int(w * 0.35)} {y} 400", check=False)
+        human.pause(1, 1.4)
+    return False
+
+
 def _shot_youtube(folder, w, h, days=None):
     """YouTube Studio → вкладка «Аналитика» (как снимок человека); за 1–2 дня —
     «В реальном времени», 48 часов."""
@@ -1080,9 +1303,20 @@ def _shot_youtube(folder, w, h, days=None):
         if _yt_day(w, h):
             note = ("за вчера: просмотры за последний посчитанный день — число и дата в "
                     "подсказке на графике; график и список — за 28 дней")
-            _note(folder, "youtube_day", "chart")
+            _note(folder, "youtube_end", "chart")
         else:
             note = "за вчера выбрать не вышло — 28 дней"
+    elif days == "week":
+        note = ("последние 7 дней — выбрать неделю YouTube Studio не даёт; лучшие видео за них"
+                if _yt_chip(w, h, YT_WEEK.match) else "«7 дней» выбрать не вышло — 28 дней")
+    elif days == "month":
+        first, _ = report_span("month")
+        name = f"{MONTH_NAMES[first.month - 1]} {first.year}"
+        if _yt_chip(w, h, lambda label: label.lower().startswith(YT_MONTHS[first.month])):
+            note = f"за {name}"
+            _note(folder, "youtube_end", "chip")
+        else:
+            note = f"за {name} выбрать не вышло — 28 дней"
     elif days:
         note = "последние 48 часов (короче периода в YouTube Studio нет)" \
             if _yt_realtime(w, h) else f"за {PERIOD_WORDS[days]} выбрать не вышло — 28 дней"
@@ -1179,6 +1413,30 @@ def _ig_pick_range(days, w):
     return picked
 
 
+def _ig_pick_dates(first, last, w):
+    """В календаре Instagram выбрать first..last (неделя, месяц). Конец ещё
+    серый — последний доступный день. (первый, последний) или None.
+    Календарь показывает прошлый месяц целиком (живьём 28.10 — с 31 авг.)."""
+    today = dt.date.today()
+    got = []
+    for step, want in enumerate((first, last)):
+        seq = _ig_days(ui.dump(retries=2, tolerant=True), w)
+        now = max((i for i, (d, _) in enumerate(seq) if d == today.day), default=None)
+        if now is None:
+            return None
+        live = [i for i, (_, cell) in enumerate(seq[:now]) if cell is not None]
+        idx = now - (today - want).days
+        if step and live and idx > live[-1]:
+            idx = live[-1]
+        day = today - dt.timedelta(days=now - idx)
+        if idx < 0 or idx not in live or seq[idx][0] != day.day or (got and day < got[0]):
+            return None                                # не на экране или ряд не сплошной
+        ui.tap_node(seq[idx][1])
+        human.pause(1.0, 1.4)
+        got.append(day)
+    return tuple(got)
+
+
 def _ig_period(days, w, h):
     """На «Статистике» Instagram выбрать период. Пояснение к снимку или None —
     не вышло. Без days — вернуть обычные 30 дней (выбор Instagram помнит)."""
@@ -1217,7 +1475,8 @@ def _ig_period(days, w, h):
     if not days:
         human.pause(2, 3)
         return "последние 30 дней"
-    span = _ig_pick_range(days, w)
+    span = _ig_pick_dates(*report_span(days), w) if days in ("week", "month") \
+        else _ig_pick_range(days, w)
     apply = next((n for n in ui.dump(retries=2, tolerant=True) or []
                   if _label(n) in IG_APPLY and n.clickable), None)
     if span is None or apply is None:
@@ -1278,6 +1537,9 @@ def _shot_instagram(folder, w, h, days=None):
             first, last = IG_PICKED["span"]
             note = _day_note(folder, "instagram", last if first == last else None,
                              _span(first, last), "вчерашний день Instagram ещё не открыл")
+        elif days in ("week", "month") and IG_PICKED.get("span"):
+            note = _range_note(folder, "instagram", report_span(days), IG_PICKED["span"],
+                               "последний день Instagram ещё не открыл")
         _note(folder, "instagram", note)
     else:
         _note(folder, "instagram", "статистика не открылась — снята панель")
@@ -1339,11 +1601,14 @@ def latest_shots():
     return [], None
 
 
-def shots_in(folder):
-    """Снимки папки с подписями, по порядку сетей: [(путь, подпись)]."""
+def shots_in(folder, nets=None):
+    """Снимки папки с подписями, по порядку сетей: [(путь, подпись)].
+    nets — только этих сетей."""
     said = _notes_in(folder)
     items = []
     for net in ("shorts", "reels", "facebook", "tiktok"):
+        if nets is not None and net not in nets:
+            continue
         who = said.get(SHOT_FILES[net] + "_account")
 
         def named(title):
@@ -1381,14 +1646,19 @@ def save(net, data, at=None):
 
 def collect_all(nets=None, log=None, days=None):
     """Пройти все сети по очереди и записать. Возвращает {сеть: данные}.
-    days — период снимков: 1 или 2 дня, None — как в приложениях.
+    days — период снимков: 1 (вчера), 2 дня, «week», «month», None — как в
+    приложениях.
 
     Если снимали по просьбе «/stats сейчас» — снимки и цифры уходят туда,
-    откуда просили, и за тот период, что просили. Пора ежедневной
-    статистики за вчера — снимается она (`daily_run`)."""
+    откуда просили, и за тот период, что просили. Пора отчёта (за вчера,
+    неделю, месяц) — снимаются все, которым пора, подряд (`report_run`)."""
     asked = take_request()
-    if asked is None and daily_due():
-        return daily_run(log)
+    pending = reports_due() if asked is None else []
+    if pending:
+        out = {}
+        for kind, part in pending:
+            out.update(report_run(kind, part, log=log))
+        return out
     if asked is None:
         jobs.log_event("account_stats", "попытка")      # плановая — две в день
     elif days is None:
@@ -1429,7 +1699,10 @@ def _collect_all(nets=None, log=None, days=None, folder=None, fresh=True, full=T
             os.remove(old)
         except OSError:
             pass
-    if not device.unlock():
+    # Сразу после блокировки MIUI ещё «числится» разблокированным при чёрном
+    # экране (живьём 29.10: второй сбор подряд снял пустой экран и счёл
+    # TikTok «не моим профилем»). Поэтому — проверка снимком и ещё раз.
+    if not device.unlock() or not device.ensure_awake() or not device.unlock():
         if log is not None:
             log.append("не смог разблокировать телефон — аналитику не снял")
         return {}
@@ -1620,7 +1893,7 @@ def due(now=None):
     if os.path.isfile(_request_path()):
         return True                                   # «/stats сейчас»
     if daily_due(now):
-        return True                                   # статистика за вчера
+        return True                                   # отчёт: вчера, неделя, месяц
     start = time.mktime(now.date().timetuple())
     with jobs.connect() as con:
         _table(con)
@@ -1640,83 +1913,148 @@ def due(now=None):
     return False
 
 
-# ------------------------------------------------- статистика за вчера, сама
+# ------------------------------------------ отчёты сами: день, неделя, месяц
 #
 # «Мне каждый день нужно, чтобы он отправлял стату за полный прошлый день»
-# (2026-10-28). Время — `telegram_bot.daily_stats_time()` (по умолчанию
-# config.DAILY_STATS_AT, меняется командой «/stats каждый день 10:00»).
-# Если вчерашний день Instagram ещё не открыл (время поставили слишком
-# раннее), он переснимается через DAILY_STATS_RETRY_MIN. Альбом уходит один
-# раз: когда Instagram готов — или в последнюю попытку перед
-# DAILY_STATS_UNTIL, с честной подписью, за какой день вышло.
+# (2026-10-28), «каждый день стата за вчера, каждую неделю за прошедшую
+# неделю и каждый месяц за прошедший месяц» (2026-10-29). В одно время —
+# `telegram_bot.daily_stats_time()` (по умолчанию config.DAILY_STATS_AT,
+# меняется «/stats каждый день 10:00»): каждый день — за вчера, по
+# понедельникам — за прошлую неделю (пн–вс), 1-го — за прошлый месяц.
+# Пропустили (программа была закрыта) — неделя и месяц догоняют до 3 дней.
+#
+# Отчёт — альбом, один раз. Если Instagram последний день ещё не открыл
+# (время поставили слишком раннее), он переснимается каждые
+# DAILY_STATS_RETRY_MIN; в последнюю попытку перед DAILY_STATS_UNTIL альбом
+# уходит с тем, что есть, и подписью, за какие дни вышло.
+#
+# TikTok: календарь сдвинут на день (выбрал 19–25 — показал 18–24, живьём
+# 29.10), а сегодняшнюю дату выбрать нельзя. Значит, последний день, который
+# он покажет, — позавчера. За вчера он даёт его, с датой в подписи. А неделю
+# и месяц целиком — только назавтра, поэтому в понедельник и 1-го TikTok не
+# снимается: он приходит отдельным снимком на следующий день (часть
+# «tiktok»), когда период у него полный.
 
-# Чьего вчерашнего дня ждать. TikTok — нет: он отстаёт на два дня и к
-# вечеру (живьём 28.10 в 23:43 — последний день 26-е), ожидание только
-# задержало бы альбом. YouTube — нет: дата у него в подсказке на холсте,
-# её видно на снимке, а прочесть нечем.
-DAY_CHECKED = ("reels",)
+REPORT_KINDS = ("day", "week", "month")
+TT_LAG_DAYS = 2              # через сколько дней после конца периода TikTok его досчитал
+CATCH_UP_DAYS = 3            # неделя и месяц — не позже стольких дней после конца
+
+# Чей последний день ждать. YouTube — нет: дата у него в подсказке на
+# холсте, её видно на снимке, а прочесть нечем.
+WAIT_FOR = {"main": ("reels",), "tiktok": ("tiktok",)}
 
 
-def _daily_events(now):
-    start = time.mktime(now.date().timetuple())
+def report_title(kind, first, last, part="main"):
+    what = "TikTok" if part == "tiktok" else "Статистика"
+    if kind == "day":
+        return f"📊 {what} за вчера, {first:%d.%m}"
+    if kind == "week":
+        return f"📊 {what} за прошлую неделю, {first:%d.%m}–{last:%d.%m}"
+    return f"📊 {what} за {MONTH_NAMES[first.month - 1]} {first.year}"
+
+
+def _report_events(kind, first):
+    """[(время, «часть состояние»)] отчёта: «main try», «tiktok wait», «main sent»…"""
+    tag = f"{kind}:{first.isoformat()}:"
     with jobs.connect() as con:
-        return con.execute("SELECT at, payload FROM events WHERE kind='stats_daily' AND at>=?"
-                           + jobs._mine()[0], (start,) + jobs._mine()[1]).fetchall()
+        rows = con.execute("SELECT at, payload FROM events WHERE kind='stats_report' AND payload LIKE ?"
+                           + jobs._mine()[0], (tag + "%",) + jobs._mine()[1]).fetchall()
+    return [(r["at"], r["payload"][len(tag):]) for r in rows]
 
 
-def daily_due(now=None):
-    """Пора снимать статистику за вчера: время настало, сегодня альбом ещё
-    не ушёл, и с прошлой попытки прошло DAILY_STATS_RETRY_MIN."""
+def _report_log(kind, first, what):
+    jobs.log_event("stats_report", f"{kind}:{first.isoformat()}:{what}")
+
+
+def reports_due(now=None):
+    """Какие отчёты пора снимать: [(вид, часть)] по порядку — день, неделя, месяц."""
     import telegram_bot
 
     now = now or dt.datetime.now()
     at = telegram_bot.daily_stats_time()
     if not at or not telegram_bot.load_settings()["token"]:
-        return False
+        return []
     h, m = map(int, at.split(":"))
     if now < dt.datetime.combine(now.date(), dt.time(h, m)):
-        return False
-    rows = _daily_events(now)
-    if any(r["payload"] == "sent" for r in rows):
-        return False
-    last = max((r["at"] for r in rows), default=0)
-    return time.mktime(now.timetuple()) - last >= config.DAILY_STATS_RETRY_MIN * 60
+        return []
+    stamp = time.mktime(now.timetuple())
+    out = []
+    for kind in REPORT_KINDS:
+        first, last = report_span(kind, now.date())
+        late = (now.date() - last).days
+        if kind != "day" and late > CATCH_UP_DAYS:
+            continue
+        events = _report_events(kind, first)
+        said = {what for _, what in events}
+        for part in ("main", "tiktok"):
+            if part == "tiktok" and ("tiktok wait" not in said or late < TT_LAG_DAYS):
+                continue
+            if f"{part} sent" in said:
+                continue
+            tries = [t for t, what in events if what == part + " try"]
+            if tries and stamp - max(tries) < config.DAILY_STATS_RETRY_MIN * 60:
+                continue
+            out.append((kind, part))
+    return out
 
 
-def _behind(folder, nets):
-    """Сети, у которых снимка за вчера в папке нет."""
+def daily_due(now=None):
+    """Пора снимать какой-нибудь отчёт (день, неделю, месяц)."""
+    return bool(reports_due(now))
+
+
+def _behind(folder, nets, last, wait_for):
+    """Сети, чьего снимка по последний день периода в папке нет."""
     said = _notes_in(folder)
-    yesterday = (dt.date.today() - dt.timedelta(days=1)).isoformat()
     return [net for net in nets
             if not os.path.isfile(os.path.join(folder, SHOT_FILES[net] + ".png"))
-            or (net in DAY_CHECKED and said.get(SHOT_FILES[net] + "_day") != yesterday)]
+            or (net in wait_for and said.get(SHOT_FILES[net] + "_end") != last.isoformat())]
 
 
-def daily_run(log=None):
-    """Одна попытка статистики за вчера. Готово — альбом в тему статистики
-    (нет темы — владельцу). Возвращает {сеть: данные} снятого."""
+def report_run(kind, part="main", log=None):
+    """Одна попытка отчёта. Готово — альбом в тему статистики (нет темы —
+    владельцу). Возвращает {сеть: данные} снятого."""
     import telegram_bot
 
     now = dt.datetime.now()
-    folder = daily_dir()
+    first, last = report_span(kind, now.date())
+    folder = report_dir(kind, first)
+    events = _report_events(kind, first)
+    fresh = not any(what == part + " try" for _, what in events)
+    _report_log(kind, first, part + " try")
     nets = [n for n in config.FEED_APPS if n in SHOTS]
-    first = not _daily_events(now)
-    jobs.log_event("stats_daily", "try")
-    todo = nets if first else _behind(folder, nets)
-    for net in todo:                                  # прошлая отметка дня — не в счёт
-        _note(folder, SHOT_FILES[net] + "_day", "")
-    out = _collect_all(todo, log, days=1, folder=folder, fresh=first, full=False) if todo else {}
-    behind = _behind(folder, nets)
+    # Неделя и месяц сразу после конца — TikTok ещё не досчитал: он назавтра.
+    later_tt = (kind != "day" and part == "main" and "tiktok" in nets
+                and (now.date() - last).days < TT_LAG_DAYS)
+    if part == "tiktok":
+        nets = [n for n in nets if n == "tiktok"]
+    elif later_tt:
+        nets = [n for n in nets if n != "tiktok"]
+    wait_for = WAIT_FOR[part] if kind == "day" or part == "tiktok" else WAIT_FOR["main"]
+    todo = nets if fresh else _behind(folder, nets, last, wait_for)
+    for net in todo:                                  # прошлая отметка — не в счёт
+        _note(folder, SHOT_FILES[net] + "_end", "")
+    days = 1 if kind == "day" else kind
+    out = _collect_all(todo, log, days=days, folder=folder, fresh=fresh and part == "main",
+                       full=False) if todo else {}
+    behind = _behind(folder, nets, last, wait_for)
     h, m = map(int, config.DAILY_STATS_UNTIL.split(":"))
-    later = now + dt.timedelta(minutes=config.DAILY_STATS_RETRY_MIN)
-    if behind and later <= dt.datetime.combine(now.date(), dt.time(h, m)):
+    again = now + dt.timedelta(minutes=config.DAILY_STATS_RETRY_MIN)
+    title = report_title(kind, first, last, part)
+    if behind and again <= dt.datetime.combine(now.date(), dt.time(h, m)):
         if log is not None:
-            log.append("за вчера ещё не посчитали: " + ", ".join(TITLES[n] for n in behind)
-                       + f" — пересниму в {later:%H:%M}")
+            log.append(f"{title[2:]}: ещё не посчитали " + ", ".join(TITLES[n] for n in behind)
+                       + f" — пересниму в {again:%H:%M}")
         return out
-    sent = telegram_bot.send_daily_stats(shots_in(folder), now.date() - dt.timedelta(days=1))
-    jobs.log_event("stats_daily", "sent" if sent else "not sent")
+    if later_tt:
+        _report_log(kind, first, "tiktok wait")
+        when = last + dt.timedelta(days=TT_LAG_DAYS)
+        title += ("\nTikTok пришлю " + ("завтра" if when == now.date() + dt.timedelta(days=1)
+                                         else f"{when:%d.%m}")
+                  + ": он считает статистику с отставанием на два дня")
+    sent = telegram_bot.send_report(shots_in(folder, nets), title)
+    _report_log(kind, first, f"{part} {'sent' if sent else 'not sent'}")
     if log is not None:
-        log.append("статистика за вчера отправлена" if sent else
-                   "статистику за вчера отправить не вышло — попробую позже")
+        log.append(f"{title.splitlines()[0][2:]}: " + ("отправлено" if sent else
+                                                       "отправить не вышло — попробую позже"))
     return out

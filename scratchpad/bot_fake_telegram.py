@@ -688,10 +688,16 @@ press(ask4, slot["callback_data"], FRIEND, chat=GROUP)
 say(wait(lambda: jobs.by_id(gj4["id"])["status"] == "pending")
     and __import__("datetime").datetime.fromtimestamp(jobs.by_id(gj4["id"])["run_at"]).hour == 18,
     "«Завтра 18:00» кнопкой — поставлено на 18:00")
-edits = [p for _, p in FAKE.calls("editMessageText", m)]
-say(any(str(p["message_id"]) == str(gd4["_id"]) and "завтра в 18:00" in p["text"] for p in edits)
-    and any(str(p["message_id"]) == str(ask4["_id"]) and "✅ Пост" in p["text"] for p in edits),
-    "черновик выше — «завтра в 18:00», а список времени стал подтверждением")
+
+def both_edited():
+    # Правки идут сразу за постановкой задачи, но уже после неё: проверять
+    # одновременно со статусом — гонка (падало под нагрузкой 29.10).
+    edits = [p for _, p in FAKE.calls("editMessageText", m)]
+    return any(str(p["message_id"]) == str(gd4["_id"]) and "завтра в 18:00" in p["text"] for p in edits) \
+        and any(str(p["message_id"]) == str(ask4["_id"]) and "✅ Пост" in p["text"] for p in edits)
+
+
+say(wait(both_edited), "черновик выше — «завтра в 18:00», а список времени стал подтверждением")
 jobs.cancel(gj4["id"])
 
 print("\n--- бот только в одной теме группы ---")
@@ -834,7 +840,8 @@ say_to(GROUP, FRIEND, "/stats", thread=STATS)
 ask = last_text(GROUP, m, "за какой период")
 marks = json.loads(ask["reply_markup"]) if ask else {}
 datas = [b["callback_data"] for row in marks.get("inline_keyboard", []) for b in row]
-say(ask and str(ask.get("message_thread_id")) == str(STATS) and datas == ["s:1", "s:2", "s:-1", "s:0"],
+say(ask and str(ask.get("message_thread_id")) == str(STATS)
+    and datas == ["s:1", "s:2", "s:week", "s:month", "s:-1", "s:0"],
     f"/stats без периода — спрашивает кнопками в теме «Статистика»: {datas}")
 say(not snapped, "пока не выбрали — не снимает")
 press(ask, "s:1", FRIEND, chat=GROUP)
