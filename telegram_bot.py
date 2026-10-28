@@ -256,6 +256,19 @@ def _remember(**fields):
     _write(path, data)
 
 
+def daily_stats_time():
+    """Во сколько каждый день слать статистику за вчера: «12:00» или "" —
+    выключено. Своё время — из команды «/stats каждый день …», иначе
+    config.DAILY_STATS_AT."""
+    saved = _saved().get("daily_stats")
+    value = config.DAILY_STATS_AT if saved is None else str(saved)
+    return value if re.fullmatch(r"\d{2}:\d{2}", value or "") else ""
+
+
+def set_daily_stats_time(value):
+    _remember(daily_stats=value)
+
+
 def api_keys():
     """(api_id, api_hash) с my.telegram.org — для своего сервера. Нет — ("", "")."""
     data = _read(shared_path())
@@ -913,8 +926,9 @@ GROUP_HELLO = ("Работаю в этом чате — как в личке:\n"
                "/here статистика — одно дело сюда; /everywhere — во всех темах\n"
                "• /here запасы и /here архив — опубликованное пересылаю из запасов "
                "в архив и удаляю из запасов\n"
-               "• /stats — статистика снимками экранов (/stats 1 — за день, /stats 2 — за два, "
-               "/stats все — за всё время + плитки профилей с просмотрами)\n\n"
+               "• /stats — статистика снимками экранов (/stats 1 — за вчера, /stats 2 — за два дня, "
+               "/stats все — за всё время + плитки профилей с просмотрами); за вчера присылаю и "
+               "сама каждый день — /stats каждый день 10:00 или выкл\n\n"
                "Публиковать может любой участник этого чата.")
 PRIVACY_HINT = ("\n\n⚠ Сейчас я вижу в этом чате только команды и ответы на мои сообщения. "
                 "Чтобы видел все видео и ссылки: сделай меня администратором чата — или в "
@@ -1084,6 +1098,30 @@ def send_shots(chat_id=None, thread=None, fresh=False):
         except OSError:
             pass
     return send_album(pics, chat_id=chat_id, thread=thread)
+
+
+def send_daily_stats(items, day):
+    """Ежедневная статистика за вчера — в темы статистики, а если они нигде
+    не привязаны — владельцу. items — [(путь, подпись)]. True — ушла."""
+    head = f"📊 Статистика за вчера, {day:%d.%m}"
+    pics = []
+    for path, title in items:
+        try:
+            with open(path, "rb") as f:
+                pics.append((f.read(), title))
+        except OSError:
+            pass
+    if pics:
+        pics[0] = (pics[0][0], f"{head}\n\n{pics[0][1]}")
+    owner = load_settings()["owner"]
+    sent = False
+    for chat, topic in destinations("stats") or [(owner, None)]:
+        if pics:
+            sent = send_album(pics, chat_id=chat, thread=topic) or sent
+        else:
+            sent = send(f"{head}: снимки не получились — телефон подключён и разблокирован? "
+                        "Подробности — в журнале окна.", chat_id=chat, thread=topic) or sent
+    return sent
 
 
 def alert(text, image=None):
@@ -1742,9 +1780,11 @@ def _command(text, addressed, chat_id, sender):
              f"/links — подборка (сама приходит: {when})\n"
              "/links 20 — последние 20, даже если уже присылал\n"
              "/status — что происходит\n"
-             "/stats — статистика всех сетей снимками экранов: за 1 день, за 2 дня, за всё "
+             "/stats — статистика всех сетей снимками экранов: за вчера, за 2 дня, за всё "
              "время или как обычно (выбор кнопками; сразу — /stats 1, /stats 2, /stats все). "
              "В альбоме и плитки профилей — под каждым видео его просмотры\n"
+             f"Статистику за вчера присылаю сама каждый день{_daily_when()}. "
+             "Другое время — /stats каждый день 10:00, выключить — /stats каждый день выкл\n"
              "/stop — прервать текущее действие", keyboard=True)
         return True
     if text.startswith("/status"):
@@ -1766,6 +1806,9 @@ def _command(text, addressed, chat_id, sender):
         send(postspec.TEMPLATE_HELP)
         return True
     if text.startswith("/stats") or (addressed and low.startswith("статистика")):
+        if DAILY_WORDS.search(low):
+            _cmd_daily_stats(low)
+            return True
         days = stats_days(text)
         if days is None:
             _ask_stats_period()
@@ -1803,8 +1846,37 @@ def _command(text, addressed, chat_id, sender):
 
 # Период статистики (2026-10-22: «надо выбор, чтобы он мог показать стату за
 # один день или за два дня»). 0 — как в приложениях: YouTube 28 дней,
-# TikTok 7, Instagram 30.
-STATS_PERIODS = {1: "за 1 день", 2: "за 2 дня", 0: "", -1: "за всё время"}
+# TikTok 7, Instagram 30. Один день — это вчера, полный (2026-10-28).
+STATS_PERIODS = {1: "за вчера", 2: "за 2 дня", 0: "", -1: "за всё время"}
+
+# «/stats каждый день 10:00» — время ежедневной статистики за вчера.
+DAILY_WORDS = re.compile(r"кажд\w*\s+д(ень|ня)|ежедневн|\bdaily\b|\bevery\s*day\b")
+
+
+def _daily_when():
+    at = daily_stats_time()
+    return f" в {at}" if at else " — сейчас выключено"
+
+
+def _cmd_daily_stats(low):
+    """«/stats каждый день 10:00 | выкл» — поменять время; без времени — сказать текущее."""
+    t = re.search(r"\b(\d{1,2})[:.](\d{2})\b", low)
+    if t and int(t.group(1)) < 24 and int(t.group(2)) < 60:
+        at = f"{int(t.group(1)):02d}:{t.group(2)}"
+        set_daily_stats_time(at)
+        send(f"Каждый день в {at} пришлю статистику за вчера — снимками всех сетей. "
+             "Если Instagram вчерашний день ещё не открыл, пересниму его позже, до "
+             f"{config.DAILY_STATS_UNTIL}, и пришлю альбом один раз. TikTok считает с "
+             "отставанием на день-два — у него будет последний посчитанный день, с датой.")
+    elif re.search(r"выкл|\boff\b|отключ|не\s+надо|стоп|\bнет\b", low):
+        set_daily_stats_time("")
+        send("Больше не присылаю статистику каждый день. По запросу — /stats. "
+             "Включить снова — /stats каждый день 12:00")
+    else:
+        at = daily_stats_time()
+        send(f"Статистику за вчера присылаю каждый день в {at}. Другое время — "
+             "/stats каждый день 10:00, выключить — /stats каждый день выкл" if at else
+             "Каждый день статистику сейчас не присылаю. Включить — /stats каждый день 12:00")
 
 
 def stats_days(text):
@@ -1828,7 +1900,7 @@ def stats_days(text):
 
 def _stats_markup():
     return json.dumps({"inline_keyboard": [
-        [{"text": "За 1 день", "callback_data": "s:1"},
+        [{"text": "За вчера", "callback_data": "s:1"},
          {"text": "За 2 дня", "callback_data": "s:2"}],
         [{"text": "За всё время", "callback_data": "s:-1"}],
         [{"text": "Как обычно (7–30 дней)", "callback_data": "s:0"}]]}, ensure_ascii=False)

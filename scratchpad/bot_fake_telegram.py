@@ -839,9 +839,9 @@ say(ask and str(ask.get("message_thread_id")) == str(STATS) and datas == ["s:1",
 say(not snapped, "пока не выбрали — не снимает")
 press(ask, "s:1", FRIEND, chat=GROUP)
 ed = wait(lambda: [p for _, p in FAKE.calls("editMessageText", m)
-                   if "за 1 день" in str(p.get("text"))])
+                   if "за вчера" in str(p.get("text"))])
 say(ed and str(ed[-1]["message_id"]) == str(ask["_id"]) and "reply_markup" not in ed[-1],
-    "кнопка «За 1 день» — то же сообщение стало «снимаю … за 1 день», кнопок больше нет: "
+    "кнопка «За вчера» — то же сообщение стало «снимаю … за вчера», кнопок больше нет: "
     + repr(ed and ed[-1]["text"]))
 album = wait(lambda: [p for _, p in FAKE.calls("sendMediaGroup", m)])
 media = json.loads(album[-1]["media"]) if album else []

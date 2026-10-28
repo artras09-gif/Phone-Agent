@@ -193,6 +193,8 @@ import telegram_bot  # noqa: E402
 late = dt.datetime.combine(dt.date.today(), dt.time(21, 31))
 say(config.ACCOUNT_STATS_TIMES == [], "по умолчанию по часам не снимаем — только по /stats")
 config.ACCOUNT_STATS_TIMES = ["21:30"]       # включили — механизм работает
+# Ежедневная «статистика за вчера» — своя очередь проверок (stats_daily.py).
+telegram_bot.daily_stats_time = lambda: ""
 with jobs.connect() as con:
     con.execute("DELETE FROM account_stats")
 telegram_bot.load_settings = lambda: {"token": "", "owner": ""}
