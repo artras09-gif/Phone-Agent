@@ -16,7 +16,9 @@
   * забытые распаковки во временной папке;
   * `%USERPROFILE%\\.android` и `%TEMP%\\adb.log` — ТОЛЬКО если их создала
     сама программа (см. `bundled.remember_first_run`);
-  * сам exe — через секунду после выхода, когда файл отпустит Windows.
+  * сам exe — НЕ стираем: запущенный файл занят, а стирать себя после
+    выхода через cmd — приём вирусов (см. конец `uninstall`). Показываем его
+    в Проводнике, удаляет человек.
 
 Чего не трогаем и не можем: журналы самой Windows о запусках программ
 (Prefetch и подобное) — это не данные программы, и чистить системные
@@ -86,24 +88,15 @@ def _read_mark(base):
 
 
 def _make_shortcut(target):
-    """Ярлык в «Пуске». Своих средств у Python нет — просим PowerShell.
-    Пути передаём переменными окружения, а не в строке команды: кириллица и
-    пробелы в пути ломают кавычки."""
+    """Ярлык в «Пуске» — функциями самой Windows (`winsys`)."""
+    # Раньше просили PowerShell, и за скрытый PowerShell 29.10 Касперский
+    # счёл exe трояном.
+    import winsys
+
     lnk = shortcut_path()
     if not os.path.isdir(os.path.dirname(lnk)):
         return False
-    env = dict(os.environ, PA_LNK=lnk, PA_EXE=target,
-               PA_DIR=os.path.dirname(target))
-    script = ("$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:PA_LNK);"
-              "$s.TargetPath=$env:PA_EXE;$s.WorkingDirectory=$env:PA_DIR;"
-              "$s.IconLocation=$env:PA_EXE+',0';$s.Description='PhoneAgent';$s.Save()")
-    try:
-        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                        script], env=env, capture_output=True, timeout=30,
-                       creationflags=NO_WINDOW)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return os.path.exists(lnk)
+    return winsys.make_shortcut(lnk, target, os.path.dirname(target), target, NAME)
 
 
 def register(base):
@@ -149,7 +142,7 @@ def register(base):
             return False
 
     # Ярлык пересоздаём, только если его нет или он ведёт на старое место:
-    # PowerShell стоит секунду, звать его на каждом запуске незачем.
+    # переписывать его на каждом запуске незачем.
     mark = _read_mark(base)
     if mark.get("shortcut_target") != exe or not os.path.exists(shortcut_path()):
         if _make_shortcut(exe):
@@ -199,27 +192,44 @@ def _close_windows(base):
 
     Возвращает номера процессов браузера, которые были окнами программы: по
     ним потом убираются служебные папки Chrome во временной папке.
+
+    Свои процессы ищем по командной строке — функцией Windows (`winsys`).
     """
     profile = os.path.join(base, ".uiprofile")
-    env = dict(os.environ, PA_PROFILE=profile)
-    script = (
-        "function Ours { Get-CimInstance Win32_Process | Where-Object { "
-        "$_.CommandLine -and $_.CommandLine.Contains($env:PA_PROFILE) } };"
-        "Ours | ForEach-Object { 'PID ' + $_.ProcessId };"
-        "Ours | Where-Object { $_.CommandLine -notmatch '--type=' } | "
-        "ForEach-Object { taskkill /PID $_.ProcessId | Out-Null };"
-        "$t = Get-Date; while ((Ours) -and ((Get-Date) - $t).TotalSeconds -lt 15) "
-        "{ Start-Sleep -Milliseconds 500 };"
-        "Ours | ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
-        "-ErrorAction SilentlyContinue }")
+    found = _browser_with(profile)
+    for pid, line in found.items():
+        if "--type=" not in line:           # главный процесс окна, не вкладка
+            _taskkill(pid)
+    deadline = time.time() + 15
+    while _browser_with(profile) and time.time() < deadline:
+        time.sleep(0.5)
+    for pid in _browser_with(profile):
+        _taskkill(pid, force=True)
+    return list(found)
+
+
+def _browser_with(profile):
+    """Процессы Chrome или Edge с этим профилем: {pid: командная строка}."""
+    import bundled
+    import winsys
+
+    want = os.path.normcase(profile)
+    out = {}
+    for image in ("chrome.exe", "msedge.exe"):
+        for pid in bundled.pids(image) or []:
+            line = winsys.command_line(pid)
+            if line and want in os.path.normcase(line):
+                out[pid] = line
+    return out
+
+
+def _taskkill(pid, force=False):
+    """`taskkill` без /F — как крестик окна; с /F — завершить силой."""
     try:
-        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive",
-                              "-Command", script], env=env, capture_output=True,
-                             text=True, timeout=60, creationflags=NO_WINDOW).stdout
+        subprocess.run(["taskkill"] + (["/F"] if force else []) + ["/PID", str(pid)],
+                       capture_output=True, timeout=30, creationflags=NO_WINDOW)
     except (OSError, subprocess.SubprocessError):
-        return []
-    return [int(line.split()[1]) for line in out.splitlines()
-            if line.startswith("PID ") and line.split()[1].isdigit()]
+        pass
 
 
 def _drop_chrome_temp(pids):
@@ -243,15 +253,14 @@ def _step(started, text):
 
 def stop_our_tgserver(base):
     """Погасить сервер Bot API, запущенный ИЗ ПАПКИ программы, — и только его."""
-    ours = os.path.join(base, "tools").replace("'", "''")
-    try:
-        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                        "Get-CimInstance Win32_Process -Filter \"Name='telegram-bot-api.exe'\" | "
-                        f"Where-Object {{ $_.ExecutablePath -like '{ours}\\*' }} | "
-                        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
-                       capture_output=True, timeout=30, creationflags=NO_WINDOW)
-    except (OSError, subprocess.SubprocessError):
-        pass
+    import bundled
+    import winsys
+
+    ours = os.path.normcase(os.path.join(base, "tools")) + os.sep
+    for pid in bundled.pids("telegram-bot-api.exe") or []:
+        path = winsys.image_path(pid)
+        if path and os.path.normcase(path).startswith(ours):
+            _taskkill(pid, force=True)
 
 
 def _stop_everything(base, started):
@@ -265,8 +274,7 @@ def _stop_everything(base, started):
     _step(started, "программа завершилась сама" if not left
           else f"не завершилась сама за 50 с: {left}")
     for pid in left:                     # не ушёл сам — завершаем
-        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True,
-                       creationflags=NO_WINDOW)
+        _taskkill(pid, force=True)
     # Свой сервер Telegram Bot API — дочерний процесс программы; если её
     # закрыли принудительно, он мог остаться и держать файлы в папке данных.
     # Только НАШ — из папки программы. Раньше гасился любой telegram-bot-api,
@@ -376,20 +384,23 @@ def uninstall(base, ask=True):
 
     bundled.sweep_stale(keep=getattr(sys, "_MEIPASS", ""))
 
-    # Сам exe и свою распаковку удалить изнутри нельзя — они заняты этим же
-    # процессом. Поручаем командной строке сделать это через пару секунд.
-    mei = getattr(sys, "_MEIPASS", "")
-    tail = f'& rmdir /s /q "{mei}"' if mei else ""
-    subprocess.Popen(f'cmd /c ping 127.0.0.1 -n 4 >nul & del /f /q "{exe}" {tail}',
-                     creationflags=NO_WINDOW | getattr(subprocess, "DETACHED_PROCESS", 0),
-                     close_fds=True)
-
+    # Сам exe изнутри не удалить — он занят этим же процессом. Раньше это
+    # поручалось `cmd /c ping … & del` через пару секунд после выхода, но так
+    # стирают себя вирусы, и с 30.10 (Касперский счёл exe трояном) программа
+    # себя не стирает: показывает файл в Проводнике, удаляет человек.
+    # Распаковку во временной папке убирает загрузчик exe, когда процесс выйдет.
     if left:
         text = ("PhoneAgent удалён, но часть файлов занята и осталась:\n\n"
                 + "\n".join(left[:6]) + "\n\nИх можно удалить вручную.")
     else:
-        text = "PhoneAgent удалён. Следов программы на компьютере не осталось."
+        text = "PhoneAgent удалён. Данных программы на компьютере не осталось."
+    text += (f"\n\nОстался сам файл программы:\n{exe}\n\nЗапущенная программа стереть "
+             "себя не может — удали его в корзину, папка сейчас откроется.")
     print(text)
     if ask:
         _message(text)
+        try:
+            subprocess.Popen(f'explorer /select,"{exe}"', close_fds=True)
+        except OSError:
+            pass
     return 0 if not left else 2

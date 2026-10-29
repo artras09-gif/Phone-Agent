@@ -47,6 +47,8 @@ DEFAULTS = ("recipes.json", "interests.json", "plan.json", "ADBKeyboard.apk",
 # mke2fs...) — ещё 10 МБ, которые распаковывались бы на каждом запуске.
 ADB_FILES = ("adb.exe", "AdbWinApi.dll", "AdbWinUsbApi.dll",
              "libwinpthread-1.dll")
+# Сценарии Windows во встроенное не кладём (см. scrcpy ниже).
+SCRIPT_EXT = (".vbs", ".bat", ".cmd", ".ps1", ".js", ".wsf")
 
 
 def find_tool(name):
@@ -162,7 +164,15 @@ def run_pyinstaller():
 
     scrcpy = find_tool("scrcpy")
     if scrcpy:
-        extra += data(scrcpy, f"tools/{os.path.basename(scrcpy)}")
+        # Пофайлово и без сценариев: в архиве scrcpy лежат scrcpy-noconsole.vbs
+        # (скрыто запускает программу) и .bat. Программе они не нужны, а
+        # скрытый запуск сценарием внутри exe — повод для антивируса
+        # (30.10: «проверь безопасность встроенных программ»).
+        dest = f"tools/{os.path.basename(scrcpy)}"
+        for entry in sorted(os.listdir(scrcpy)):
+            if os.path.isfile(os.path.join(scrcpy, entry)) and \
+                    not entry.lower().endswith(SCRIPT_EXT):
+                extra += data(os.path.join(scrcpy, entry), dest)
     else:
         print("  [!] нет scrcpy — в сборке не будет трансляции экрана")
 

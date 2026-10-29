@@ -115,10 +115,11 @@ def _open(url, timeout=None):
 def _processes():
     """Запущенные telegram-bot-api на этом ПК: [(адрес, local или None)].
 
-    Быстро: tasklist + netstat (доли секунды). PowerShell — только если сервер
-    правда нашёлся, чтобы узнать из его командной строки, стоит ли --local:
-    на каждом запуске бота он стоил бы 1-3 секунды впустую.
+    Быстро: tasklist + netstat (доли секунды). Стоит ли --local — из командной
+    строки процесса, функцией Windows (`winsys`).
     """
+    # Раньше командную строку спрашивали у PowerShell, и за скрытый
+    # PowerShell 29.10 Касперский счёл exe трояном.
     if os.name != "nt":
         return [parse_cmdline(ln) for ln in _run(["ps", "-eo", "args"]).splitlines()
                 if "telegram-bot-api" in ln and not ln.startswith(("ps ", "grep "))]
@@ -136,11 +137,11 @@ def _processes():
             host, _, port = cols[1].rpartition(":")
             if host in ("0.0.0.0", "127.0.0.1", "[::]", "[::1]"):
                 found.append(f"http://127.0.0.1:{port}")
-    lines = _run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                  "Get-CimInstance Win32_Process | Where-Object { $_.Name -like "
-                  "'*telegram-bot-api*' } | ForEach-Object { $_.CommandLine }"], timeout=20)
+    import winsys
+
     modes = {}
-    for line in lines.splitlines():
+    for pid in pids:
+        line = winsys.command_line(int(pid)) or ""
         if "telegram-bot-api" in line:
             url_, local = parse_cmdline(line)
             modes[url_] = local
