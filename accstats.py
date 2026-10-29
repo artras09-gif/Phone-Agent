@@ -527,163 +527,96 @@ def _snap(folder, name, package=None):
 # ---------------------------------------------------- цифры со снимков
 #
 # «Нужно, чтобы бот дублировал цифрами в чате стату, которая на фото»
-# (2026-10-29). TikTok и Instagram — из дерева экрана (живьём на Redmi:
-# у TikTok карточки «Просмотры публика…» / «3,645» / «+3,645»), YouTube
-# Studio — распознаванием Windows (`ocr.py`): у него на экране всё нарисовано,
-# в дереве ни одной цифры.
+# (2026-10-29), и следом: «стату проще просто instagram - 100 TikTok - 200 и
+# тд без этого мусора». Поэтому от каждой сети — одно число: просмотры за
+# период снимка. TikTok и Instagram — из дерева экрана (у TikTok подпись
+# «Просмотры публика…», под ней «3,645»), YouTube Studio — распознаванием
+# Windows (`ocr.py`): у него всё нарисовано на холсте, в дереве ни одной цифры.
 
 NUMBER = re.compile(r"^[−\-+]?\$?\d[\d\s  .,]*%?[KMКМkм]?$|^-{2}$")
-
-
-def _num(text):
-    """«3,645» -> «3 645», «-468» -> «−468»; остальное как есть."""
-    text = (text or "").strip().replace("‎", "")
-    if re.fullmatch(r"[−\-+]?\$?\d{1,3}(,\d{3})+", text):
-        text = text.replace(",", " ")
-    return text.replace("-", "−") if re.match(r"^-\$?\d", text) else text
-
-
-def _plain(label):
-    """Подпись карточки без обрезки: «Просмотры публика…» -> «просмотры публикаций»."""
-    label = label.replace("‎", "").rstrip("…. ").strip()
-    full = {"просмотры публика": "просмотры публикаций", "post vi": "просмотры публикаций",
-            "video vi": "просмотры видео", "visualizaciones de pub": "visualizaciones de publicaciones",
-            "ожид. награды": "ожидаемые награды", "est. rewards": "ожидаемые награды"}
-    low = label.lower()
-    return next((v for k, v in full.items() if low.startswith(k)), low)
-
-
-def _tt_numbers(nodes, h):
-    """Карточки «Основных метрик» TikTok Studio: «просмотры публикаций 3 645
-    (+3 645), лайки 166 (+166), …» или "". Под подписью — число, под ним —
-    изменение к прошлому периоду («-468», «(-19.9%)»)."""
-    texts = [n for n in nodes or [] if (n.text or "").strip() and n.bounds[3] > n.bounds[1]
-             and not n.clickable and h * 0.2 < n.bounds[1] < h * 0.75]
-    out = []
-    for label in texts:
-        name = label.text.strip()
-        if NUMBER.match(name) or not re.search(r"[^\W\d_]", name) or TT_RANGE.match(name):
-            continue
-
-        def below(node):
-            # Сразу под узлом и в его ширину: «-468» и «(-19.9%)» стоят рядом.
-            return [n for n in texts if 0 <= n.bounds[1] - node.bounds[3] <= 25
-                    and node.bounds[0] - 60 <= n.bounds[0] <= node.bounds[2] and n is not node]
-
-        value = next((n for n in below(label) if NUMBER.match(n.text.strip())), None)
-        if value is None:
-            continue
-        delta = sorted((n for n in below(value) if NUMBER.match(n.text.strip().strip("()"))),
-                       key=lambda n: n.bounds[0])
-        change = ", ".join(_num(n.text.strip().strip("()")) for n in delta)
-        out.append(f"{_plain(name)} {_num(value.text)}" + (f" ({change})" if change else ""))
-    return ", ".join(dict.fromkeys(out))
-
-
-def _lc(text):
-    """«Просмотры» -> «просмотры»; «Reels» остаётся."""
-    return text[0].lower() + text[1:] if text and "А" <= text[0] <= "Я" else text
-
-
-def _ig_numbers(nodes, w, h):
-    """«Статистика · Обзор» Instagram: «просмотры 113, чистый прирост
-    подписчиков --, зрители 107, Reels 113, …» или "".
-
-    Раскладка живьём 29.10: у карточки число под подписью («Просмотры» /
-    «1»), у «Зрители» — справа в той же строке, у «Reels» и «Публикации» —
-    справа ниже, после полоски."""
-    texts = [n for n in nodes or [] if (n.text or "").strip() and n.bounds[3] > n.bounds[1]
-             and h * 0.2 < n.bounds[1] < h * 0.95]
-    values = [n for n in texts if NUMBER.match(n.text.strip())]
-    labels = [n for n in texts if n not in values and re.search(r"[^\W\d_]", n.text)]
-    used, found = set(), []
-
-    def take(label, value):
-        used.add(id(value))
-        found.append((label.bounds[1], f"{_lc(label.text.strip())} {_num(value.text)}"))
-
-    rest = []
-    for label in labels:
-        value = next((v for v in values if id(v) not in used
-                      and abs(v.bounds[0] - label.bounds[0]) <= 30
-                      and 0 <= v.bounds[1] - label.bounds[3] <= 60), None) or \
-            next((v for v in values if id(v) not in used and v.bounds[0] >= label.bounds[2] - 5
-                  and abs(_center(v)[1] - _center(label)[1]) < 20), None)
-        if value is not None:
-            take(label, value)
-        else:
-            rest.append(label)
-    for label in rest:                                  # «Reels» — число справа ниже
-        if label.bounds[2] > w * 0.5:
-            continue
-        value = next((v for v in values if id(v) not in used and v.bounds[0] > w * 0.75
-                      and 0 < v.bounds[1] - label.bounds[1] <= 80), None)
-        if value is not None:
-            take(label, value)
-    # «0.0% подписчики», «100.0% неподписчики» — число и подпись в одной строке.
-    found += [(n.bounds[1], n.text.strip()) for n in labels
-              if re.match(r"^\d[\d.,]*%\s+\S", n.text.strip())]
-    return ", ".join(text for _, text in sorted(found))
-
-
+TT_VIEWS = re.compile(r"^(просмотры публ|post views|video views|visualizaciones de (pub|v[ií]deo))", re.I)
+IG_VIEWS = ("Просмотры", "Views", "Visualizaciones")
 YT_TOOLTIP = re.compile(r"(\d{1,2}\s*[^\W\d_]+\.?\s*\d{4}\s*(г\.?)?|[^\W\d_]+\.?\s*\d{1,2},?\s*\d{4})"
                         r"\s*[:：]\s*(\d[\d\s  .,]*)$")
 YT_VIEWS = ("просмотры", "views", "visualizaciones")
-YT_TOP = re.compile(r"самый популярный|top content|contenido (principal|más popular)", re.I)
 
 
-def _yt_numbers(lines, w, h, period="за период"):
-    """Со снимка «Просмотров» YouTube Studio: число из подсказки над графиком,
-    итог за период (period — как его назвать), лучшие видео. Строка или ""."""
-    if not lines:
-        return ""
-    parts = []
-    for text, box in lines:
+def _num(text):
+    """«3,645» -> «3 645»; остальное как есть."""
+    text = (text or "").strip().replace("‎", "")
+    if re.fullmatch(r"[−\-+]?\$?\d{1,3}(,\d{3})+", text):
+        text = text.replace(",", " ")
+    return text
+
+
+def _value_below(nodes, label, dx=60, dy=60):
+    """Число прямо под подписью (в её ширину) или None."""
+    return next((n for n in nodes if n is not label and NUMBER.match((n.text or "").strip())
+                 and 0 <= n.bounds[1] - label.bounds[3] <= dy
+                 and label.bounds[0] - dx <= n.bounds[0] <= label.bounds[2]), None)
+
+
+def _tt_views(nodes, h):
+    """«Просмотры публикаций» из «Основных метрик» TikTok Studio: «3 645» или ""."""
+    texts = [n for n in nodes or [] if (n.text or "").strip() and n.bounds[3] > n.bounds[1]
+             and not n.clickable and h * 0.2 < n.bounds[1] < h * 0.75]
+    for label in texts:
+        if TT_VIEWS.match(label.text.strip().replace("‎", "")):
+            value = _value_below(texts, label, dy=25)
+            if value is not None:
+                return _num(value.text)
+    return ""
+
+
+def _ig_views(nodes, h):
+    """«Просмотры» с «Обзора» статистики Instagram: число под подписью
+    (живьём 29.10 — «Просмотры» / «113») или ""."""
+    texts = [n for n in nodes or [] if (n.text or "").strip() and n.bounds[3] > n.bounds[1]
+             and h * 0.15 < n.bounds[1] < h * 0.6]
+    for label in texts:
+        if label.text.strip() in IG_VIEWS:
+            value = _value_below(texts, label, dx=30)
+            if value is not None:
+                return _num(value.text)
+    return ""
+
+
+def _yt_views(lines, w, h):
+    """Просмотры со снимка «Просмотров» YouTube Studio: (число, день) — из
+    подсказки над графиком («27 окт. 2026 г.: 60» — за этот день) или итог
+    за период («Просмотры … 733», день None). Нечего — ("", None)."""
+    for text, box in lines or []:
         m = YT_TOOLTIP.search(text)
         if m:
-            day = _day_of(m.group(1))
-            parts.append(f"{day:%d.%m} — {_num(m.group(3))} просмотров" if day
-                         else f"{m.group(1)} — {_num(m.group(3))} просмотров")
-            break
-    for text, box in lines:
+            return _num(m.group(3)), _day_of(m.group(1))
+    for text, box in lines or []:
         if text.strip().lower() in YT_VIEWS and box[1] > h * 0.3:
             total = next((t for t, b in lines if abs(b[1] - box[1]) < 25 and b[0] > w * 0.6
                           and NUMBER.match(t.strip())), None)
-            if total:
-                parts.append(f"{period} — {_num(total)}")
-            break
-    start = next((b[3] for t, b in lines if YT_TOP.search(t)), None)
-    if start is not None:
-        top = []
-        for text, box in lines:
-            if box[1] <= start or box[1] > h * 0.88 or box[0] > w * 0.4:
-                continue
-            count = next((t for t, b in lines if abs(b[1] - box[1]) < 25 and b[0] > w * 0.85
-                          and NUMBER.match(t.strip())), None)
-            if count:
-                top.append(f"«{text.strip().rstrip('.…')}» {_num(count)}")
-        if top:
-            parts.append("лучшие: " + " · ".join(top[:5]))
-    return "; ".join(parts)
+            return (_num(total), None) if total else ("", None)
+    return "", None
+
+
+def _views_note(folder, name, views, when):
+    """Запомнить просмотры сети и за что они (when — «28.10», «19.10–25.10», «28 дней»)."""
+    if views:
+        _note(folder, name + "_views", views)
+        _note(folder, name + "_when", when or "")
 
 
 def numbers_text(folder, nets=None):
-    """Цифры со снимков папки — одним сообщением по строке на сеть, или ""."""
+    """Просмотры со снимков папки, по строке на сеть: «Instagram — 113».
+    Период в скобках — только у сети, у которой он не тот, что у остальных
+    (за вчера TikTok даёт позавчера); нет общего — у всех. Или ""."""
     said = _notes_in(folder)
-    rows = []
-    for net in ("shorts", "reels", "tiktok"):
-        if nets is not None and net not in nets:
-            continue
-        name = SHOT_FILES[net]
-        numbers = said.get(name + "_numbers") or ""
-        tiles = said.get(TILE_FILES[net])
-        if tiles:
-            numbers += ("; " if numbers else "") + f"плитки профиля: {tiles}"
-        if not numbers:
-            continue
-        who = said.get(name + "_account")
-        rows.append(f"{TITLES[net]}" + (f" ({who})" if who else "") + f": {numbers}")
-    return "\n".join(rows)
+    rows = [(net, said.get(SHOT_FILES[net] + "_views"), said.get(SHOT_FILES[net] + "_when") or "")
+            for net in ("reels", "tiktok", "shorts") if nets is None or net in nets]
+    rows = [row for row in rows if row[1]]
+    whens = [when for _, _, when in rows if when]
+    top = max(set(whens), key=whens.count) if whens else ""
+    common = top if whens.count(top) > 1 or len(set(whens)) == 1 else ""
+    return "\n".join(f"{TITLES[net]} — {views}" + (f" (за {when})" if when and when != common else "")
+                     for net, views, when in rows)
 
 
 def _installed(package):
@@ -1251,10 +1184,8 @@ def _shot_tiktok(folder, w, h, days=None):
         _note(folder, "tiktok", note)
     if path:
         nodes = ui.dump(retries=2, tolerant=True)
-        said = _tt_numbers(nodes, h)
-        if said:
-            shown = _range_of(_tt_range_text(nodes, h))
-            _note(folder, "tiktok_numbers", (f"за {_span(*shown)}: " if shown else "") + said)
+        shown = _range_of(_tt_range_text(nodes, h))
+        _views_note(folder, "tiktok", _tt_views(nodes, h), _span(*shown) if shown else "")
     for _ in range(3):                                      # обратно к профилю
         device.back()
         human.pause(0.8, 1.2)
@@ -1488,9 +1419,8 @@ def _shot_youtube(folder, w, h, days=None):
     path = _snap(folder, "youtube")
     if path:
         _note(folder, "youtube", note)
-        said = _yt_numbers(ocr.lines(path), w, h, period)
-        if said:
-            _note(folder, "youtube_numbers", said)
+        views, day = _yt_views(ocr.lines(path), w, h)
+        _views_note(folder, "youtube", views, f"{day:%d.%m}" if day else period.removeprefix("за "))
     device.go_home()
     return path
 
@@ -1713,10 +1643,9 @@ def _shot_instagram(folder, w, h, days=None):
         _note(folder, "instagram", "статистика не открылась — снята панель")
     path = _snap(folder, "instagram")
     if path and insights:
-        said = _ig_numbers(ui.dump(retries=2, tolerant=True), w, h)
-        if said:
-            span = IG_PICKED.get("span")
-            _note(folder, "instagram_numbers", (f"за {_span(*span)}: " if span else "") + said)
+        span = IG_PICKED.get("span")
+        _views_note(folder, "instagram", _ig_views(ui.dump(retries=2, tolerant=True), h),
+                    _span(*span) if span else "")
     for _ in range(backs):
         device.back()
         human.pause(0.8, 1.2)

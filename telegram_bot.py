@@ -1103,7 +1103,7 @@ def send_shots(chat_id=None, thread=None, fresh=False):
     if sent and numbers:
         # «Нужно, чтобы бот дублировал цифрами в чате стату, которая на фото»
         # (2026-10-29) — следом за альбомом, текстом.
-        send("📊 Цифрами" + stamp + "\n\n" + numbers, preview=False, chat_id=chat_id, thread=thread)
+        send("📊 Просмотры" + stamp + "\n" + numbers, preview=False, chat_id=chat_id, thread=thread)
     return sent
 
 
@@ -1127,7 +1127,7 @@ def send_report(items, head, numbers=""):
         if pics:
             ok = send_album(pics, chat_id=chat, thread=topic)
             if ok and numbers:
-                send(head.splitlines()[0] + " — цифрами\n\n" + numbers, preview=False,
+                send(head.splitlines()[0] + "\n" + numbers, preview=False,
                      chat_id=chat, thread=topic)
             sent = ok or sent
         else:
