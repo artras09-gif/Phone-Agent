@@ -1953,12 +1953,16 @@ def _snap_stats(days=None, say=None):
         reply_to(address, role)
         try:
             log = runlog.Log("статистика по запросу")
-            accstats.collect_all(log=log, days=days)
+            try:
+                accstats.collect_all(log=log, days=days)
+            except Exception as e:                 # человек ждёт альбом — не молчать
+                log.append(f"сбой: {type(e).__name__}: {str(e)[:160]}")
             if not send_shots(fresh=True):
                 lines = [ln.strip() for ln in log.text().splitlines() if ln.strip()]
                 send("Снимки статистики не получились: "
                      + (lines[-1] if len(lines) > 1 else "телефон не ответил")
-                     + ". Телефон подключён и разблокирован?")
+                     + ("" if "unauthorized" in (lines[-1] if lines else "")
+                        else ". Телефон подключён и разблокирован?"))
         finally:
             set_reply(None)
 

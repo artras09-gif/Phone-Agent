@@ -1686,6 +1686,17 @@ def _answer(address):
         pass
 
 
+def _phone_trouble(why):
+    """Что сказать человеку, когда телефон не дался."""
+    if "unauthorized" in why:
+        return ("телефон не разрешил этому компьютеру отладку по USB (adb: unauthorized) — "
+                "на экране телефона запрос «Разрешить отладку по USB?»: отметь «Всегда "
+                "разрешать с этого компьютера» и нажми «Разрешить»")
+    if why:
+        return f"телефон не отвечает ({why.splitlines()[0][:120]}) — кабель на месте?"
+    return "не смог разблокировать телефон — аналитику не снял"
+
+
 def _collect_all(nets=None, log=None, days=None, folder=None, fresh=True, full=True):
     """folder — куда снимать (папка дня); fresh — сначала убрать прошлые
     снимки этой папки; full — ещё плитки профилей и Meta Business Suite."""
@@ -1702,9 +1713,16 @@ def _collect_all(nets=None, log=None, days=None, folder=None, fresh=True, full=T
     # Сразу после блокировки MIUI ещё «числится» разблокированным при чёрном
     # экране (живьём 29.10: второй сбор подряд снял пустой экран и счёл
     # TikTok «не моим профилем»). Поэтому — проверка снимком и ещё раз.
-    if not device.unlock() or not device.ensure_awake() or not device.unlock():
+    try:
+        awake = device.unlock() and device.ensure_awake() and device.unlock()
+        why = ""
+    except adb.AdbError as e:
+        # Живьём 29.10: телефон отозвал доверие к компьютеру («device
+        # unauthorized»), съёмка упала исключением, и бот промолчал.
+        awake, why = False, str(e)
+    if not awake:
         if log is not None:
-            log.append("не смог разблокировать телефон — аналитику не снял")
+            log.append(_phone_trouble(why))
         return {}
     out = {}
     device.keep_awake(True)          # экран гаснет за ~30 с, а сетка грузится дольше

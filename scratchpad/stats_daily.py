@@ -168,6 +168,7 @@ def fake_collect(nets=None, log=None, days=None, folder=None, fresh=True, full=T
     return {}
 
 
+REAL_COLLECT = accstats._collect_all
 accstats._collect_all = fake_collect
 albums = []
 bot.send_album = lambda pics, chat_id=None, thread=None: albums.append((pics, chat_id, thread)) or True
@@ -476,6 +477,18 @@ states = iter(["mScreenState=ON_UNLOCKED", "mScreenState=ON_UNLOCKED", "mScreenS
 adb.shell = lambda cmd, *a, **k: next(states, "mScreenState=OFF") if "nfc" in cmd else ""
 device.lock()
 say(keys == ["KEYCODE_POWER"] and next(states, None) is None, "блокировка ждёт, пока экран погаснет")
+
+print("\n--- телефон отозвал доступ (живьём 29.10: «device unauthorized», бот промолчал) ---")
+
+
+def refuse():
+    raise adb.AdbError("adb shell wm size -> 1: adb.EXE: device unauthorized.")
+
+
+device.unlock = refuse
+log = []
+got = REAL_COLLECT(["tiktok"], log, days=1, folder=os.path.join(tmp, "x"))
+say(got == {} and "«Разрешить»" in log[-1], f"съёмка не падает, а объясняет: {log[-1][:90]}")
 
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)
