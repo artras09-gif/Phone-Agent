@@ -2,15 +2,13 @@
 чтобы бот дублировал цифрами в чате стату, которая на фото», и следом: «стату
 проще просто instagram - 100 TikTok - 200 и тд без этого мусора»).
 
-Без телефона: деревья TikTok Studio и Instagram и строки распознавания
-YouTube Studio — в точности такие, какими их отдали Redmi и Windows 29.10.
+Без телефона: деревья TikTok Studio и Instagram — в точности такие, какими их
+отдал Redmi 29.10; ответы DeepSeek по снимкам YouTube Studio — как живьём 30.10.
 """
 import datetime as dt
 import os
-import struct
 import sys
 import tempfile
-import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -23,7 +21,7 @@ config.DB_PATH = os.path.join(tmp, "jobs.db")
 config.QUEUE_DIR = os.path.join(tmp, "queue")
 
 import accstats  # noqa: E402
-import ocr       # noqa: E402
+import vision    # noqa: E402
 import telegram_bot as bot  # noqa: E402
 
 ok = True
@@ -62,20 +60,45 @@ IG = [N("Статистика", (198, 141, 467, 200)), N("Весь контен�
       N("Зрители", (44, 1722, 1018, 1768)), N("107", (1018, 1718, 1036, 1771))]
 say(accstats._ig_views(IG, H) == "113", f"просмотры: {accstats._ig_views(IG, H)!r}")
 
-print("\n--- YouTube Studio: распознанный снимок «Просмотров» (Windows OCR 29.10) ---")
-YT = [("Просмотры", (157, 141, 457, 191)), ("150", (46, 453, 99, 478)),
-      ("27 окт. 2026 г.: 60", (762, 664, 1037, 689)), ("27 окт.", (929, 952, 1033, 977)),
-      ("Просмотры", (101, 1090, 341, 1131)), ("733", (962, 1090, 1034, 1123)),
-      ("Самый популярный контент", (46, 1325, 711, 1374)),
-      ("7 трендовых звуков для монтажа", (166, 1458, 782, 1495)), ("167", (973, 1458, 1035, 1487))]
-got = accstats._yt_views(YT, W, H)
-say(got == ("60", dt.date(2026, 10, 27)), f"за вчера — число из подсказки и её день: {got}")
-got = accstats._yt_views([line for line in YT if ":" not in line[0]], W, H)
-say(got == ("733", None), f"подсказки нет (месяц) — итог за период: {got}")
-got = accstats._yt_views([("Просмотры", (157, 141, 457, 191)), ("Самый популярный контент", (46, 300, 711, 349)),
-                          ("Delay & Offset", (166, 1350, 900, 1390)), ("49", (993, 1352, 1035, 1385))], W, H)
-say(got == ("", None), "7 дней: ни подсказки, ни итога — пусто, а не число из списка видео")
-say(accstats._yt_views(None, W, H) == ("", None), "распознать нечем — пусто, без падения")
+print("\n--- YouTube Studio: что прочёл DeepSeek (живые ответы 30.10) ---")
+got = accstats._yt_views({"подсказка": "28 окт. 2026 г.: 17", "итог": "749"})
+say(got == ("17", dt.date(2026, 10, 28)), f"за вчера — число из подсказки и её день: {got}")
+got = accstats._yt_views({"подсказка": None, "итог": "256"})
+say(got == ("256", None), f"подсказки нет (48 часов, месяц) — итог за период: {got}")
+got = accstats._yt_views({"подсказка": None, "итог": 1234})
+say(got == ("1234", None), f"итог числом, а не строкой: {got}")
+got = accstats._yt_views({"подсказка": None, "итог": "--"})
+say(got == ("", None), f"итога нет («--») — пусто: {got}")
+got = accstats._yt_views({"подсказка": "сейчас: много", "итог": "около сотни"})
+say(got == ("", None), f"ответ не похож на дату и число — пусто, а не выдумка: {got}")
+say(accstats._yt_views({}) == ("", None), "прочесть нечем — пусто, без падения")
+
+answers = iter(['```json\n{"подсказка": null, "итог": "129"}\n```', "не знаю", "{оборвано"])
+asked = []
+
+
+def fake_ask(png, prompt, **kw):
+    asked.append(kw.get("shrink"))
+    return next(answers)
+
+
+vision.ask = fake_ask
+png = os.path.join(tmp, "yt.png")
+open(png, "wb").write(b"\x89PNG" + b"0" * 100)
+got = accstats._yt_read(png)
+say(got == {"подсказка": None, "итог": "129"} and asked == [accstats.YT_SHRINK],
+    f"JSON в обёртке ```json — разобран: {got}")
+say(accstats._yt_read(png) == {}, "ответ без JSON — {}")
+say(accstats._yt_read(png) == {}, "оборванный JSON — {}")
+
+
+def broken(png, prompt, **kw):
+    raise vision.VisionError("не вписан ключ сервиса")
+
+
+vision.ask = broken
+say(accstats._yt_read(png) == {}, "зрения нет — {}, сбор не падает")
+say(accstats._yt_read(os.path.join(tmp, "нет.png")) == {}, "снимка нет — {}")
 
 print("\n--- одно сообщение: «Instagram — 113» ---")
 
@@ -116,21 +139,6 @@ accstats.latest_shots = lambda: (accstats.shots_in(day), dt.date.today().isoform
 bot.send_shots(fresh=True)
 say([s[0] for s in sent] == ["album", "text"] and sent[1][1].startswith("📊 Просмотры\nInstagram — 113"),
     "/stats: альбом, потом «📊 Просмотры»")
-
-print("\n--- распознавание Windows на этом ПК ---")
-png = os.path.join(tmp, "white.png")
-raw = b"".join(b"\x00" + b"\xff\xff\xff" * 64 for _ in range(32))
-
-
-def chunk(kind, data):
-    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-
-
-open(png, "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 32, 8, 2, 0, 0, 0))
-                      + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
-got = ocr.lines(png)
-say(got == [] if os.name == "nt" else got is None, f"пустая картинка — пустой список, без сбоя: {got!r}")
-say(ocr.lines(os.path.join(tmp, "нет.png")) is None, "файла нет — None")
 
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)

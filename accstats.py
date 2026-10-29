@@ -24,7 +24,6 @@ import config
 import device
 import human
 import jobs
-import ocr
 import ui
 
 TITLES = {"tiktok": "TikTok", "reels": "Instagram", "shorts": "YouTube"}
@@ -530,15 +529,28 @@ def _snap(folder, name, package=None):
 # (2026-10-29), и следом: «стату проще просто instagram - 100 TikTok - 200 и
 # тд без этого мусора». Поэтому от каждой сети — одно число: просмотры за
 # период снимка. TikTok и Instagram — из дерева экрана (у TikTok подпись
-# «Просмотры публика…», под ней «3,645»), YouTube Studio — распознаванием
-# Windows (`ocr.py`): у него всё нарисовано на холсте, в дереве ни одной цифры.
+# «Просмотры публика…», под ней «3,645»), YouTube Studio — моделью
+# зрения (DeepSeek): у него всё нарисовано на холсте, в дереве ни одной цифры.
+#
+# Раньше YouTube читало распознавание Windows через PowerShell с закодированной
+# командой. 29.10 Касперский счёл за это exe трояном (UDS:Trojan.Win32.PyPower.ox)
+# и лечил ПК с перезагрузкой: так ведут себя загрузчики вирусов. PowerShell для
+# этого больше не зовём.
 
 NUMBER = re.compile(r"^[−\-+]?\$?\d[\d\s  .,]*%?[KMКМkм]?$|^-{2}$")
 TT_VIEWS = re.compile(r"^(просмотры публ|post views|video views|visualizaciones de (pub|v[ií]deo))", re.I)
 IG_VIEWS = ("Просмотры", "Views", "Visualizaciones")
 YT_TOOLTIP = re.compile(r"(\d{1,2}\s*[^\W\d_]+\.?\s*\d{4}\s*(г\.?)?|[^\W\d_]+\.?\s*\d{1,2},?\s*\d{4})"
                         r"\s*[:：]\s*(\d[\d\s  .,]*)$")
-YT_VIEWS = ("просмотры", "views", "visualizaciones")
+# Живьём 30.10 на снимках 28 дней и 48 часов deepseek-flash прочёл подсказку и
+# итог верно при ужатии в 1, 2 и 3 раза, за 1-2 с. Берём 2 — с запасом на
+# мелкую подсказку.
+YT_ASK = ("Это скриншот YouTube Studio, экран просмотров. Перепиши с экрана ровно как "
+          "написано, ничего не считая: «подсказка» — плашка над графиком с датой и числом "
+          "(вида «28 окт. 2026 г.: 17»), «итог» — общее число просмотров за период "
+          "(у подписи «Просмотры»). Чего на экране нет — null. Ответь ТОЛЬКО JSON без "
+          'пояснений: {"подсказка": "...", "итог": "..."}')
+YT_SHRINK = 2
 
 
 def _num(text):
@@ -581,19 +593,38 @@ def _ig_views(nodes, h):
     return ""
 
 
-def _yt_views(lines, w, h):
-    """Просмотры со снимка «Просмотров» YouTube Studio: (число, день) — из
+def _yt_read(png_path):
+    """Что модель зрения прочла на снимке просмотров YouTube Studio:
+    {"подсказка": ..., "итог": ...}. {} — зрения нет или ответ не JSON."""
+    try:
+        import vision
+        with open(png_path, "rb") as f:
+            png = f.read()
+        answer = vision.ask(png, YT_ASK, max_tokens=120, temperature=0.0, shrink=YT_SHRINK)
+    except Exception as e:
+        print(f"  YouTube: число со снимка не прочитал — {str(e)[:80]}", flush=True)
+        return {}
+    m = re.search(r"\{.*\}", answer or "", re.S)
+    try:
+        data = json.loads(m.group(0)) if m else {}
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _yt_views(seen):
+    """Просмотры по прочитанному со снимка YouTube Studio: (число, день) — из
     подсказки над графиком («27 окт. 2026 г.: 60» — за этот день) или итог
-    за период («Просмотры … 733», день None). Нечего — ("", None)."""
-    for text, box in lines or []:
-        m = YT_TOOLTIP.search(text)
-        if m:
-            return _num(m.group(3)), _day_of(m.group(1))
-    for text, box in lines or []:
-        if text.strip().lower() in YT_VIEWS and box[1] > h * 0.3:
-            total = next((t for t, b in lines if abs(b[1] - box[1]) < 25 and b[0] > w * 0.6
-                          and NUMBER.match(t.strip())), None)
-            return (_num(total), None) if total else ("", None)
+    за период («733», день None). Нечего — ("", None).
+
+    Ответ модели сверяем с тем, как YouTube пишет дату и число: на что-то
+    другое — пусто, а не выдумка в чате."""
+    m = YT_TOOLTIP.search(str(seen.get("подсказка") or "").strip())
+    if m:
+        return _num(m.group(3)), _day_of(m.group(1))
+    total = str(seen.get("итог") or "").strip()
+    if NUMBER.match(total) and not total.startswith("-"):
+        return _num(total), None
     return "", None
 
 
@@ -1419,7 +1450,7 @@ def _shot_youtube(folder, w, h, days=None):
     path = _snap(folder, "youtube")
     if path:
         _note(folder, "youtube", note)
-        views, day = _yt_views(ocr.lines(path), w, h)
+        views, day = _yt_views(_yt_read(path))
         _views_note(folder, "youtube", views, f"{day:%d.%m}" if day else period.removeprefix("за "))
     device.go_home()
     return path

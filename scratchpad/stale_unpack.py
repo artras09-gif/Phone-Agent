@@ -45,10 +45,13 @@ def fake_unpack(temp, name, ours=True, dll=None):
 
 
 def dead_pid(live):
-    """Номер, который НИ ОДИН живой PID не начинает (иначе тест врёт)."""
-    for n in range(90000000, 90001000, 4):
-        if not any(str(n).startswith(str(p)) for p in live):
-            return n
+    """Номер, который НИ ОДИН живой PID не начинает (иначе тест врёт).
+    Начала разные: 30.10 после перезагрузки у nvcontainer был PID 900, и все
+    номера 9000xxxx начинались с него."""
+    for start in (90000000, 70000000, 50000000, 30000000):
+        for n in range(start, start + 1000, 4):
+            if not any(str(n).startswith(str(p)) for p in live):
+                return n
     raise SystemExit("не нашёл свободный номер")
 
 
