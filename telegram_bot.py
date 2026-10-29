@@ -1098,13 +1098,20 @@ def send_shots(chat_id=None, thread=None, fresh=False):
                 pics.append((f.read(), title + stamp))
         except OSError:
             pass
-    return send_album(pics, chat_id=chat_id, thread=thread)
+    sent = send_album(pics, chat_id=chat_id, thread=thread)
+    numbers = accstats.numbers_text(os.path.dirname(items[0][0]))
+    if sent and numbers:
+        # «Нужно, чтобы бот дублировал цифрами в чате стату, которая на фото»
+        # (2026-10-29) — следом за альбомом, текстом.
+        send("📊 Цифрами" + stamp + "\n\n" + numbers, preview=False, chat_id=chat_id, thread=thread)
+    return sent
 
 
-def send_report(items, head):
+def send_report(items, head, numbers=""):
     """Отчёт статистики (за вчера, неделю, месяц) — в темы статистики, а если
     они нигде не привязаны — владельцу. items — [(путь, подпись)], head —
-    заголовок над первым снимком. True — ушёл."""
+    заголовок над первым снимком, numbers — те же цифры текстом (уходят
+    следом за альбомом). True — ушёл."""
     pics = []
     for path, title in items:
         try:
@@ -1118,7 +1125,11 @@ def send_report(items, head):
     sent = False
     for chat, topic in destinations("stats") or [(owner, None)]:
         if pics:
-            sent = send_album(pics, chat_id=chat, thread=topic) or sent
+            ok = send_album(pics, chat_id=chat, thread=topic)
+            if ok and numbers:
+                send(head.splitlines()[0] + " — цифрами\n\n" + numbers, preview=False,
+                     chat_id=chat, thread=topic)
+            sent = ok or sent
         else:
             sent = send(f"{head.splitlines()[0]}: снимки не получились — телефон подключён "
                         "и разблокирован? Подробности — в журнале окна.",

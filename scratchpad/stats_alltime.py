@@ -76,7 +76,7 @@ say("2 531" in caps["tiktok_tiles.png"] and "плитки" in caps["tiktok_tiles
 say("(дальше)" in caps["instagram_tiles2.png"], caps["instagram_tiles2.png"])
 say(len(items) <= 10, f"в альбоме {len(items)} из 10 возможных")
 
-print("плитки: второй снимок — только если пролистав увидели НОВЫЕ видео:")
+print("плитки: один снимок, первый экран (2026-10-29: «просто первый экран с плитками один раз»):")
 shots, swipes = [], []
 accstats._snap = lambda folder, name: shots.append(name) or os.path.join(folder, name + ".png")
 human.pause = lambda *a, **k: None
@@ -93,15 +93,12 @@ parsed = []
 accstats.parse_profile = lambda nodes, h=2400: parsed.pop(0) if parsed else {"videos": []}
 same = {"videos": [{"title": "a", "views": 10}, {"title": "b", "views": 20}]}
 screens[:] = [[], [], []]
-parsed[:] = [same, dict(same)]
-accstats._shot_tiles("tiktok", folder, 1080, 2400, same["videos"])
-say(shots == ["tiktok_tiles"], f"видео те же — один снимок: {shots}")
-shots.clear()
-screens[:] = [[], [], []]
 parsed[:] = [same, {"videos": same["videos"] + [{"title": "c", "views": 5}]}]
 accstats._shot_tiles("tiktok", folder, 1080, 2400, same["videos"])
-say(shots == ["tiktok_tiles", "tiktok_tiles2"], f"появились новые — два снимка: {shots}")
-say(sum(1 for s in swipes if "input swipe" in s) >= 4, "после снимков листает обратно наверх")
+say(shots == ["tiktok_tiles"] and not any("input swipe" in s for s in swipes),
+    f"видео больше, чем влезло, — всё равно один снимок и без листания: {shots}")
+say("2 видео, просмотров на них 30" in accstats._notes_in(folder).get("tiktok_tiles", ""),
+    "в подписи — то, что видно на снимке: " + accstats._notes_in(folder).get("tiktok_tiles", ""))
 
 print("\nИТОГ:", "всё сошлось" if ok else "ЕСТЬ ОШИБКИ")
 sys.exit(0 if ok else 1)
