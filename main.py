@@ -1489,7 +1489,17 @@ def _run_exe():
     except BaseException as e:                       # noqa: BLE001
         import traceback
 
-        traceback.print_exc()                        # в консоль или в app.log
+        try:
+            traceback.print_exc()                    # в консоль или в app.log
+        except Exception:
+            # Печатать некуда (окно, читавшее трубу, ушло): иначе это
+            # исключение вылетело бы наружу, и PyInstaller показал бы своё
+            # окно «Unhandled exception», висящее с занятым exe.
+            pass
+        if os.environ.get("PHONEAGENT_MANAGED") == "1":
+            # Служба телефона: человека рядом нет, окно с ошибкой повисло бы
+            # и держало PhoneAgent.exe (30.10 — не давало обновиться).
+            return 1
         if sys.stdout is not None and not getattr(sys.stdout, "name", "").endswith(
                 "app.log"):
             return 1                                 # из cmd — окна не нужно

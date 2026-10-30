@@ -2082,6 +2082,7 @@ def run_worker():
     if not serial:
         print("службе не сказали, какой телефон вести (ANDROID_SERIAL)", flush=True)
         return 1
+    fleet.guard_output(serial)       # окно уйдёт раньше — печать не уронит службу
     ROLE["worker"] = True
     devices.use(serial)
     lock = fleet.device_gate(serial)

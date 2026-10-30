@@ -158,6 +158,57 @@ def busy_elsewhere(serial):
 
 # ------------------------------------------------------- сторона службы
 
+class _Tolerant:
+    """Вывод службы, который не роняет её, когда окна уже нет.
+
+    Вывод службы — труба в окно. Окно ушло раньше неё (закрыли, упало) —
+    запись в трубу на Windows падает с OSError 22 «Invalid argument». Так и
+    было 30.10 у пользователя при обновлении: служба печатала «служба
+    телефона остановлена», падала на этом, и окно ошибки PyInstaller висело,
+    держа PhoneAgent.exe, — новый файл было не положить. Теперь дальше пишем
+    в свой журнал (тот же файл, что вело окно), а сама служба живёт."""
+
+    def __init__(self, stream, path):
+        self._stream, self._path, self._file = stream, path, None
+
+    def write(self, text):
+        if self._stream is not None:
+            try:
+                return self._stream.write(text)
+            except (OSError, ValueError):
+                self._stream = None
+        try:
+            if self._file is None:
+                os.makedirs(os.path.dirname(self._path), exist_ok=True)
+                self._file = open(self._path, "a", encoding="utf-8", newline="\n")
+            self._file.write(text)
+            self._file.flush()
+        except OSError:
+            pass
+        return len(text)
+
+    def flush(self):
+        if self._stream is not None:
+            try:
+                self._stream.flush()
+            except (OSError, ValueError):
+                self._stream = None
+
+    def isatty(self):
+        return False
+
+    def __getattr__(self, name):
+        return getattr(self._stream or sys.__stdout__, name)
+
+
+def guard_output(serial):
+    """Вызывается В СЛУЖБЕ первым делом: её вывод не должен её ронять."""
+    sink = _Tolerant(sys.stdout, log_path(serial))
+    sys.stdout = sink
+    sys.stderr = sink
+    return sink
+
+
 def install_child_stopper(serial, watch_stdin=False):
     """Вызывается В САМОЙ СЛУЖБЕ. Возвращает проверку «пора выходить».
 
