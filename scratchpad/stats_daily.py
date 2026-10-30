@@ -140,6 +140,18 @@ bot.load_settings = lambda: {"token": "", "owner": ""}
 say(due(2026, 10, 26) == [], "бот не настроен — слать некому")
 bot.load_settings = lambda: {"token": "1:" + "A" * 35, "owner": "111"}
 
+# 2026-10-30: «он зачем-то ещё раз стату отправил, хотя я не просил» — отчёт
+# за вчера ушёл через 4 минуты после /stats за вчера.
+accstats.answered(1, today=dt.date(2026, 10, 30))
+say(due(2026, 10, 30, 14, 3) == [], "/stats за вчера уже дошёл — отчёт за вчера не повторяется")
+accstats.answered(2, today=dt.date(2026, 10, 30))
+say(due(2026, 10, 31) == [("day", "main")], "а завтрашний отчёт (за 30.10) — как обычно")
+accstats.answered("week", today=dt.date(2026, 11, 2))
+say(due(2026, 11, 2) == [("day", "main"), ("month", "main")],
+    "/stats неделя в понедельник — недельный не повторяется, остальные идут")
+with jobs.connect() as con:
+    con.execute("DELETE FROM events")
+
 print("\n--- попытки: за вчера, Instagram ещё не открыл вчера ---")
 ENDS = {}            # сеть -> очередь последних дней, которые она «покажет»
 calls = []

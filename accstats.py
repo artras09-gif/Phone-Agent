@@ -643,10 +643,12 @@ def _value_below(nodes, label, dx=60, dy=60):
                  and label.bounds[0] - dx <= n.bounds[0] <= label.bounds[2]), None)
 
 
-def _tt_views(nodes, h):
-    """«Просмотры публикаций» из «Основных метрик» TikTok Studio: «3 645» или ""."""
+def _tt_views(nodes, h, top=0.2):
+    """«Просмотры публикаций» из «Основных метрик» TikTok Studio: «3 645» или "".
+    top — выше этой доли экрана не смотрим; на главной TikTok Studio карточка
+    «Post views» стоит выше, чем на «Аналитике»."""
     texts = [n for n in nodes or [] if (n.text or "").strip() and n.bounds[3] > n.bounds[1]
-             and not n.clickable and h * 0.2 < n.bounds[1] < h * 0.75]
+             and not n.clickable and h * top < n.bounds[1] < h * 0.75]
     for label in texts:
         if TT_VIEWS.match(label.text.strip().replace("‎", "")):
             value = _value_below(texts, label, dy=25)
@@ -961,7 +963,27 @@ def _range_of(text):
 
 TT_TITLE = "TikTok Studio"
 TT_OTHER = ["Другое", "Custom", "Personalizado", "Personalizar", "Otro", "Otros"]
-TT_CHIP = re.compile(r"^\s*(7|28|60|365)\s*(дн|day|día|dia)", re.I)
+# «7 дн.» на Redmi, а в английском TikTok Studio бывает «Last 7 days» — поэтому
+# не с начала строки (2026-10-30: на втором телефоне «Аналитика» открывалась,
+# но программа её не узнавала и снимала главную TikTok Studio).
+TT_CHIP = re.compile(r"(^|\s)(7|28|60|365)\s*(дн|day|día|dia)", re.I)
+# Карточка «Аналитика» на главной TikTok Studio. На Redmi её подписи в дереве
+# нет (жмём по месту), на английском телефоне — «Analytics».
+TT_ANALYTICS = ["Analytics", "Аналитика", "Статистика", "Análisis", "Analíticas", "Estadísticas"]
+TT_OVERVIEW = ["Overview", "Обзор", "Resumen", "Descripción general", "Visión general"]
+
+
+def _tt_analytics_open(nodes, h):
+    """Открыта ли «Аналитика» TikTok Studio: вверху переключатель периода
+    («7 дн.», «Last 7 days», «Другое»), подпись дат или вкладка «Обзор»."""
+    for n in nodes or []:
+        label = _label(n)
+        if n.bounds[1] > h * 0.4 or not label or len(label) > 30:
+            continue
+        if TT_CHIP.search(label) or label in TT_OTHER or TT_RANGE.match(label) \
+                or label in TT_OVERVIEW:
+            return True
+    return False
 # «14 окт - 20 окт», «Oct 14 - Oct 20», «14 oct - 20 oct».
 TT_RANGE = re.compile(r"^(\d{1,2}[^-–\d]{1,10}|[^-–\d]{2,10}\d{1,2})\s[-–]\s"
                       r"(\d{1,2}[^-–\d]{1,10}|[^-–\d]{2,10}\d{1,2})$")
@@ -1148,6 +1170,19 @@ def _tt_period(days, w, h):
     выбран, но подписи не прочитать) или None — не вышло."""
     nodes = ui.dump(retries=2, tolerant=True)
     other = next((n for n in nodes or [] if _label(n) in TT_OTHER and n.bounds[1] < h * 0.3), None)
+    if other is None and days not in ("week", "month"):
+        # Периоды не рядом, а выпадающим списком («Last 7 days ▾»), и
+        # «Custom» — внутри него. Открываем список и берём «Custom» оттуда.
+        drop = next((n for n in nodes or [] if TT_CHIP.search(_label(n))
+                     and len(_label(n)) <= 30 and n.bounds[1] < h * 0.35), None)
+        if drop is not None:
+            ui.tap_node(_clickable_at(nodes, drop))
+            human.pause(1.5, 2)
+            nodes = ui.dump(retries=2, tolerant=True)
+            other = next((n for n in nodes or [] if _label(n) in TT_OTHER), None)
+            if other is None:
+                device.back()                         # закрыть список
+                human.pause(1, 1.5)
     if other is None:
         return None
     if days in ("week", "month"):
@@ -1247,25 +1282,45 @@ def _shot_tiktok(folder, w, h, days=None):
         return next((n for n in ui.dump(retries=2, tolerant=True)
                      if _label(n) == TT_TITLE and n.bounds[1] < h * 0.15), None)
 
-    # Карточка «Статистика» — сразу под заголовком (её текста в дереве нет).
+    # Карточка «Аналитика»: на английском телефоне подписана («Analytics»),
+    # на Redmi подписи в дереве нет — тогда по месту, сразу под заголовком.
+    home = ui.dump(retries=2, tolerant=True)
     title = studio_title()
-    below = (title.bounds[3] if title else int(h * 0.081)) + int(h * 0.062)
-    adb.tap(int(w * 0.5), below)
-    human.pause(6, 7)
-    nodes = ui.dump(retries=2, tolerant=True)
-    if not any(TT_CHIP.match(_label(n)) or _label(n) in TT_OTHER for n in nodes or []):
+    card = next((n for n in home or [] if _label(n) in TT_ANALYTICS
+                 and n.bounds[1] < h * 0.45), None)
+    if card is not None:
+        ui.tap_node(_clickable_at(home, card))
+    else:
+        below = (title.bounds[3] if title else int(h * 0.081)) + int(h * 0.062)
+        adb.tap(int(w * 0.5), below)
+    # Ждём, а не смотрим один раз: на медленном телефоне или в плохой сети
+    # «Аналитика» грузится дольше, и программа принимала её за «не открылась».
+    nodes, end = [], time.time() + 16
+    while time.time() < end:
+        human.pause(2, 2.5)
+        nodes = ui.dump(retries=2, tolerant=True)
+        if _tt_analytics_open(nodes, h):
+            break
+    if not _tt_analytics_open(nodes, h):
         # Под заголовком оказалось не то (у других аккаунтов сверху бывает
         # баннер). Главная TikTok Studio — тоже статистика: просмотры,
         # подписчики и лайки за 7 дней. Снимаем её, а не что попало.
+        seen = ", ".join(f"«{s}»" for s in _seen_buttons(nodes, h, limit=4))
         if studio_title() is None:
             device.back()
             human.pause(1.5, 2)
         if studio_title() is None:
-            _note(folder, "tiktok", "«Аналитика» в TikTok Studio не открылась")
+            _note(folder, "tiktok", "«Аналитика» в TikTok Studio не открылась"
+                  + (f" (на экране: {seen})" if seen else ""))
             return None
         path = _snap(folder, "tiktok")
         if path:
-            _note(folder, "tiktok", "главная TikTok Studio, 7 дней (раздел «Аналитика» не открылся)")
+            _note(folder, "tiktok", "главная TikTok Studio, 7 дней (раздел «Аналитика» не открылся"
+                  + (f"; на его месте: {seen}" if seen else "") + ")")
+            # Цифра с главной — за 7 дней, так и подписываем: без неё TikTok
+            # пропадал из сообщения с цифрами вовсе (2026-10-30).
+            _views_note(folder, "tiktok", _tt_views(ui.dump(retries=2, tolerant=True), h, top=0.08),
+                        "7 дней — аналитика не открылась" + (f": {seen}" if seen else ""))
         device.back()
         return path
     span = _tt_range_text(nodes, h)
@@ -1651,6 +1706,7 @@ def _ig_period(days, w, h):
     drop = next((n for n in nodes or [] if IG_DROP.search(_label(n))
                  and h * 0.1 < n.bounds[1] < h * 0.35 and n.bounds[0] > w * 0.25), None)
     if drop is None:
+        IG_PICKED["why"] = "не нашёл выбор периода"
         return None
     if not days and IG_MONTH.search(_label(drop)):
         return "последние 30 дней"
@@ -1674,6 +1730,8 @@ def _ig_period(days, w, h):
     option = next((n for n in nodes or [] if want.search(_label(n))
                    and n.bounds[1] > drop.bounds[3]), None)
     if option is None:
+        seen = ", ".join(f"«{s}»" for s in _seen_buttons(nodes, 10 ** 6, limit=5))
+        IG_PICKED["why"] = "в списке периодов нет своего диапазона" + (f" ({seen})" if seen else "")
         device.back()
         human.pause(1, 1.5)
         return None
@@ -1687,6 +1745,8 @@ def _ig_period(days, w, h):
     apply = next((n for n in ui.dump(retries=2, tolerant=True) or []
                   if _label(n) in IG_APPLY and n.clickable), None)
     if span is None or apply is None:
+        IG_PICKED["why"] = ("в календаре не выбрались даты" if span is None
+                            else "нет кнопки «Применить»")
         device.back()                                  # закрыть календарь, ничего не применяя
         human.pause(1, 1.5)
         return None
@@ -1697,6 +1757,20 @@ def _ig_period(days, w, h):
 
 
 IG_PICKED = {}          # какие дни выбраны в последний раз: {"span": (первый, последний)}
+
+
+def _ig_shown(w, h):
+    """Какой период Instagram показывает сейчас: «30 дней», «свой период» или ""."""
+    nodes = ui.dump(retries=2, tolerant=True)
+    drop = next((n for n in nodes or [] if IG_DROP.search(_label(n))
+                 and h * 0.1 < n.bounds[1] < h * 0.35 and n.bounds[0] > w * 0.25), None)
+    if drop is None:
+        return ""
+    label = _label(drop)
+    if IG_CUSTOM.search(label):
+        return "свой период"
+    m = re.search(r"\d+", label)
+    return f"{m.group()} дней" if m else label
 
 
 def _shot_instagram(folder, w, h, days=None):
@@ -1736,9 +1810,16 @@ def _shot_instagram(folder, w, h, days=None):
     if insights:
         IG_PICKED.clear()
         note = _ig_period(days, w, h)
-        if note is None:
-            note = (f"за {PERIOD_WORDS[days]} выбрать не вышло — обычный период" if days
-                    else "")
+        if note is None and days:
+            # Не выбралось — так и скажем, и за что число на самом деле
+            # (2026-10-30: «Instagram — 79 935» пришло как будто за вчера, а
+            # было за 30 дней).
+            why, shown = IG_PICKED.get("why", ""), _ig_shown(w, h)
+            IG_PICKED["shown"] = shown
+            note = (f"за {PERIOD_WORDS[days]} выбрать не вышло" + (f" ({why})" if why else "")
+                    + f" — показано: {shown or 'обычный период'}")
+        elif note is None:
+            note = ""
         elif days == 1 and IG_PICKED.get("span"):
             # Вчера ещё серое — выбран последний доступный день, он раньше.
             first, last = IG_PICKED["span"]
@@ -1753,8 +1834,12 @@ def _shot_instagram(folder, w, h, days=None):
     path = _snap(folder, "instagram")
     if path and insights:
         span = IG_PICKED.get("span")
-        _views_note(folder, "instagram", _ig_views(ui.dump(retries=2, tolerant=True), h),
-                    _span(*span) if span else "")
+        when = _span(*span) if span else ""
+        if not span and days:
+            why = IG_PICKED.get("why", "")
+            when = (f"{IG_PICKED.get('shown') or 'обычный период'}, а не {PERIOD_WORDS[days]}"
+                    + (f": {why}" if why else ""))
+        _views_note(folder, "instagram", _ig_views(ui.dump(retries=2, tolerant=True), h), when)
     for _ in range(backs):
         device.back()
         human.pause(0.8, 1.2)
@@ -1878,10 +1963,10 @@ def collect_all(nets=None, log=None, days=None):
         return _collect_all(nets, log, days)
     finally:
         if asked is not None:
-            _answer(asked.get("address", ""))
+            _answer(asked.get("address", ""), days)
 
 
-def _answer(address):
+def _answer(address, days=None):
     try:
         import daystats
         import telegram_bot
@@ -1891,6 +1976,8 @@ def _answer(address):
             if not telegram_bot.send_shots(fresh=True):
                 telegram_bot.send("Снимки статистики не получились — телефон подключён "
                                   "и разблокирован? Подробности — в журнале окна.")
+            else:
+                answered(days)
         finally:
             telegram_bot.set_reply(None)
     except Exception:
@@ -2193,6 +2280,21 @@ def _report_events(kind, first):
 
 def _report_log(kind, first, what):
     jobs.log_event("stats_report", f"{kind}:{first.isoformat()}:{what}")
+
+
+ANSWERED_KIND = {1: "day", "week": "week", "month": "month"}
+
+
+def answered(days, today=None):
+    """/stats за вчера (неделю, месяц) только что дошёл до человека — это и
+    есть отчёт за этот период: свой отчёт за него следом не шлём.
+    2026-10-30: «он зачем-то ещё раз стату отправил, хотя я не просил» —
+    ежедневный отчёт за вчера ушёл через 4 минуты после /stats с теми же
+    цифрами (программу перезапускали обновлением, и отчёт ещё не уходил)."""
+    kind = ANSWERED_KIND.get(days)
+    if kind:
+        first, _ = report_span(kind, today)
+        _report_log(kind, first, "main sent")
 
 
 def reports_due(now=None):

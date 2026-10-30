@@ -130,6 +130,30 @@ say(text == "Instagram — 4 869\nYouTube — 20\nTikTok — не снял: в �
     f"не снялась сеть — причина строкой, а не тишина\n{text}")
 say(accstats.numbers_text(holes, ["reels"]) == "Instagram — 4 869", "чужие сети в отчёт не лезут")
 
+print("\n--- второй телефон 30.10: английская «Аналитика» TikTok, Instagram за 30 дней ---")
+ru = [N("7 дн.", (66, 280, 220, 340), True), N("28 дн.", (230, 280, 400, 340), True),
+      N("Другое", (800, 280, 1000, 340), True)]
+say(accstats._tt_analytics_open(ru, H), "Redmi: «7 дн.» и «Другое» — аналитика открыта")
+en = [N("Overview", (40, 250, 260, 320), True), N("Last 7 days", (40, 340, 400, 400), True)]
+say(accstats._tt_analytics_open(en, H), "английская: «Last 7 days» — аналитика открыта")
+studio_home = [N("TikTok Studio", (300, 120, 780, 220)), N("Analytics", (60, 280, 400, 340)),
+               N("Post views", (60, 390, 330, 430)), N("3,846", (60, 440, 330, 500)),
+               N("434%", (100, 520, 230, 560)), N("7d", (240, 520, 300, 560))]
+say(not accstats._tt_analytics_open(studio_home, H),
+    "главная TikTok Studio («Analytics», «7d») за аналитику не принимается")
+say(accstats._tt_views(studio_home, H, top=0.08) == "3 846" and accstats._tt_views(studio_home, H) == "",
+    "просмотры с главной TikTok Studio читаются только там, где их ждут")
+ig30 = folder_with({"instagram": ("79 935", "30 дней, а не вчера: в календаре не выбрались даты"),
+                    "youtube": ("20", "29.10"), "tiktok": ("3 846", "7 дней — аналитика не открылась")})
+text = accstats.numbers_text(ig30)
+say(text == "Instagram — 79 935 (за 30 дней, а не вчера: в календаре не выбрались даты)\n"
+            "TikTok — 3 846 (за 7 дней — аналитика не открылась)\nYouTube — 20 (за 29.10)",
+    f"чужой период — подписан, а не выдан за вчера\n{text}")
+for label, want in (("30 days", "30 дней"), ("Last 30 days", "30 дней"), ("Custom", "свой период"),
+                    ("Пользовательский диапазон", "свой период")):
+    accstats.ui.dump = lambda **k: [N(label, (500, 400, 1000, 480), True)]
+    say(accstats._ig_shown(W, H) == want, f"период Instagram «{label}» -> «{accstats._ig_shown(W, H)}»")
+
 print("\n--- бот шлёт просмотры следом за альбомом ---")
 sent = []
 for name in ("youtube", "instagram", "tiktok"):

@@ -1974,6 +1974,8 @@ def _snap_stats(days=None, say=None):
                      + (lines[-1] if len(lines) > 1 else "телефон не ответил")
                      + ("" if "unauthorized" in (lines[-1] if lines else "")
                         else ". Телефон подключён и разблокирован?"))
+            else:
+                accstats.answered(days)       # отчёт за этот же период — не повторять
         finally:
             set_reply(None)
 
