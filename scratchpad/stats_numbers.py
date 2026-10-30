@@ -121,6 +121,14 @@ text = accstats.numbers_text(usual)
 say(text == "Instagram — 950\nTikTok — 1 889 (за 21.10–27.10)\nYouTube — 733 (за 28 дней)",
     f"«как обычно»: периоды у всех разные — у каждой сети свой\n{text}")
 say(accstats.numbers_text(day, ["tiktok"]) == "TikTok — 286", "TikTok отдельным снимком — без скобок")
+# 2026-10-30: «бот почему-то TikTok не присылает стату» — сеть не снялась, а
+# бот молчал о ней. Теперь причина — строкой.
+holes = folder_with({"instagram": ("4 869", "29.10"), "youtube": ("20", "29.10")})
+accstats._note(holes, "tiktok_why", "в меню профиля нет TikTok Studio")
+text = accstats.numbers_text(holes)
+say(text == "Instagram — 4 869\nYouTube — 20\nTikTok — не снял: в меню профиля нет TikTok Studio",
+    f"не снялась сеть — причина строкой, а не тишина\n{text}")
+say(accstats.numbers_text(holes, ["reels"]) == "Instagram — 4 869", "чужие сети в отчёт не лезут")
 
 print("\n--- бот шлёт просмотры следом за альбомом ---")
 sent = []

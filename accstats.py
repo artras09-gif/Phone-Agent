@@ -408,6 +408,17 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
             device.go_home()
         except Exception:
             pass
+    if shots and net in SHOTS and not result.get("shot"):
+        # Сеть не снялась — причину человеку, а не молчаливая дыра в альбоме
+        # (2026-10-30: «бот почему-то TikTok не присылает стату», а почему —
+        # было только в журнале на другом компьютере).
+        folder = folder or shots_dir()
+        why = (result["why"] or _notes_in(folder).get(SHOT_FILES[net])
+               or "снимок статистики не вышел")
+        try:
+            _note(folder, SHOT_FILES[net] + "_why", why)
+        except OSError:
+            pass
     say(f"  {TITLES[net]}: подписчики {result['followers']}, видео {len(result['videos'])}"
         + (", снимок есть" if result.get("shot") else "")
         + (f", плиток {len(result['tiles'])}" if result.get("tiles") else "")
@@ -642,12 +653,15 @@ def numbers_text(folder, nets=None):
     said = _notes_in(folder)
     rows = [(net, said.get(SHOT_FILES[net] + "_views"), said.get(SHOT_FILES[net] + "_when") or "")
             for net in ("reels", "tiktok", "shorts") if nets is None or net in nets]
+    failed = [(net, said.get(SHOT_FILES[net] + "_why")) for net, views, _ in rows
+              if not views and said.get(SHOT_FILES[net] + "_why")]
     rows = [row for row in rows if row[1]]
     whens = [when for _, _, when in rows if when]
     top = max(set(whens), key=whens.count) if whens else ""
     common = top if whens.count(top) > 1 or len(set(whens)) == 1 else ""
-    return "\n".join(f"{TITLES[net]} — {views}" + (f" (за {when})" if when and when != common else "")
-                     for net, views, when in rows)
+    return "\n".join([f"{TITLES[net]} — {views}" + (f" (за {when})" if when and when != common else "")
+                      for net, views, when in rows]
+                     + [f"{TITLES[net]} — не снял: {why}" for net, why in failed])
 
 
 def _installed(package):
