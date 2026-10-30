@@ -41,7 +41,23 @@ NETS = {
         # «Профиль» стоит справа в нижней панели (доли экрана, снято живьём).
         "pause_xy": [0.5, 0.42],
         "tap_xy": [[0.9, 0.92]],
-        "own": ["Изменить профиль", "Edit profile", "Редактировать профиль", "Editar perfil"],
+        # Свой профиль — не только «Изменить профиль»: на втором телефоне
+        # пользователя (2026-10-30, английский TikTok другой версии) этой
+        # подписи не нашлось, и свой профиль был принят за чужой. Признаки,
+        # которых нет на чужом профиле, сняты живьём на Redmi: «Поделиться
+        # профилем», «Добавить друзей», глазок «Просмотры профиля», вкладка
+        # «Приватные видео», «Создать историю».
+        "own": ["Изменить профиль", "Edit profile", "Редактировать профиль", "Editar perfil",
+                "Поделиться профилем", "Share profile", "Compartir perfil",
+                "Добавить друзей", "Add friends", "Añadir amigos", "Agregar amigos",
+                "Просмотры профиля", "Profile views", "Visitas al perfil",
+                "Приватные видео", "Private videos", "Vídeos privados", "Videos privados",
+                "Создать историю", "Create story", "Crear historia"],
+        "own_exact": ["Изменить", "Edit", "Editar"],
+        # Кнопки ЧУЖОГО профиля: есть хоть одна — профиль не мой, что бы
+        # ещё на нём ни было.
+        "other": ["Подписаться", "Follow", "Seguir", "Сообщение", "Message", "Mensaje",
+                  "Подписаться в ответ", "Follow back", "Seguir también"],
     },
     "reels": {
         "package": "com.instagram.android",
@@ -111,9 +127,46 @@ def _account_name(nodes, w, h):
     return min(names, key=lambda n: n.bounds[1]).text.strip() if names else ""
 
 
-def _is_own(nodes, cfg):
+def _sized(n):
+    x1, y1, x2, y2 = n.bounds
+    return x2 > x1 and y2 > y1
+
+
+def _own_state(nodes, cfg, h=None):
+    """Свой ли профиль: True, False или None — не понять (экран ещё грузится).
+
+    Свои признаки сильнее: у чужого профиля «Изменить профиль» или глазка
+    «Просмотры профиля» не бывает никогда, а «Подписаться» на своём бывает —
+    в рекомендуемых аккаунтах под шапкой. Поэтому кнопки чужого профиля
+    смотрим только в шапке (верхние 45 % экрана)."""
+    labels = [(n.text or n.desc or "").strip().lower() for n in nodes or [] if _sized(n)]
     words = [w.lower() for w in cfg.get("own", [])]
-    return any(w in f"{n.text} {n.desc}".lower() for n in nodes or [] for w in words)
+    if any(w in f"{n.text} {n.desc}".lower() for n in nodes or [] for w in words):
+        return True
+    if any(lab in [w.lower() for w in cfg.get("own_exact", [])] for lab in labels):
+        return True
+    other = [w.lower() for w in cfg.get("other", [])]
+    top = (h or 10 ** 6) * 0.45
+    if any((n.text or n.desc or "").strip().lower() in other
+           for n in nodes or [] if _sized(n) and n.bounds[1] < top):
+        return False
+    return None
+
+
+def _is_own(nodes, cfg):
+    return bool(_own_state(nodes, cfg))
+
+
+def _seen_buttons(nodes, h, limit=6):
+    """Короткие подписи кнопок верхней части экрана — чтобы по сообщению бота
+    было видно, что открылось, без журнала с другого компьютера."""
+    out = []
+    for n in nodes or []:
+        label = (n.text or n.desc or "").strip().replace("\n", " ")
+        if n.clickable and label and len(label) <= 30 and n.bounds[1] < h * 0.6 \
+                and label not in out:
+            out.append(label)
+    return out[:limit]
 
 
 NAV_WORDS = {"главная", "home", "интересное", "discover", "друзья", "friends", "создать",
@@ -275,10 +328,21 @@ def _read_profile(net, cfg, result):
             break
         human.pause(2.5, 3.5)
     nodes = ui.dump(retries=2, tolerant=True)
-    if not result["why"] and not _is_own(nodes, cfg):
+    own = _own_state(nodes, cfg, h)
+    for _ in range(2):
+        if own is not None or result["why"]:
+            break
+        # Ни своих, ни чужих признаков — профиль ещё грузится.
+        human.pause(1.5, 2.2)
+        nodes = ui.dump(retries=2, tolerant=True)
+        own = _own_state(nodes, cfg, h)
+    if not result["why"] and not own:
         # Чужой профиль (или не профиль вовсе) — его цифры в отчёт не
         # пускаем: лучше «не снял», чем чужие миллионы подписчиков.
-        result["why"] = "открылся не мой профиль — цифры не беру"
+        seen = _seen_buttons(nodes, h)
+        result["why"] = ("открылся не мой профиль — цифры не беру"
+                         + (f" (на экране: {', '.join('«' + s + '»' for s in seen)})"
+                            if seen else " (экран не прочитался)"))
     if not result["why"]:
         result["account"] = _account_name(nodes, w, h)
     if not result["why"] and cfg.get("grid_tab"):

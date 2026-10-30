@@ -94,6 +94,33 @@ say(got["followers"] == 7 and got["videos"] == [{"views": 2, "title": "ывпв�
     f"подписчики и Shorts с названием из кавычек: {got}")
 say(accstats._is_own(live_yt, accstats.NETS["shorts"]), "свой канал узнан по кнопке «Аналитика»")
 
+print("\n--- TikTok: свой профиль не только по «Изменить профиль» (2026-10-30) ---")
+# На втором телефоне пользователя (английский TikTok другой версии) бот писал
+# «открылся не мой профиль», хотя профиль был свой.
+TT = accstats.NETS["tiktok"]
+live_tt = [N("Ease.motion", b=(373, 134, 685, 195), clickable=True),
+           N(desc="Просмотры профиля", b=(849, 132, 915, 198)),
+           N("Подписки", b=(159, 769, 412, 813)), N("Подписчиков", b=(413, 769, 666, 813)),
+           N(desc="Изменить профиль", b=(195, 846, 619, 967), clickable=True),
+           N(desc="Поделиться профилем", b=(619, 846, 752, 967), clickable=True)]
+say(accstats._own_state(live_tt, TT, 2400) is True, "Redmi живьём: свой")
+eng = [N("Ease.motion", b=(373, 134, 685, 195)), N("Edit", b=(195, 846, 619, 967), clickable=True),
+       N("Following", b=(159, 769, 412, 813))]
+say(accstats._own_state(eng, TT, 2400) is True, "английский TikTok с кнопкой «Edit»: свой")
+eye = [N(desc="Profile views", b=(849, 132, 915, 198)), N("Following", b=(159, 769, 412, 813))]
+say(accstats._own_state(eye, TT, 2400) is True, "только глазок «Profile views»: свой")
+suggested = [N("Edit profile", b=(195, 846, 619, 967), clickable=True),
+             N("Follow", b=(100, 1400, 300, 1480), clickable=True)]
+say(accstats._own_state(suggested, TT, 2400) is True,
+    "свой + «Follow» у рекомендуемых аккаунтов ниже шапки: свой")
+other = [N("someone", b=(373, 134, 685, 195)), N("Follow", b=(195, 846, 619, 967), clickable=True),
+         N("Message", b=(619, 846, 752, 967), clickable=True), N("Following", b=(159, 769, 412, 813))]
+say(accstats._own_state(other, TT, 2400) is False, "чужой (Follow, Message в шапке): не мой")
+say(accstats._own_state([N("Profile", b=(864, 2135, 1080, 2177))], TT, 2400) is None,
+    "ни своих, ни чужих признаков — не понять (ждём, экран грузится)")
+say(accstats._seen_buttons(other, 2400) == ["Follow", "Message"],
+    f"в причине — кнопки, что были на экране: {accstats._seen_buttons(other, 2400)}")
+
 print("\n--- Instagram: «▶ 5 678» на плитках Reels ---")
 insta = [N("1 234", b=(420, 400, 600, 450)), N("подписчики", b=(420, 460, 600, 500)),
          N("▶ 5 678", b=(20, 1300, 300, 1340)), N("▶ 1,2 тыс.", b=(380, 1300, 660, 1340))]
