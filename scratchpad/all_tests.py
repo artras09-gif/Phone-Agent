@@ -43,6 +43,7 @@ TESTS = [
     ("scratchpad/links_incoming.py", "приём ссылок в чате: сеть, чистка, повторы"),
     ("scratchpad/vision_models.py", "список моделей: только те, что видят картинки"),
     ("scratchpad/post_safety.py", "публикация не оставляет открытый экран"),
+    ("scratchpad/post_home.py", "публикация с главной: наш ролик в галерее по длине/имени, сбой — заново с главной"),
     ("scratchpad/frames_cleanup.py", "снимки не копятся: кадр уходит после разбора"),
     ("scratchpad/stale_unpack.py", "чистка распаковок не трогает живую программу"),
     ("scratchpad/winsys_test.py", "без PowerShell и cmd: процессы и ярлык через WinAPI, сторож от кода «как у вирусов»"),

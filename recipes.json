@@ -19,6 +19,14 @@
     "                  обратно в редактор",
     "  publish      — финальный необратимый тап, слушается DRY_RUN",
     "  $caption     — подставляется описание из задачи",
+    "  home         — закрыть приложение, открыть с ярлыка и дождаться главной",
+    "                 ('home' — признак главной, 'tab' — её вкладка). С него",
+    "                 начинаются все три маршрута; сбой до финальной кнопки —",
+    "                 и всё заново с главной (config.POST_ATTEMPTS попыток)",
+    "  pick_video   — выбрать в галерее НАШ ролик: по имени файла ('by_name')",
+    "                 или первый, сверив длину («0:23») с длиной ролика",
+    "  'xy' у tap   — место кнопки в долях экрана, если её не нашли; только",
+    "                 когда на экране есть что-то из 'xy_if'",
     "",
     "ВАЖНО: resource-id ниже — стартовые догадки, их надо уточнить под свою",
     "версию приложения. Открой нужный экран на телефоне и выполни:",
@@ -29,6 +37,174 @@
     "package": "com.zhiliaoapp.musically",
     "title": "TikTok",
     "steps": [
+      {
+        "op": "home",
+        "desc": "главная TikTok",
+        "home": [
+          {
+            "desc": "Главная",
+            "selected": true,
+            "clickable": true
+          },
+          {
+            "desc": "Home",
+            "selected": true,
+            "clickable": true
+          },
+          {
+            "desc": "Inicio",
+            "selected": true,
+            "clickable": true
+          }
+        ],
+        "tab": [
+          {
+            "desc": "Главная",
+            "clickable": true
+          },
+          {
+            "desc": "Home",
+            "clickable": true
+          },
+          {
+            "desc": "Inicio",
+            "clickable": true
+          }
+        ],
+        "pause_xy": [
+          0.5,
+          0.42
+        ]
+      },
+      {
+        "op": "tap",
+        "desc": "«+» — создать",
+        "timeout": 20,
+        "any": [
+          {
+            "desc": "Создать",
+            "clickable": true
+          },
+          {
+            "desc": "Create",
+            "clickable": true
+          },
+          {
+            "desc": "Crear",
+            "clickable": true
+          }
+        ],
+        "pause_xy": [
+          0.5,
+          0.42
+        ],
+        "pause_after": 8
+      },
+      {
+        "op": "permissions",
+        "timeout": 3,
+        "desc": "окна доступа к камере и микрофону — отказ"
+      },
+      {
+        "op": "tap",
+        "desc": "галерея (справа от кнопки съёмки)",
+        "timeout": 15,
+        "any": [
+          {
+            "rid": "bib",
+            "clickable": true
+          },
+          {
+            "desc": "Загрузить"
+          },
+          {
+            "text": "Загрузить"
+          },
+          {
+            "desc": "Upload"
+          },
+          {
+            "text": "Upload"
+          },
+          {
+            "desc": "Subir"
+          }
+        ],
+        "xy": [
+          0.813,
+          0.786
+        ],
+        "xy_if": [
+          {
+            "desc": "Снять видео"
+          },
+          {
+            "desc": "Record video"
+          },
+          {
+            "desc": "Grabar"
+          },
+          {
+            "text": "ПУБЛИКАЦИЯ"
+          },
+          {
+            "text": "POST"
+          },
+          {
+            "text": "PUBLICAR"
+          }
+        ]
+      },
+      {
+        "op": "optional_tap",
+        "desc": "вкладка «Видео» в галерее",
+        "timeout": 8,
+        "any": [
+          {
+            "text": "Видео"
+          },
+          {
+            "text": "Videos"
+          },
+          {
+            "text": "Vídeos"
+          }
+        ]
+      },
+      {
+        "op": "pick_video",
+        "desc": "наш ролик — первый, сверка по длине",
+        "timeout": 20,
+        "items": [
+          {
+            "rid": "eve"
+          }
+        ],
+        "duration": [
+          {
+            "rid": "dp3"
+          }
+        ]
+      },
+      {
+        "op": "tap",
+        "desc": "«Далее» в галерее",
+        "timeout": 15,
+        "any": [
+          {
+            "rid": "ojk"
+          },
+          {
+            "contains": "Далее"
+          },
+          {
+            "contains": "Next"
+          },
+          {
+            "contains": "Siguiente"
+          }
+        ]
+      },
       {
         "op": "sleep",
         "min": 2,
@@ -46,6 +222,30 @@
           }
         ],
         "desc": "запрос доступа к файлам"
+      },
+      {
+        "op": "optional_tap",
+        "desc": "убрать музыку, которую TikTok подставил сам",
+        "timeout": 8,
+        "any": [
+          {
+            "desc": "Удалить звук",
+            "clickable": true
+          },
+          {
+            "desc": "Remove sound",
+            "clickable": true
+          },
+          {
+            "desc": "Eliminar sonido",
+            "clickable": true
+          }
+        ],
+        "pause_xy": [
+          0.5,
+          0.42
+        ],
+        "pause_after": 6
       },
       {
         "op": "tap",
@@ -159,7 +359,16 @@
         "desc": "ФИНАЛЬНАЯ КНОПКА"
       }
     ],
-    "rev": 1
+    "rev": 2,
+    "_note": [
+      "rev 2 (живьём 2026-10-30, Redmi): публикация С ГЛАВНОЙ, а не Intent'ом в редактор.",
+      "Главная (вкладка «Главная» selected; лента играет — касание по ролику для дерева) ->",
+      "«Создать» -> камера -> галерея справа от кнопки съёмки (id bib) -> вкладка «Видео» ->",
+      "кружок выбора у первого ролика, сверка длины («00:23») -> «Далее (1)» -> редактор.",
+      "Из галереи TikTok САМ подставляет музыку («turboxwave vesha») — снимаем крестиком",
+      "«Удалить звук», иначе звук ролика ушёл бы под чужой трек. Дальше — как раньше.",
+      "Сбой до финальной кнопки — приложение закрывается и всё заново с главной (post)."
+    ]
   },
   "reels": {
     "package": "com.instagram.android",
@@ -182,10 +391,38 @@
       "(0.06, 0.071), открывает «Новая публикация» без камеры; вкладка REELS = rid",
       "cam_dest_clips; кнопка экрана подписи — share_button «Далее»; после неё",
       "publish_more жмёт второй экран «Поделиться», если он есть.",
-      "rev 6 (живьём 2026-10-16): после «Далее» окно «О Reels» с кнопкой «Поделиться» ПОВЕРХ экрана подписи — жмётся (не share_button), затем ждём ухода экрана подписи; нет ни окна, ни ухода — ошибка."
+      "rev 6 (живьём 2026-10-16): после «Далее» окно «О Reels» с кнопкой «Поделиться» ПОВЕРХ экрана подписи — жмётся (не share_button), затем ждём ухода экрана подписи; нет ни окна, ни ухода — ошибка.",
+      "rev 9 (2026-10-30): сначала шаг «главная» (приложение заново, лого «Главная лента",
+      "Instagram»), reel_gallery второй раз не перезапускает; свежее видео выбирается со",
+      "сверкой длины (gallery_grid_item_label «0:23»), а не просто первое."
     ],
     "open_uri": "instagram://reels_home",
     "steps": [
+      {
+        "op": "home",
+        "desc": "главная Instagram",
+        "home": [
+          {
+            "rid": "title_logo"
+          },
+          {
+            "desc": "Главная лента Instagram"
+          },
+          {
+            "desc": "Instagram Home feed"
+          },
+          {
+            "rid": "feed_tab",
+            "selected": true
+          }
+        ],
+        "tab": [
+          {
+            "rid": "feed_tab",
+            "clickable": true
+          }
+        ]
+      },
       {
         "op": "reel_gallery",
         "package": "com.instagram.android",
@@ -265,19 +502,19 @@
         "desc": "галерея"
       },
       {
-        "op": "tap_first",
+        "op": "pick_video",
+        "desc": "наш ролик — первый, сверка по длине",
         "timeout": 20,
-        "any": [
+        "items": [
           {
-            "rid": "gallery_grid_item_thumbnail",
-            "contains": "идео"
-          },
-          {
-            "rid": "gallery_grid_item_thumbnail",
-            "contains": "ideo"
+            "rid": "gallery_grid_item_thumbnail"
           }
         ],
-        "desc": "свежее видео"
+        "duration": [
+          {
+            "rid": "gallery_grid_item_label"
+          }
+        ]
       },
       {
         "op": "tap",
@@ -425,7 +662,7 @@
         "leave_timeout": 45
       }
     ],
-    "rev": 8
+    "rev": 9
   },
   "shorts": {
     "package": "com.google.android.youtube",
@@ -448,9 +685,150 @@
       "«Загрузить» серая — шаг yt_audience выбирает «не для детей» по строкам (подписей",
       "в дереве нет). needs_storage: видео идёт по file://, без доступа к файлам YouTube",
       "его не прочитает — проверка до публикации. publish ждёт живую кнопку.",
-      "rev 5: экран обрезки не читается, пока играет видео — одно нажатие в центр (пауза), потом дерево; по снимку — только через 20 с."
+      "rev 5: экран обрезки не читается, пока играет видео — одно нажатие в центр (пауза), потом дерево; по снимку — только через 20 с.",
+      "rev 8 (живьём 2026-10-30, Redmi): публикация С ГЛАВНОЙ. «Главная» selected ->",
+      "«Создание видео» -> экран режимов (Shorts выбран) -> «Добавить из галереи» (без камеры;",
+      "на этом телефоне камере YouTube доступ не дан — вариант с открытой камерой НЕ проверен,",
+      "кнопка галереи там угадана) -> миниатюра с ИМЕНЕМ НАШЕГО ФАЙЛА -> «Далее» -> редактор",
+      "Shorts -> дальше как раньше. Галерея YouTube сортирует по дате ИЗМЕНЕНИЯ файла —",
+      "device.refresh_media ставит её свежей, иначе ролик уезжал под вчерашние."
     ],
     "steps": [
+      {
+        "op": "home",
+        "desc": "главная YouTube",
+        "home": [
+          {
+            "desc": "Главная",
+            "selected": true,
+            "clickable": true
+          },
+          {
+            "desc": "Home",
+            "selected": true,
+            "clickable": true
+          },
+          {
+            "desc": "Inicio",
+            "selected": true,
+            "clickable": true
+          }
+        ],
+        "tab": [
+          {
+            "desc": "Главная",
+            "clickable": true
+          },
+          {
+            "desc": "Home",
+            "clickable": true
+          },
+          {
+            "desc": "Inicio",
+            "clickable": true
+          }
+        ]
+      },
+      {
+        "op": "tap",
+        "desc": "«+» — создание видео",
+        "timeout": 15,
+        "any": [
+          {
+            "desc": "Создание видео",
+            "clickable": true
+          },
+          {
+            "desc": "Создать",
+            "clickable": true
+          },
+          {
+            "desc": "Create",
+            "clickable": true
+          },
+          {
+            "desc": "Crear",
+            "clickable": true
+          }
+        ]
+      },
+      {
+        "op": "optional_tap",
+        "desc": "режим Shorts",
+        "timeout": 6,
+        "any": [
+          {
+            "rid": "creation_mode_button",
+            "text": "Shorts"
+          }
+        ]
+      },
+      {
+        "op": "tap",
+        "desc": "«Добавить из галереи»",
+        "timeout": 20,
+        "any": [
+          {
+            "rid": "unified_permissions_primary_button"
+          },
+          {
+            "text": "Добавить из галереи"
+          },
+          {
+            "text": "Add from gallery"
+          },
+          {
+            "text": "Agregar desde la galería"
+          },
+          {
+            "rid": "shorts_camera_gallery_button"
+          },
+          {
+            "desc": "Галерея"
+          },
+          {
+            "desc": "Gallery"
+          },
+          {
+            "desc": "Galería"
+          }
+        ]
+      },
+      {
+        "op": "pick_video",
+        "desc": "наш ролик — по имени файла",
+        "timeout": 20,
+        "by_name": true,
+        "items": [
+          {
+            "rid": "thumb_image_view"
+          }
+        ],
+        "duration": [
+          {
+            "rid": "duration_text_view"
+          }
+        ]
+      },
+      {
+        "op": "tap",
+        "desc": "«Далее» в галерее",
+        "timeout": 15,
+        "any": [
+          {
+            "rid": "multi_select_next_button"
+          },
+          {
+            "text": "Далее"
+          },
+          {
+            "text": "Next"
+          },
+          {
+            "text": "Siguiente"
+          }
+        ]
+      },
       {
         "op": "sleep",
         "min": 3,
@@ -665,7 +1043,7 @@
         "verify_gone": true
       }
     ],
-    "rev": 7,
+    "rev": 8,
     "needs_storage": true
   },
   "_feed_apps": {

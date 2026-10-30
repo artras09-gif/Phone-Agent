@@ -129,6 +129,7 @@ removed, stopped = [], []
 for name, fn in {"unlock": lambda: True, "keep_awake": lambda on=True: None,
                  "close_overlays": lambda *a, **k: None,
                  "push_video": lambda path: "/sdcard/Movies/v.mp4",
+                 "refresh_media": lambda remote: None,
                  "share_video": lambda *a, **k: None, "wait_for_app": lambda pkg, timeout=25: True,
                  "stop_app": lambda pkg: stopped.append(pkg),
                  "remove_remote": lambda path: removed.append(path),

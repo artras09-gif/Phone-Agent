@@ -63,6 +63,7 @@ device.unlock = lambda: True
 device.keep_awake = lambda on=True: None
 device.close_overlays = lambda *a, **k: None
 device.push_video = lambda path: "/sdcard/Movies/x.mp4"
+device.refresh_media = lambda remote: None      # телефон в этом тесте не трогаем
 device.share_video = lambda *a, **k: None
 device.wait_for_app = lambda pkg, timeout=25: True
 device.stop_app = lambda pkg: закрыто.append(pkg)
@@ -80,7 +81,8 @@ try:
     config.DRY_RUN = False
     poster.run_step = lambda *a: (_ for _ in ()).throw(poster.StepFailed("сбой"))
     poster.post("x.mp4", "", "demo", recipes=РЕЦЕПТ)
-    say(закрыто == ["com.example.app"],
+    # С 30.10 сбой — ещё и повтор с главной: закрыто после каждой попытки.
+    say(закрыто and set(закрыто) == {"com.example.app"},
         "настоящая публикация сорвалась посреди маршрута — тоже закрыто")
 
     закрыто.clear()

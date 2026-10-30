@@ -274,6 +274,12 @@ def run_step(step, ctx, log_path, index):
         return (f"окон разрешений закрыто отказом: {closed}" if closed
                 else "окон разрешений нет")
 
+    if op == "home":
+        return _to_home(step, ctx, log_path, index)
+
+    if op == "pick_video":
+        return _pick_video(step, ctx, log_path, index)
+
     if op == "advance_until":
         return _advance_until(step, ctx, log_path, index)
 
@@ -375,6 +381,19 @@ def run_step(step, ctx, log_path, index):
             # Классика: маршрут перекрыт внезапным окном. Пробуем убрать и повторить.
             if ui.dismiss_popup(nodes):
                 node, nodes = ui.wait_any(selectors, timeout=max(6, timeout // 2))
+
+        if node is None and step.get("xy") and op in ("tap", "optional_tap") and (
+                not step.get("xy_if") or ui.find_any(nodes, step["xy_if"]) is not None):
+            # У кнопки нет ни подписи, ни постоянного id (галерея в камере
+            # TikTok — id «bib», который меняется от версии к версии), но место
+            # у неё постоянное. Только когда на экране то, где она бывает
+            # (`xy_if`): касание по месту на чужом экране попало бы куда угодно.
+            _ensure_front(ctx, label)
+            w, h = adb.screen_size()
+            x, y = int(w * step["xy"][0]), int(h * step["xy"][1])
+            adb.tap(x, y)
+            human.pause(1.2, 2.0)
+            return f"тап по месту {x},{y} ({label})"
 
         if node is None:
             if op == "optional_tap":
@@ -755,6 +774,155 @@ def _yt_audience(step, log_path, index):
     return "аудитория: «Видео не для детей»"
 
 
+# ------------------------------------------- начать с главной соцсети
+#
+# Просьба 2026-10-30: «постинг начинать с главной домашней страницы каждой
+# соцсети, а если возникают проблемы — возвращаться на главную и пробовать
+# ещё раз запостить с неё». Раньше TikTok и YouTube получали ролик Intent'ом
+# и открывались сразу в редакторе, мимо главной. Теперь все три сети идут
+# как человек: главная -> «+» -> галерея -> наш ролик -> дальше как было.
+# Повтор с главной — в `post`.
+
+def _to_home(step, ctx, log_path, index):
+    """Открыть приложение заново и дождаться его главной.
+
+    Процесс закрывается целиком, а не «назад»: у Instagram за «назад» окно
+    «Сохранить черновик / Удалить», и что бы ни было открыто до этого,
+    с ярлыка приложение встаёт на свою главную."""
+    package = ctx["package"]
+    label = step.get("desc", "главная")
+    device.stop_app(package)
+    human.pause(0.8, 1.4)
+    device.open_app(package)
+    if not device.wait_for_app(package, timeout=step.get("open_timeout", 30)):
+        raise StepFailed(f"{package} не открылся")
+    human.pause(2.5, 4.0)
+    paused = tab_tapped = False
+    end = time.time() + step.get("timeout", 40)
+    nodes = []
+    while time.time() < end:
+        if abort.requested():
+            raise StepFailed("остановлено")
+        nodes = ui.dump(retries=1, tolerant=True)
+        # Строго — только при настоящем системном окне: на главной в подписях
+        # чужих роликов бывает что угодно, и «доступ к камере и микрофону» из
+        # подписи принялся бы за экран разрешений.
+        if any(ui.permission_dialog(nodes)) and ui.handle_permission(nodes, strict=True):
+            continue
+        if ui.find_any(nodes, step["home"]) is not None:
+            ctx["at_home"] = True
+            return f"{label}: открыта"
+        if not nodes and step.get("pause_xy") and not paused:
+            # Лента TikTok играет — дерево не снимается. Касание по ролику
+            # ставит его на паузу, тогда кнопки видны (как в редакторе).
+            _ensure_front(ctx, label)
+            w, h = adb.screen_size()
+            adb.tap(int(w * step["pause_xy"][0]), int(h * step["pause_xy"][1]))
+            paused = True
+            human.pause(1.0, 1.6)
+            continue
+        if nodes and ui.dismiss_popup(nodes):
+            continue
+        tab = ui.find_any(nodes, step.get("tab", []))
+        if tab is not None and not tab_tapped:
+            # Приложение открылось не на главной вкладке — жмём её.
+            ui.tap_node(tab)
+            tab_tapped = True
+            human.pause(1.5, 2.5)
+            continue
+        time.sleep(0.8)
+    _snap(log_path, index, "STUCK")
+    with open(os.path.join(log_path, f"{index:02d}_screen.txt"), "w", encoding="utf-8") as f:
+        f.write(ui.describe(nodes, limit=80))
+    raise StepFailed(f"не дождался главной ({label}). Дерево экрана сохранено в {log_path}"
+                     + _vision_note(log_path, index, label))
+
+
+DURATION = re.compile(r"^\s*(?:(\d+):)?(\d{1,2}):(\d{2})\s*$")
+
+
+def _seconds_of(text):
+    """«0:23», «00:39», «1:02:03» -> секунды; не длина — None."""
+    m = DURATION.match(text or "")
+    if not m:
+        return None
+    return int(m.group(1) or 0) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+
+
+def _label_for(target, labels):
+    """Подпись длины, которая относится к этой миниатюре: внутри неё (YouTube,
+    Instagram) или под кружком выбора в той же клетке (TikTok: кружок вверху
+    справа, длина внизу справа — правые края совпадают)."""
+    x1, y1, x2, y2 = target.bounds
+    best = None
+    for lab in labels:
+        cx, cy = lab.center
+        inside = x1 <= cx <= x2 and y1 <= cy <= y2
+        column = abs(lab.bounds[2] - x2) <= 45 and 0 <= lab.bounds[1] - y1 <= 800
+        if inside or column:
+            gap = lab.bounds[1] - y1
+            if best is None or gap < best[0]:
+                best = (gap, lab)
+    return best[1] if best else None
+
+
+def _pick_video(step, ctx, log_path, index):
+    """Выбрать в галерее приложения НАШ ролик — тот, что программа только что залила.
+
+    Залитый ролик стоит первым (`device.refresh_media` ставит ему свежую
+    дату). Но «первый» ещё не значит «наш»: не успела медиатека — и вышел бы
+    чужой ролик из галереи. Поэтому сверяем. YouTube подписывает миниатюру
+    именем файла — ищем по имени. TikTok и Instagram пишут длину — первый
+    ролик должен быть нашей длины (±1,6 с: «0:23» у ролика в 22,6 с).
+    Не сошлось — ошибка, и `post` начнёт заново с главной."""
+    items, labels_sel = step["items"], step.get("duration", [])
+    name = (ctx.get("video_name") or "").strip().lower()
+    want = ctx.get("video_seconds")
+    label = step.get("desc", "наш ролик в галерее")
+    seen, nodes = "галерея не открылась", []
+    end = time.time() + step.get("timeout", 20)
+    while time.time() < end:
+        nodes = ui.dump(retries=1, tolerant=True)
+        targets = []
+        for sel in items:
+            targets = [n for n in ui.find(nodes, **sel) if n.area > 0]
+            if targets:
+                break
+        if not targets:
+            time.sleep(0.8)
+            continue
+        # Подписи длины — по селекторам и просто по виду «0:23»: id у них в
+        # TikTok бессмысленные («dp3») и меняются от версии к версии.
+        labels = [n for sel in labels_sel for n in ui.find(nodes, **sel) if n.area > 0]
+        labels += [n for n in nodes if n.area > 0 and n not in labels
+                   and _seconds_of(n.text or n.desc) is not None]
+        if step.get("by_name") and name:
+            mine = [n for n in targets if (n.desc or n.text).strip().lower() == name]
+            if mine:
+                ui.tap_node(mine[0])
+                human.pause(1.2, 2.0)
+                return f"выбран наш ролик по имени «{mine[0].desc or mine[0].text}»"
+        first = targets[0]
+        lab = _label_for(first, labels)
+        secs = _seconds_of(lab.text or lab.desc) if lab is not None else None
+        if want is None and not step.get("by_name"):
+            ui.tap_node(first)
+            human.pause(1.2, 2.0)
+            return "выбран первый ролик (длину нашего прочесть не удалось — не сверял)"
+        if want is not None and secs is not None and abs(secs - want) <= 1.6:
+            ui.tap_node(first)
+            human.pause(1.2, 2.0)
+            return f"выбран первый ролик: {lab.text or lab.desc}, наш — {want:.1f} с"
+        seen = (f"первым стоит «{(first.desc or first.text)[:50]}»" if step.get("by_name")
+                else f"первым стоит ролик длиной {lab.text if lab is not None else '?'}")
+        time.sleep(1.0)       # медиатека могла ещё не обновиться
+    _snap(log_path, index, "STUCK")
+    with open(os.path.join(log_path, f"{index:02d}_screen.txt"), "w", encoding="utf-8") as f:
+        f.write(ui.describe(nodes, limit=80))
+    ours = f"«{ctx.get('video_name', '')}»" + (f", {want:.0f} с" if want else "")
+    raise StepFailed(f"в галерее не нашёл наш ролик {ours}: {seen}. Чужой не выбираю")
+
+
 # --------------------------------------------- Instagram: к галерее Reels
 
 def _is_reel_gallery(nodes, gallery):
@@ -845,10 +1013,13 @@ def _reel_gallery(step, ctx, log_path, index):
     # с вкладками ПУБЛИКАЦИЯ / ИСТОРИЯ / REELS (cam_dest_*) внизу. Если вместо
     # главной была вкладка Reels, на том же месте камера — её разбирает
     # `from_camera`, как запасной путь.
-    device.stop_app(package)
-    human.pause(0.8, 1.4)
-    device.open_app(package)
-    human.pause(3.0, 4.5)
+    if not ctx.get("at_home"):
+        # Шаг «главная» (`_to_home`) уже открыл приложение заново — второй
+        # раз не перезапускаем.
+        device.stop_app(package)
+        human.pause(0.8, 1.4)
+        device.open_app(package)
+        human.pause(3.0, 4.5)
     ui.handle_permission(strict=True)
     nodes, ok = ui.dump(retries=1, tolerant=True), False
     create = _exact(nodes, step.get("create_words", []))
@@ -1300,6 +1471,28 @@ def wait_upload(package, video_path, log, since=None, target=""):
             return False
 
 
+def _open_for_post(recipe, package, remote, caption):
+    """Старый вход — сразу на экран публикации, мимо главной. Остался для
+    маршрутов, которые не начинаются шагом «home» (свои маршруты человека)."""
+    if recipe.get("open_uri"):
+        # Instagram не принимает видео Intent'ом вовсе (проверено: и
+        # content://, и file://, и явная активность — открывается главная
+        # лента). Поэтому туда заходим как человек: открываем ленту и
+        # дальше по шагам берём видео из галереи.
+        device.open_uri(recipe["open_uri"], package)
+    else:
+        # Вид адреса задан в рецепте: единого, который принимают все, нет.
+        # YouTube не открывается по content:// вовсе, Instagram игнорирует
+        # file:// — оба случая пойманы живьём. Гадать в бою нельзя:
+        # неудачная попытка оставляет приложение в странном состоянии.
+        device.share_video(
+            remote, package, caption,
+            component=recipe.get("share_component"),
+            use_content=recipe.get("share_uri", "content") != "file")
+    if not device.wait_for_app(package, timeout=30):
+        raise StepFailed(f"{package} не открылся")
+
+
 def post(video_path, caption, target, recipes=None, extra=None):
     """Опубликовать видео в одну соцсеть. Возвращает (успех, отчёт).
     extra — что ещё нужно маршруту: описание и теги YouTube (`yt_details`)."""
@@ -1349,31 +1542,40 @@ def post(video_path, caption, target, recipes=None, extra=None):
         report.append(f"залито: {remote}")
         tx_open = device.tx_bytes()            # счёт загрузки — с открытия приложения
 
-        if recipe.get("open_uri"):
-            # Instagram не принимает видео Intent'ом вовсе (проверено: и
-            # content://, и file://, и явная активность — открывается главная
-            # лента). Поэтому туда заходим как человек: открываем ленту и
-            # дальше по шагам берём видео из галереи.
-            device.open_uri(recipe["open_uri"], package)
-        else:
-            # Вид адреса задан в рецепте: единого, который принимают все, нет.
-            # YouTube не открывается по content:// вовсе, Instagram игнорирует
-            # file:// — оба случая пойманы живьём. Гадать в бою нельзя:
-            # неудачная попытка оставляет приложение в странном состоянии.
-            device.share_video(
-                remote, package, caption,
-                component=recipe.get("share_component"),
-                use_content=recipe.get("share_uri", "content") != "file")
-
-        opened = True
-        if not device.wait_for_app(package, timeout=30):
-            raise StepFailed(f"{package} не открылся")
-        report.append("приложение открыто на экране публикации")
-
-        ctx = {"caption": caption, "video": video_path, "package": package, **(extra or {})}
-        for i, step in enumerate(recipe["steps"], start=1):
-            line = run_step(step, ctx, log_path, i)
-            report.append(f"  {i:2d}. {line}")
+        ctx = {"caption": caption, "video": video_path, "package": package,
+               "video_name": os.path.basename(remote),
+               "video_seconds": mp4_seconds(video_path), **(extra or {})}
+        steps = recipe["steps"]
+        from_home = bool(steps) and steps[0].get("op") == "home"
+        attempts = max(1, int(recipe.get("attempts", config.POST_ATTEMPTS)))
+        for attempt in range(1, attempts + 1):
+            ctx.pop("at_home", None)
+            try:
+                opened = True
+                if not from_home:
+                    _open_for_post(recipe, package, remote, caption)
+                    report.append("приложение открыто на экране публикации")
+                for i, step in enumerate(steps, start=1):
+                    line = run_step(step, ctx, log_path, i)
+                    report.append(f"  {i:2d}. {line}")
+                break
+            except (StepFailed, adb.AdbError, RuntimeError) as e:
+                # С главной заново — только пока финальную кнопку не нажимали
+                # (иначе ролик мог уйти и вышел бы дважды), не просили
+                # остановиться и не нужен человек (доступ к файлам, камере).
+                if (attempt >= attempts or FINAL["tapped"] or abort.requested()
+                        or isinstance(e, ui.NeedsPermission)):
+                    raise
+                report.append(f"  сбой: {e}")
+                report.append(f"  -> закрываю приложение и начинаю заново с главной "
+                              f"(попытка {attempt + 1} из {attempts})")
+                _snap(log_path, 90 + attempt, f"RETRY{attempt}")
+                try:
+                    device.stop_app(package)
+                except adb.AdbError:
+                    pass
+                device.refresh_media(remote)    # вдруг галерея не увидела ролик
+                human.pause(2.0, 3.5)
 
         published = not config.DRY_RUN
         if published:

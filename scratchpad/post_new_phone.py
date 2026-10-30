@@ -106,8 +106,9 @@ class Phone:
 
 
 recipes = json.load(io.open(os.path.join(os.path.dirname(HERE), "recipes.json"), encoding="utf-8"))
-step = recipes["shorts"]["steps"][1]
-say(step["op"] == "advance_until" and recipes["shorts"]["rev"] >= 2, "в маршруте YouTube — проход экранов")
+# Не по номеру: с 30.10 маршрут начинается с главной («home», «+», галерея).
+step = next((s for s in recipes["shorts"]["steps"] if s["op"] == "advance_until"), {})
+say(step.get("op") == "advance_until" and recipes["shorts"]["rev"] >= 2, "в маршруте YouTube — проход экранов")
 
 for video_len, want_len in ((14, 15), (42, 60), (100, 180)):
     phone = Phone(video_len)
@@ -158,7 +159,9 @@ except ui.NeedsPermission as e:
 say(ui.handle_permission(media) is False and not taps, "в ленте (не строго) — просто не трогаю")
 
 reels = recipes["reels"]["steps"]
-say(reels[0]["op"] == "reel_gallery" and recipes["reels"]["rev"] >= 4,
+# С 30.10 первым идёт шаг «главная», за ним — путь к галерее.
+gallery_step = next((s for s in reels if s["op"] == "reel_gallery"), {})
+say(gallery_step and reels.index(gallery_step) <= 1 and recipes["reels"]["rev"] >= 4,
     "маршрут Instagram начинается с пути к галерее Reels (без камеры, если можно)")
 text = json.dumps(reels, ensure_ascii=False)
 say(all(w in text for w in ("New reel", "ideo", "Next", "Write a caption", "Share")),
@@ -240,7 +243,7 @@ class Insta:
             self.go("reel_gallery")                    # миниатюра в ряду REEL
 
 
-step_ig = reels[0]
+step_ig = gallery_step
 poster._snap = lambda *a: None
 poster._vision_note = lambda *a: ""
 fast = [0.0]

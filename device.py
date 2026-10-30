@@ -261,8 +261,26 @@ def push_video(local_path):
         f"-d {adb.quote('file://' + remote)}",
         check=False,
     )
+    refresh_media(remote)
     time.sleep(2.0)
     return remote
+
+
+def refresh_media(remote):
+    """Сделать залитый ролик САМЫМ СВЕЖИМ в галереях приложений.
+
+    `adb push` сохраняет файлу дату изменения с ПК — ролик, смонтированный
+    неделю назад, и на телефоне «изменён неделю назад». Галерея YouTube
+    сортирует как раз по ней, и ролик уезжал вниз, под вчерашние (живьём
+    2026-10-30). Ставим дату «сейчас» и пересканируем файл: тогда он первый
+    и в TikTok, и в YouTube, и в Instagram."""
+    path = adb.quote(remote)
+    try:
+        # Только существующий файл: голый `touch` СОЗДАЛ бы пустой.
+        adb.shell(f"[ -f {path} ] && touch {path}", check=False)
+        media_uri(remote)
+    except (adb.AdbError, OSError):
+        pass
 
 
 def tx_bytes():

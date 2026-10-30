@@ -189,6 +189,7 @@ stopped, removed, homes = [], [], []
 for name, fn in {"unlock": lambda: True, "keep_awake": lambda on=True: None,
                  "close_overlays": lambda *a, **k: None, "has_storage_access": lambda p: True,
                  "push_video": lambda path: "/sdcard/Movies/v.mp4",
+                 "refresh_media": lambda remote: None,
                  "remember_pushed": lambda p: None, "forget_pushed": lambda p: None,
                  "cleanup_pushed": lambda keep_sec=None: 0, "tx_bytes": lambda: 0,
                  "share_video": lambda *a, **k: None, "wait_for_app": lambda pkg, timeout=25: True,
@@ -219,7 +220,9 @@ def failing_before_tap(st, ctx, lp, i):
 stopped.clear(); removed.clear()
 poster.run_step = failing_before_tap
 poster.post(video, "x", "yt", recipes=recipe)
-say(stopped == ["com.google.android.youtube"] and removed,
+# С 30.10 сбой до кнопки — ещё и повтор с главной: приложение закрывается
+# после каждой попытки и в конце.
+say(stopped and set(stopped) == {"com.google.android.youtube"} and removed,
     "сбой ДО финальной кнопки — как раньше: приложение закрыто, файл удалён")
 poster.run_step = real_run_step
 

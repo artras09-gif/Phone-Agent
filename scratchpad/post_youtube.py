@@ -77,6 +77,7 @@ device.unlock = lambda: True
 device.keep_awake = lambda on=True: None
 device.close_overlays = lambda *a, **k: None
 device.push_video = lambda path: pushed.append(path) or "/sdcard/Movies/x.mp4"
+device.refresh_media = lambda remote: None      # телефон в этом тесте не трогаем
 device.remove_remote = lambda remote: None
 device.has_storage_access = lambda pkg: False
 okk, report = poster.post(__file__, "x", "shorts")
