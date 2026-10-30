@@ -342,31 +342,49 @@ def _read_profile(net, cfg, result):
             human.pause(2.5, 3.5)
         return True
 
-    if not walk():
-        # Приложение открылось на своём прошлом экране (видео, создание ролика)
-        # и до профиля не дошло — живьём 2026-10-30 на Redmi: «YouTube: не нашёл
-        # кнопку профиля». Перезапускаем его, оно встаёт на главную, и ещё раз.
-        # Но не сразу после публикации в эту сеть: закрыть приложение значит
-        # оборвать догрузку ролика.
-        if _posted_recently(net):
-            result["why"] = "не нашёл кнопку профиля (приложение не перезапускаю: недавно публиковал)"
-        else:
-            device.stop_app(cfg["package"])
-            human.pause(1, 1.5)
-            device.open_app(cfg["package"])
-            device.wait_for_app(cfg["package"], timeout=25)
-            human.pause(3, 4)
-            if not walk():
-                result["why"] = "не нашёл кнопку профиля"
-    nodes = ui.dump(retries=2, tolerant=True)
-    own = _own_state(nodes, cfg, h)
-    for _ in range(2):
-        if own is not None or result["why"]:
-            break
-        # Ни своих, ни чужих признаков — профиль ещё грузится.
-        human.pause(1.5, 2.2)
+    def restart():
+        device.stop_app(cfg["package"])
+        human.pause(1, 1.5)
+        device.open_app(cfg["package"])
+        device.wait_for_app(cfg["package"], timeout=25)
+        human.pause(3, 4)
+
+    def arrived():
+        """Свой ли профиль на экране: (True/False/None, дерево)."""
         nodes = ui.dump(retries=2, tolerant=True)
         own = _own_state(nodes, cfg, h)
+        for _ in range(2):
+            if own is not None:
+                break
+            # Ни своих, ни чужих признаков — профиль ещё грузится.
+            human.pause(1.5, 2.2)
+            nodes = ui.dump(retries=2, tolerant=True)
+            own = _own_state(nodes, cfg, h)
+        return own, nodes
+
+    # Приложение открылось на своём прошлом экране (видео, создание ролика)
+    # и до профиля не дошло — живьём 2026-10-30 на Redmi: «YouTube: не нашёл
+    # кнопку профиля», а TikTok остался на чужом ролике и вместо своего
+    # профиля показал «Профиль Dumpling maker». Перезапускаем приложение, оно
+    # встаёт на главную, и ещё раз. Но не сразу после публикации в эту сеть:
+    # закрыть приложение значит оборвать догрузку ролика.
+    recent = _posted_recently(net)
+    restarted = False
+    if not walk():
+        if recent:
+            result["why"] = "не нашёл кнопку профиля (приложение не перезапускаю: недавно публиковал)"
+        else:
+            restart()
+            restarted = True
+            if not walk():
+                result["why"] = "не нашёл кнопку профиля"
+    own, nodes = (None, ui.dump(retries=2, tolerant=True)) if result["why"] else arrived()
+    if not result["why"] and not own and not restarted and not recent:
+        restart()
+        if walk():
+            own, nodes = arrived()
+        else:
+            result["why"] = "не нашёл кнопку профиля"
     if not result["why"] and not own:
         # Чужой профиль (или не профиль вовсе) — его цифры в отчёт не
         # пускаем: лучше «не снял», чем чужие миллионы подписчиков.
@@ -512,6 +530,16 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
                or "снимок статистики не вышел")
         try:
             _note(folder, SHOT_FILES[net] + "_why", why)
+        except OSError:
+            pass
+    elif shots and net in SHOTS:
+        # Снимок есть, а числа нет — тоже сказать: 30.10 TikTok просто
+        # пропал из строки «Просмотры», и не было видно почему.
+        folder = folder or shots_dir()
+        said = _notes_in(folder)
+        try:
+            _note(folder, SHOT_FILES[net] + "_miss",
+                  said.get(SHOT_FILES[net]) or "на снимке не нашёл просмотров")
         except OSError:
             pass
     say(f"  {TITLES[net]}: подписчики {result['followers']}, видео {len(result['videos'])}"
@@ -752,13 +780,17 @@ def numbers_text(folder, nets=None):
             for net in ("reels", "tiktok", "shorts") if nets is None or net in nets]
     failed = [(net, said.get(SHOT_FILES[net] + "_why")) for net, views, _ in rows
               if not views and said.get(SHOT_FILES[net] + "_why")]
+    missed = [(net, said.get(SHOT_FILES[net] + "_miss")) for net, views, _ in rows
+              if not views and not said.get(SHOT_FILES[net] + "_why")
+              and said.get(SHOT_FILES[net] + "_miss")]
     rows = [row for row in rows if row[1]]
     whens = [when for _, _, when in rows if when]
     top = max(set(whens), key=whens.count) if whens else ""
     common = top if whens.count(top) > 1 or len(set(whens)) == 1 else ""
     return "\n".join([f"{TITLES[net]} — {views}" + (f" (за {when})" if when and when != common else "")
                       for net, views, when in rows]
-                     + [f"{TITLES[net]} — не снял: {why}" for net, why in failed])
+                     + [f"{TITLES[net]} — не снял: {why}" for net, why in failed]
+                     + [f"{TITLES[net]} — числа нет, снимок в альбоме: {why}" for net, why in missed])
 
 
 def _installed(package):
@@ -1009,7 +1041,7 @@ def _tt_analytics_open(nodes, h):
     («7 дн.», «Last 7 days», «Другое»), подпись дат или вкладка «Обзор»."""
     for n in nodes or []:
         label = _label(n)
-        if n.bounds[1] > h * 0.4 or not label or len(label) > 30:
+        if not _sized(n) or n.bounds[1] > h * 0.4 or not label or len(label) > 30:
             continue
         if TT_CHIP.search(label) or label in TT_OTHER or TT_RANGE.match(label) \
                 or label in TT_OVERVIEW:
@@ -1052,11 +1084,12 @@ def _tt_numbered(nodes, w):
 
 def _tt_describe(nodes, w):
     """Коротко — что в календаре, для причины в сообщении бота."""
-    blank = [n for n in nodes or [] if not _label(n) and 0.05 * w < n.bounds[2] - n.bounds[0] < w / 6]
+    blank = [n for n in nodes or [] if not _label(n) and 0.05 * w < n.bounds[2] - n.bounds[0] < w / 6
+             and n.bounds[3] > n.bounds[1]]
     sizes = sorted({(n.bounds[2] - n.bounds[0], n.bounds[3] - n.bounds[1]) for n in blank},
                    key=lambda s: -sum(1 for n in blank if (n.bounds[2] - n.bounds[0],
                                                           n.bounds[3] - n.bounds[1]) == s))[:3]
-    nums = [n for n in nodes or [] if DAY_NUMBER.match(_label(n))]
+    nums = [n for n in nodes or [] if DAY_NUMBER.match(_label(n)) and _sized(n)]
     return (f"в календаре клеток без подписи {len(blank)} "
             f"({', '.join(f'{a}×{b}' for a, b in sizes) or '—'}), чисел {len(nums)}, "
             f"ширина экрана {w}")
@@ -1232,27 +1265,69 @@ def _tt_range_text(nodes, h):
     """Подпись периода под «Основные метрики»: «19 окт - 19 окт» -> «19 окт»."""
     for n in nodes or []:
         text = _label(n)
-        if n.bounds[1] < h * 0.4 and TT_RANGE.match(text):
+        if _sized(n) and n.bounds[1] < h * 0.4 and TT_RANGE.match(text):
             a, _, b = re.split(r"\s([-–])\s", text, maxsplit=1)
             return a if a.strip() == b.strip() else text
     return ""
 
 
+def _tt_other(nodes, w, h):
+    """Видимая «Другое» («Custom») в ряду периодов или None. У TikTok в дереве
+    есть и невидимые копии подписей с рамкой [0,0][0,0]: живьём 30.10
+    программа брала такую и жала в угол экрана — календарь не открывался."""
+    return next((n for n in nodes or [] if _label(n) in TT_OTHER and _sized(n)
+                 and n.bounds[1] < h * 0.3 and n.bounds[0] < w), None)
+
+
+def _tt_chips(nodes, h):
+    """Видимые готовые периоды («7 дней», «28 days»…) вверху «Аналитики»."""
+    return [n for n in nodes or [] if TT_CHIP.search(_label(n)) and len(_label(n)) <= 30
+            and _sized(n) and n.bounds[1] < h * 0.35]
+
+
+def _tt_find_other(w, h):
+    """«Другое» на «Аналитике», целиком на экране: (узел или None, дерево).
+
+    Ряд периодов шире экрана, и «Другое» стоит последней, обрезанная краем
+    («Cu…» на английском телефоне, 30.10; с новой версией — и на Redmi).
+    Касание в обрезок у края — лотерея, поэтому ряд сначала сдвигаем влево."""
+    nodes = ui.dump(retries=2, tolerant=True)
+    other = _tt_other(nodes, w, h)
+    chips = _tt_chips(nodes, h)
+    if chips and (other is None or other.bounds[2] >= w - 2):
+        y = int(_center(other or chips[0])[1])
+        adb.shell(f"input swipe {int(w * 0.8)} {y} {int(w * 0.25)} {y} 350", check=False)
+        human.pause(1, 1.4)
+        nodes = ui.dump(retries=2, tolerant=True)
+        other = _tt_other(nodes, w, h)
+    return other, nodes
+
+
+def _tt_close(h):
+    """Закрыть календарь «назад» — только если он открыт. Пока открыт, ряда
+    периодов в дереве нет (живьём 30.10). «Назад» на самой «Аналитике»
+    уводил на главную TikTok Studio — и снималась она, без цифры."""
+    if not _tt_analytics_open(ui.dump(retries=2, tolerant=True), h):
+        device.back()
+        human.pause(1, 1.5)
+
+
 def _tt_period(days, w, h):
     """На «Аналитике» TikTok выбрать период. Подпись периода («19 окт»; "" —
     выбран, но подписи не прочитать) или None — не вышло."""
-    nodes = ui.dump(retries=2, tolerant=True)
-    other = next((n for n in nodes or [] if _label(n) in TT_OTHER and n.bounds[1] < h * 0.3), None)
-    if other is None and days not in ("week", "month"):
+    other, nodes = _tt_find_other(w, h)
+    chips = _tt_chips(nodes, h)
+    if other is None and len(chips) == 1 and days not in ("week", "month"):
         # Периоды не рядом, а выпадающим списком («Last 7 days ▾»), и
         # «Custom» — внутри него. Открываем список и берём «Custom» оттуда.
-        drop = next((n for n in nodes or [] if TT_CHIP.search(_label(n))
-                     and len(_label(n)) <= 30 and n.bounds[1] < h * 0.35), None)
+        # Готовых периодов на экране несколько — это ряд, а не список:
+        # касание выбрало бы период, и «назад» увело бы с «Аналитики».
+        drop = chips[0]
         if drop is not None:
             ui.tap_node(_clickable_at(nodes, drop))
             human.pause(1.5, 2)
             nodes = ui.dump(retries=2, tolerant=True)
-            other = next((n for n in nodes or [] if _label(n) in TT_OTHER), None)
+            other = next((n for n in nodes or [] if _label(n) in TT_OTHER and _sized(n)), None)
             if other is None:
                 device.back()                         # закрыть список
                 human.pause(1, 1.5)
@@ -1265,8 +1340,7 @@ def _tt_period(days, w, h):
     ui.tap_node(_clickable_at(nodes, other))
     human.pause(2, 2.5)
     if not _tt_pick_range(days, w):
-        device.back()                                 # закрыть календарь
-        human.pause(1, 1.5)
+        _tt_close(h)
         return None
     return _tt_range_text(ui.dump(retries=2, tolerant=True), h)
 
@@ -1282,16 +1356,14 @@ def _tt_span(days, w, h):
     yesterday = dt.date.today() - dt.timedelta(days=1)
     text = None
     for shift in (1, 0):
-        nodes = ui.dump(retries=2, tolerant=True)
-        other = next((n for n in nodes or [] if _label(n) in TT_OTHER and n.bounds[1] < h * 0.3), None)
+        other, nodes = _tt_find_other(w, h)
         if other is None:
             return text
         ui.tap_node(_clickable_at(nodes, other))
         human.pause(2, 2.5)
         pick = (first + dt.timedelta(days=shift), min(last + dt.timedelta(days=shift), yesterday))
         if not _tt_pick_dates(*pick, w):
-            device.back()                             # закрыть календарь
-            human.pause(1, 1.5)
+            _tt_close(h)
             return text
         text = _tt_range_text(ui.dump(retries=2, tolerant=True), h)
         got = _range_of(text)
@@ -1306,7 +1378,7 @@ def _tt_longest(w, h):
     периода или None."""
     for _ in range(3):
         nodes = ui.dump(retries=2, tolerant=True)
-        chips = [n for n in nodes or [] if TT_CHIP.match(_label(n)) and n.bounds[1] < h * 0.35]
+        chips = [n for n in nodes or [] if TT_CHIP.match(_label(n)) and _sized(n) and n.bounds[1] < h * 0.35]
         top = max(chips, key=lambda n: int(TT_CHIP.match(_label(n)).group(1)), default=None)
         if top is not None and TT_CHIP.match(_label(top)).group(1) == "365":
             ui.tap_node(_clickable_at(nodes, top))
@@ -1718,18 +1790,74 @@ IG_APPLY = ["Применить", "Apply", "Aplicar"]
 
 def _ig_days(nodes, w):
     """Числа календаря Instagram по порядку дат: [(число, клетка или None — серое)]."""
-    nums = _reading_order([n for n in nodes or [] if re.fullmatch(r"\d{1,2}", (n.text or "").strip())])
+    nums = _reading_order([n for n in nodes or [] if re.fullmatch(r"\d{1,2}", _label(n)) and _sized(n)])
     cells = [n for n in nodes or [] if n.clickable and n.bounds[2] - n.bounds[0] < w / 5]
     out = []
     for n in nums:
         cx, cy = _center(n)
         cell = next((c for c in cells if c.bounds[0] <= cx <= c.bounds[2]
                      and c.bounds[1] <= cy <= c.bounds[3]), None)
-        out.append((int(n.text.strip()), cell))
+        out.append((int(_label(n)), cell))
     return out
 
 
-def _ig_pick_range(days, w):
+# Месяц в заголовке календаря: русский, английский, испанский.
+MONTH_WORDS = {1: r"янв|jan|ene", 2: r"фев|feb", 3: r"мар|mar", 4: r"апр|apr|abr", 5: r"ма[йя]|may",
+               6: r"июн|jun", 7: r"июл|jul", 8: r"авг|aug|ago", 9: r"сен|sep|set", 10: r"окт|oct",
+               11: r"ноя|nov", 12: r"дек|dec|dic"}
+MONTH_HEAD = re.compile(r"[^\W\d_]{3,}.*\b20\d\d\b|\b20\d\d\b.*[^\W\d_]{3,}")
+
+
+def _ig_today(nodes, w):
+    """(ряд дат, номер сегодняшнего в нём или None).
+
+    Сегодня — ПОСЛЕДНЕЕ сегодняшнее число на экране. Но если сам сегодняшний
+    день ниже края, последним окажется то же число прошлого месяца (30 сент.
+    вместо 30 окт.) — поэтому заголовок месяца над ним, если он есть в
+    дереве, должен быть этим месяцем."""
+    today = dt.date.today()
+    seq = _ig_days(nodes, w)
+    now = max((i for i, (d, _) in enumerate(seq) if d == today.day), default=None)
+    if now is None:
+        return seq, None
+    nums = _reading_order([n for n in nodes or [] if re.fullmatch(r"\d{1,2}", _label(n)) and _sized(n)])
+    y = nums[now].bounds[1]
+    heads = [n for n in nodes or [] if _sized(n) and n.bounds[3] <= y and MONTH_HEAD.search(_label(n))]
+    head = max(heads, key=lambda n: n.bounds[3], default=None)
+    if head is not None and not re.search(MONTH_WORDS[today.month], _label(head), re.I):
+        return seq, None
+    return seq, now
+
+
+def _ig_describe(seq, now=0):
+    """Коротко — что было в календаре, для причины в сообщении бота.
+    now=None — сегодняшнее число нашлось только под заголовком прошлого месяца."""
+    today = dt.date.today()
+    if not seq:
+        return "чисел в календаре не видно"
+    seen = any(d == today.day for d, _ in seq)
+    return (f"чисел {len(seq)} (с {seq[0][0]} по {seq[-1][0]}), нажимаемых "
+            f"{sum(1 for _, c in seq if c is not None)}, сегодняшнее {today.day} "
+            + ("не видно" if not seen else "— только в прошлом месяце" if now is None else "есть"))
+
+
+def _ig_find_today(w, h):
+    """Ряд дат с сегодняшним днём на экране: (ряд, номер сегодня или None).
+    Сегодня ниже края (на другом телефоне календарь выше или длиннее) —
+    листаем календарь вниз."""
+    seq, now = [], None
+    for attempt in range(3):
+        seq, now = _ig_today(ui.dump(retries=2, tolerant=True), w)
+        if now is not None or not seq:
+            break
+        adb.shell(f"input swipe {w // 2} {int(h * 0.65)} {w // 2} {int(h * 0.4)} 500", check=False)
+        human.pause(1.2, 1.5)
+    if now is None:
+        IG_PICKED["cal"] = _ig_describe(seq, now)
+    return seq, now
+
+
+def _ig_pick_range(days, w, h=2400):
     """В календаре Instagram выбрать `days` последних доступных дней.
     (первый, последний) день или None.
 
@@ -1740,18 +1868,19 @@ def _ig_pick_range(days, w):
     today = dt.date.today()
     picked = None
     for step in range(2 if days > 1 else 1):
-        seq = _ig_days(ui.dump(retries=2, tolerant=True), w)
-        now = max((i for i, (d, _) in enumerate(seq) if d == today.day), default=None)
+        seq, now = _ig_find_today(w, h)
         if now is None:
             return None
         live = [i for i, (_, cell) in enumerate(seq[:now]) if cell is not None]
         if not live:
+            IG_PICKED["cal"] = "перед сегодняшним нет ни одного нажимаемого дня; " + _ig_describe(seq)
             return None
         end = live[-1]
         start = end - (days - 1)
         first = today - dt.timedelta(days=now - start)
         last = today - dt.timedelta(days=now - end)
         if start not in live or seq[start][0] != first.day or seq[end][0] != last.day:
+            IG_PICKED["cal"] = "ряд дат не сплошной; " + _ig_describe(seq)
             return None                                # ряд дат не сплошной — не трогаем
         ui.tap_node(seq[start if step == 0 else end][1])
         human.pause(1.0, 1.4)
@@ -1825,12 +1954,15 @@ def _ig_period(days, w, h):
         human.pause(2, 3)
         return "последние 30 дней"
     span = _ig_pick_dates(*report_span(days), w) if days in ("week", "month") \
-        else _ig_pick_range(days, w)
+        else _ig_pick_range(days, w, h)
     apply = next((n for n in ui.dump(retries=2, tolerant=True) or []
                   if _label(n) in IG_APPLY and n.clickable), None)
     if span is None or apply is None:
-        IG_PICKED["why"] = ("в календаре не выбрались даты" if span is None
-                            else "нет кнопки «Применить»")
+        # Что именно было в календаре — чтобы по одной строке бота с другого
+        # телефона было видно, что чинить (30.10, английский Instagram).
+        cal = IG_PICKED.get("cal", "")
+        IG_PICKED["why"] = (("в календаре не выбрались даты" + (f": {cal}" if cal else ""))
+                            if span is None else "нет кнопки «Применить»")
         device.back()                                  # закрыть календарь, ничего не применяя
         human.pause(1, 1.5)
         return None

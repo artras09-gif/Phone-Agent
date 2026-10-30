@@ -159,10 +159,13 @@ foreign = [N(desc="Профиль iramsfoodstory", b=(900, 1000, 1060, 1160), cl
            N("1,2 млн", b=(456, 640, 624, 701)), N("Подписчика", b=(413, 708, 666, 752)),
            N("Подписаться", b=(148, 785, 467, 906), clickable=True),
            N("Профиль", desc="Профиль", b=(860, 2300, 1080, 2400), clickable=True)]
-taps.clear()
+taps.clear(), actions.clear()
 ui.dump = lambda retries=3, tolerant=False, timeout=30: foreign
 got = accstats.collect("tiktok")
-say(taps == ["Профиль"], f"нажата кнопка нижней панели, а не автора ролика: {taps}")
+say(taps == ["Профиль", "Профиль"], f"нажата кнопка нижней панели, а не автора ролика: {taps}")
+say(sum(1 for a in actions if isinstance(a, tuple) and a[0] == "STOP") == 1,
+    "не свой профиль — приложение перезапущено один раз и путь пройден заново (живьём 30.10: "
+    "TikTok остался на чужом ролике)")
 say(got["followers"] is None and "не мой профиль" in got["why"],
     f"чужой профиль — цифры не взяты: {got['why']}")
 

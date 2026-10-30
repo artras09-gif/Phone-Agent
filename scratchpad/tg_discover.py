@@ -59,7 +59,11 @@ class BotApi(http.server.BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "result": {"file_path": "/var/lib/telegram-bot-api/x/videos/f.mp4"}})
         return self._send(200, {"ok": True, "result": {"username": "testbot"}})
 
-    do_POST = do_GET
+    def do_POST(self):
+        # Тело дочитать до ответа: иначе Windows рвёт соединение сбросом, и
+        # клиент видел WinError 10053 вместо ответа (падало через раз, 30.10).
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        return self.do_GET()
 
 
 class NotTelegram(http.server.BaseHTTPRequestHandler):
