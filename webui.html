@@ -445,9 +445,12 @@ pre.report{
           <div>
             <h2>Телефоны</h2>
             <p class="hint" style="margin:0">
-              У каждого телефона своя служба в отдельном процессе: своё
-              расписание, своя очередь, свои вкусы. Они работают
-              одновременно — пока один публикует, другой смотрит ленту.
+              Каждый подключённый телефон работает сам, в своём процессе:
+              своё расписание, своя очередь, свои вкусы, свой бот. Они
+              работают одновременно — пока один публикует, другой смотрит
+              ленту. Окно — пульт: на главной выбери телефон наверху, и
+              кнопки, журнал и вкладки покажут его. Переключаться можно в
+              любой момент, другие телефоны при этом не останавливаются.
             </p>
           </div>
           <button class="btn" id="b-fleet-stopall">Остановить все</button>
@@ -714,6 +717,7 @@ addEventListener("pagehide", () => {
 const $ = (id) => document.getElementById(id);
 
 let logCount = 0;
+let logDevice;              // чей журнал на экране (окно-пульт пересылает журнал выбранного)
 let busy = false;
 let phoneReady = false;
 
@@ -1166,21 +1170,34 @@ $("b-jobadd").onclick = () => {
 /* ------------------------------------------------- пространства телефонов */
 /* Один телефон — строку прячем: выбирать не из чего, а лишняя строка на
    главной только мешает. Появился второй — переключатель сам показывается. */
+/* С 30.10 у каждого телефона своя служба, а окно — пульт: переключаться можно
+   всегда, даже посреди сессии на этом телефоне. Рядом с именем — чем телефон
+   занят прямо сейчас: видно, что второй работает, пока смотришь первый. */
+function phoneWord(d){
+  if(!d.live) return " · нет связи";
+  if(d.busy) return " · " + (d.action || "занят");
+  if(d.ready === false && d.running !== false) return " · запускается";
+  if(d.running === false) return " · остановлен";
+  return "";
+}
+
 function renderSpaces(s){
   const box = $("spaces"), list = s.spaces || [];
   $("spaces-row").style.display = list.length > 1 ? "" : "none";
-  const sign = JSON.stringify(list) + "|" + s.device;
+  const sign = JSON.stringify(list.map(d => [d.serial, d.name, d.live, d.busy,
+    d.action, d.ready, d.running])) + "|" + s.device;
   if(box.dataset.sign === sign) return;
   box.dataset.sign = sign;
   box.innerHTML = "";
   for(const d of list){
     const chip = document.createElement("button");
     chip.className = "chip" + (d.serial === s.device ? " on" : "");
-    chip.textContent = d.name + (d.live ? "" : " · нет связи");
+    chip.textContent = d.name + phoneWord(d);
     chip.title = d.serial + " · " + (d.live ? d.link : "отключён");
-    chip.onclick = () => {
+    chip.onclick = async () => {
       if(d.serial === s.device) return;
-      send("device", {serial: d.serial});
+      await send("device", {serial: d.serial});
+      refresh();
     };
     box.append(chip);
   }
@@ -1194,11 +1211,12 @@ let fleetLogFor = "";
 let fleetLogSeen = 0;
 
 function fleetWord(d){
-  if(!d.running) return d.live ? "стоит" : "стоит · нет связи";
+  if(!d.running) return (d.paused ? "остановлен кнопкой" : "стоит") + (d.live ? "" : " · нет связи");
   const mins = Math.floor(d.uptime / 60);
   const time = d.uptime < 60 ? d.uptime + " с" : mins + " мин";
   if(!d.managed) return "работает · запущена не из этого окна";
-  let text = "работает · " + time;
+  let text = d.busy ? (d.action || "занят") : (d.ready === false ? "запускается" : "свободен");
+  text += " · работает " + time;
   if(d.restarts) text += " · перезапусков: " + d.restarts;
   return text;
 }
@@ -1209,7 +1227,8 @@ function renderFleet(s){
 
   const box = $("fleet-list");
   const sign = JSON.stringify(list.map(d =>
-    [d.serial, d.running, d.managed, d.live, d.here, Math.floor(d.uptime / 5)]));
+    [d.serial, d.running, d.managed, d.live, d.here, d.busy, d.action, d.ready, d.paused,
+     Math.floor(d.uptime / 5)]));
   if(box.dataset.sign !== sign){
     box.dataset.sign = sign;
     box.innerHTML = "";
@@ -1223,7 +1242,7 @@ function renderFleet(s){
       const main = document.createElement("div");
       main.className = "main";
       const title = document.createElement("b");
-      title.textContent = d.name + (d.here ? " · открыт в окне" : "");
+      title.textContent = d.name + (d.here ? (s.hub ? " · на главной" : " · открыт в окне") : "");
       const sub = document.createElement("span");
       sub.textContent = fleetWord(d) + (d.reason ? " · " + d.reason : "");
       main.append(title, sub);
@@ -1241,10 +1260,12 @@ function renderFleet(s){
       }else{
         act.className = "btn accent";
         act.textContent = "Запустить";
-        act.disabled = !d.live || d.here;
-        /* Телефон, открытый в окне, окно водит само — служба подралась бы
-           с ним за экран. Причину говорим вслух, а не гасим кнопку молча. */
-        act.title = d.here ? "этот телефон работает из окна — открой другой"
+        /* В пульте (s.hub) все телефоны работают службами, и открытый на
+           главной — тоже. В прежнем режиме окно водило его само, и служба
+           подралась бы с ним за экран. */
+        const owned = d.here && !s.hub;
+        act.disabled = !d.live || owned;
+        act.title = owned ? "этот телефон работает из окна — открой другой"
                   : (!d.live ? "телефон не на связи" : "");
         act.onclick = () => { act.disabled = true; send("fleet-start", {serial:d.serial}); };
       }
@@ -1640,6 +1661,13 @@ async function pollLog(){
   try{
     const res = await fetch("/api/log?since=" + logCount);
     const data = await res.json();
+    if(data.device !== undefined && data.device !== logDevice){
+      // Переключили телефон: у его службы свой журнал — начинаем его с начала.
+      logDevice = data.device;
+      logCount = 0;
+      $("console").innerHTML = "";
+      return;
+    }
     renderLog(data);
     showRunning(data.busy, data.action, data.elapsed);
   }catch(e){ /* сервер мог уйти — следующий круг разберётся */ }

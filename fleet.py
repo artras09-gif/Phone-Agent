@@ -22,12 +22,24 @@
 посреди публикации, на экране редактора. Поэтому надзиратель кладёт файл, а
 служба его замечает, просит текущее действие прерваться (`abort`) и выходит
 сама.
+
+С 2026-10-30 так работает КАЖДЫЙ телефон, и тот, что открыт в окне, тоже
+(«телефоны должны работать одновременно, и переключаться между ними, пока
+на одном сессия»). Служба телефона — это окно без окна (`webui.run_worker`):
+те же кнопки, расписание, сторож очереди, бот и статистика, свой HTTP на
+свободном порту. Окно (`webui.run`) стало пультом: само ни одним телефоном не
+правит, поднимает службу каждому подключённому и пересылает запросы страницы
+службе выбранного. Порт и токен служба кладёт в `.fleet/<телефон>.json`.
+Окно закрыли — у службы закрылся stdin, и она выходит сама, штатно.
 """
+import json
 import os
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 
 import config
 import devices
@@ -58,6 +70,39 @@ def stop_path(serial):
 
 def log_path(serial):
     return os.path.join(config.LOG_DIR, f"служба-{_slug(serial)}.log")
+
+
+def control_path(serial):
+    """Где служба телефона оставляет свой порт и токен для окна."""
+    return os.path.join(CONTROL, f"{_slug(serial)}.json")
+
+
+def write_control(serial, port, token):
+    """Вызывается В СЛУЖБЕ, когда её HTTP поднялся. Через временный файл:
+    окно не должно прочитать половину записи."""
+    os.makedirs(CONTROL, exist_ok=True)
+    path = control_path(serial)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"serial": serial, "port": int(port), "token": token,
+                   "pid": os.getpid()}, f)
+    os.replace(tmp, path)
+
+
+def read_control(serial):
+    try:
+        with open(control_path(serial), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) and data.get("port") else None
+    except (OSError, ValueError):
+        return None
+
+
+def drop_control(serial):
+    try:
+        os.remove(control_path(serial))
+    except OSError:
+        pass
 
 
 def device_gate(serial):
@@ -113,12 +158,17 @@ def busy_elsewhere(serial):
 
 # ------------------------------------------------------- сторона службы
 
-def install_child_stopper(serial):
+def install_child_stopper(serial, watch_stdin=False):
     """Вызывается В САМОЙ СЛУЖБЕ. Возвращает проверку «пора выходить».
 
     Заодно поднимает сторожа: он замечает просьбу и обрывает текущее
     действие через `abort`, иначе выхода пришлось бы ждать до конца сессии,
     а она бывает получасовой.
+
+    `watch_stdin` — службу запустило окно: оно держит её stdin открытым, и
+    конец stdin значит «окна больше нет» (закрыли, упало, сняли в диспетчере
+    задач). Службы без окна не остаются: им некому показать журнал, и
+    остановить их было бы нечем.
     """
     import abort
 
@@ -131,23 +181,41 @@ def install_child_stopper(serial):
     except OSError:
         pass
 
+    def stop(why):
+        if not flag["stop"]:
+            flag["stop"] = True
+            print(f"{why} — заканчиваю", flush=True)
+            abort.request()
+
     def watch():
         while not flag["stop"]:
             if os.path.exists(path):
-                flag["stop"] = True
-                abort.request()
+                stop("попросили остановиться")
                 return
             time.sleep(0.5)
 
+    def orphan():
+        stream = getattr(sys.stdin, "buffer", None)
+        if stream is None:
+            return
+        try:
+            while stream.read(1024):
+                pass
+        except (OSError, ValueError):
+            pass
+        stop("окна программы больше нет")
+
     threading.Thread(target=watch, daemon=True).start()
+    if watch_stdin and sys.stdin is not None:
+        threading.Thread(target=orphan, daemon=True).start()
     return lambda: flag["stop"]
 
 
 def child_command(serial):
-    """Чем запускать службу для телефона."""
+    """Чем запускать службу для телефона: окно без окна (`main.py worker`)."""
     if getattr(sys, "frozen", False):
-        return [sys.executable, "serve"]
-    return [sys.executable, os.path.join(config.BASE, "main.py"), "serve"]
+        return [sys.executable, "worker"]
+    return [sys.executable, os.path.join(config.BASE, "main.py"), "worker"]
 
 
 # ---------------------------------------------------- сторона надзирателя
@@ -164,6 +232,9 @@ class Service:
         self.stopped_reason = ""
         self.restarts = 0
         self.want_running = False
+        # Остановили руками («Остановить» во «Флоте») — окно не поднимает
+        # такую службу само, пока её не запустят кнопкой.
+        self.paused = False
         self._lock = threading.Lock()
 
     # --- журнал ---
@@ -202,11 +273,61 @@ class Service:
             "name": self.name,
             "running": self.running(),
             "managed": mine,        # False = работает, но запущена не нами
+            "ready": self.ready() is not None,
+            "paused": self.paused,
             "pid": self.proc.pid if mine else 0,
             "uptime": int(time.time() - self.started_at) if mine else 0,
             "restarts": self.restarts,
             "reason": self.stopped_reason,
         }
+
+    # --- связь со службой ---
+
+    def ready(self):
+        """Порт и токен службы, если её HTTP уже отвечает за НАШ процесс, иначе
+        None. Файл от прошлой, упавшей службы не годится: порт там чужой."""
+        if not self.alive():
+            # Служба, поднятая не нами (консолью), держит замок телефона и
+            # тоже оставляет свой порт — с ней пульт говорит так же.
+            return read_control(self.serial) if busy_elsewhere(self.serial) else None
+        data = read_control(self.serial)
+        # По pid не сверить: в собранном exe служба — дочерний процесс
+        # загрузчика, и pid у неё другой. Но перед запуском файл стёрт
+        # (`start`), так что свежий файл — от нашей службы.
+        try:
+            fresh = os.path.getmtime(control_path(self.serial)) >= self.started_at - 1
+        except OSError:
+            fresh = False
+        return data if data and fresh else None
+
+    def call(self, path, body=None, raw=None, timeout=10.0):
+        """Запрос к службе: GET без тела, POST с JSON-телом `body` или сырыми
+        байтами `raw`. Возвращает разобранный JSON. Не готова или не ответила —
+        RuntimeError с понятной причиной."""
+        where = self.ready()
+        if where is None:
+            raise RuntimeError("служба телефона ещё не поднялась")
+        url = f"http://127.0.0.1:{where['port']}{path}"
+        data = None
+        headers = {"X-Token": str(where.get("token", ""))}
+        if raw is not None:
+            data = raw
+            headers["Content-Type"] = "application/octet-stream"
+        elif body is not None:
+            data = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=data, headers=headers,
+                                     method="POST" if data is not None else "GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8") or "{}")
+        except urllib.error.HTTPError as e:
+            try:
+                return json.loads(e.read().decode("utf-8") or "{}")
+            except ValueError:
+                raise RuntimeError(f"служба телефона ответила {e.code}")
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise RuntimeError(f"служба телефона не отвечает: {e}")
 
     # --- запуск и остановка ---
 
@@ -235,6 +356,7 @@ class Service:
             os.remove(stop_path(self.serial))
         except OSError:
             pass
+        drop_control(self.serial)          # порт прошлой службы уже чужой
 
         creation = 0
         if os.name == "nt":
@@ -245,10 +367,13 @@ class Service:
             creation |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
         try:
+            # stdin — труба, в которую мы никогда не пишем: пока окно живо, она
+            # открыта, а не стало окна — закрылась, и служба выходит сама
+            # (`install_child_stopper(watch_stdin=True)`).
             self.proc = subprocess.Popen(
                 child_command(self.serial),
                 cwd=config.BASE, env=env, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                stderr=subprocess.STDOUT, stdin=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace",
                 bufsize=1, creationflags=creation,
             )
@@ -340,6 +465,7 @@ class Service:
             os.remove(stop_path(self.serial))
         except OSError:
             pass
+        drop_control(self.serial)
 
 
 class Fleet:
@@ -362,20 +488,37 @@ class Fleet:
             return found
 
     def start(self, serial):
-        ok = self.service(serial).start()
+        svc = self.service(serial)
+        svc.paused = False
+        ok = svc.start()
         if ok:
             self._failures[serial] = 0
             self._watch()
         return ok
 
-    def stop(self, serial, timeout=STOP_GRACE):
-        return self.service(serial).stop(timeout)
+    def ensure(self, serial):
+        """Окно видит подключённый телефон — у него должна работать служба.
+        Не трогаем остановленную руками, работающую и ту, что упала и ждёт
+        перезапуска (её ведёт присмотр). True — запустили сейчас."""
+        svc = self.service(serial)
+        if svc.paused or svc.alive() or svc.want_running or busy_elsewhere(serial):
+            return False
+        return self.start(serial)
 
-    def stop_all(self, timeout=STOP_GRACE):
-        """Останавливаем ПАРАЛЛЕЛЬНО: последовательно вышло бы N × 45 с."""
+    def stop(self, serial, timeout=STOP_GRACE, pause=True):
+        """`pause` — остановили руками: сама служба больше не поднимется.
+        При закрытии окна не ставим: в следующий раз все поднимутся заново."""
+        svc = self.service(serial)
+        if pause:
+            svc.paused = True
+        return svc.stop(timeout)
+
+    def stop_all(self, timeout=STOP_GRACE, pause=False):
+        """Останавливаем ПАРАЛЛЕЛЬНО: последовательно вышло бы N × 45 с.
+        `pause` — кнопкой «Остановить все»; при закрытии окна — нет."""
         threads = []
         for serial in list(self.services):
-            t = threading.Thread(target=self.stop, args=(serial, timeout),
+            t = threading.Thread(target=self.stop, args=(serial, timeout, pause),
                                  daemon=True)
             t.start()
             threads.append(t)

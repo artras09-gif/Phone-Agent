@@ -17,6 +17,15 @@
 * Состояние телефона опрашивается по расписанию и кэшируется. Страница
   спрашивает раз в секунду, а дёргать adb с такой частотой нельзя — во время
   сессии каждый лишний вызов отнимает время у самой сессии.
+
+Несколько телефонов (2026-10-30: «чтобы он мог полностью независимо работать
+не с одним телефоном… нужно, чтобы они работали одновременно», и «даже
+переключиться между телефонами не даёт, если у одного из них сессия»). Всё
+перечисленное выше живёт в процессе ОДНОГО телефона — `run_worker`, «окно без
+окна». Окно (`run`) — пульт: телефоном не правит само, поднимает службу
+каждому подключённому (`fleet`), а запросы страницы пересылает службе того
+телефона, что выбран наверху. Переключение — мгновенно и в любой момент:
+ничьи пути и очереди при этом не переставляются.
 """
 import abort
 import datetime as dt
@@ -56,6 +65,11 @@ PORT = 8765
 # которые двигают живой телефон. Токен выдаётся самой странице при загрузке,
 # и без него изменяющие запросы не принимаются.
 TOKEN = secrets.token_urlsafe(24)
+
+# Кто этот процесс: окно-пульт («hub») или служба одного телефона («worker»).
+# Ни то ни другое — прежний режим «окно само ведёт телефон»: так работают
+# проверки, которые поднимают классы окна прямо в своём процессе.
+ROLE = {"hub": False, "worker": False, "closing": False}
 
 
 def _base_dir():
@@ -107,6 +121,10 @@ class Runner:
         # `busy()` и `start()` позволяли двоим проскочить одновременно: оба
         # видели «свободно» до того, как первый успел занять место.
         with self._lock:
+            if ROLE["closing"]:
+                # Служба телефона закрывается: расписание или бот не должны
+                # успеть начать новое, пока она ждёт конца текущего.
+                raise RuntimeError("программа закрывается — новое не начинаю")
             if self._thread is not None and self._thread.is_alive():
                 raise RuntimeError(f"сейчас идёт другое действие: {self.title}")
             self.lines = []
@@ -843,7 +861,7 @@ def _fleet_state():
     это окно: службы переживают закрытие окна (у них своё расписание), и
     новое окно должно их видеть, а не заводить вторую поверх.
     """
-    rows = devices.known(PROBE.data.get("live", []))
+    rows = devices.known(_hub_live() if ROLE["hub"] else PROBE.data.get("live", []))
     seen = {d["serial"] for d in rows}
 
     # Телефоны, чьи службы мы ведём, но которых нет в списке известных.
@@ -861,7 +879,13 @@ def _fleet_state():
         st = fleet.FLEET.service(d["serial"]).state()
         st["live"] = d["live"]
         st["link"] = d["link"]
-        st["here"] = (d["serial"] == (config.SERIAL or ""))
+        if ROLE["hub"]:
+            brief = HUB["brief"].get(d["serial"]) or {}
+            st["here"] = d["serial"] == HUB["selected"]
+            st["busy"] = bool(brief.get("busy"))
+            st["action"] = brief.get("action", "")
+        else:
+            st["here"] = (d["serial"] == (config.SERIAL or ""))
         out.append(st)
     return out
 
@@ -971,7 +995,8 @@ def session_blocked(app):
     # Этот телефон может вести отдельная служба (см. fleet). Тогда кнопка в
     # окне — второй ведущий у одного аппарата: два маршрута перемешаются на
     # одном экране, и разобрать потом, кто куда нажал, будет нечем.
-    if fleet.busy_elsewhere(config.SERIAL or ""):
+    # Служба телефона сама держит этот замок — себе она не помеха.
+    if not ROLE["worker"] and fleet.busy_elsewhere(config.SERIAL or ""):
         return ("этот телефон уже ведёт своя служба — останови её "
                 "во «Флоте» или открой другой телефон")
     if config.stop_requested():
@@ -1025,6 +1050,16 @@ def _cmd_device(body):
     смена путей на ходу увела бы очередь и кадры в чужую папку.
     """
     serial = str(body.get("serial", "")).strip()
+    if ROLE["hub"]:
+        # Пульт ничьих путей не переставляет — только показывает другой
+        # телефон. Поэтому можно всегда, хоть посреди сессии на этом.
+        HUB["selected"] = serial
+        prefs.save(serial=serial)
+        if serial and serial in _hub_live():
+            fleet.FLEET.ensure(serial)
+        return {"ok": True, "message": f"открыл телефон: {devices.name_of(serial)}"}
+    if ROLE["worker"]:
+        return {"ok": False, "error": "служба ведёт свой телефон — его не меняют"}
     if RUNNER.busy():
         return {"ok": False,
                 "error": f"сейчас идёт «{RUNNER.title}» — сначала дождись или останови"}
@@ -1048,7 +1083,7 @@ def _cmd_fleet_start(body):
     serial = str(body.get("serial", "")).strip()
     if not serial:
         return {"ok": False, "error": "не сказано, какой телефон"}
-    if serial == (config.SERIAL or ""):
+    if not ROLE["hub"] and serial == (config.SERIAL or ""):
         if RUNNER.busy():
             return {"ok": False, "error": f"здесь идёт «{RUNNER.title}»"}
         return {"ok": False,
@@ -1086,7 +1121,7 @@ def _cmd_fleet_stop_all(body):
     busy = [d["serial"] for d in _fleet_state() if d["running"]]
     if not busy:
         return {"ok": True, "message": "работающих служб нет"}
-    fleet.FLEET.stop_all()
+    fleet.FLEET.stop_all(pause=True)
     left = [devices.name_of(d["serial"]) for d in _fleet_state() if d["running"]]
     if left:
         return {"ok": False, "error": "не остановились: " + ", ".join(left)}
@@ -1478,13 +1513,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             global LAST_SEEN
             LAST_SEEN = time.time()        # страница жива — окно открыто
             since = int((query.get("since") or ["0"])[0])
-            return self._json(200, state(since))
+            return self._json(200, _hub_state(since) if ROLE["hub"] else state(since))
+
+        if parsed.path == "/api/brief":
+            # Сводка для переключателя телефонов в пульте: занят ли и чем.
+            running = RUNNER.busy()
+            return self._json(200, {
+                "busy": running, "action": RUNNER.title if running else "",
+                "elapsed": int(time.time() - RUNNER.started_at) if running else 0,
+                "phone": PROBE.data.get("phone", {})})
 
         if parsed.path == "/api/log":
             # Только строки прогона. Отдельно от состояния, потому что за
             # журналом страница ходит втрое чаще: иначе строка о ролике
             # появлялась уже после того, как агент его пролистнул.
             since = int((query.get("since") or ["0"])[0])
+            if ROLE["hub"]:
+                return self._json(200, _hub_log(since))
             total, lines = RUNNER.tail(since)
             running = RUNNER.busy()
             return self._json(200, {
@@ -1527,6 +1572,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
 
+        if parsed.path == "/api/upload" and ROLE["hub"]:
+            # Видео ложится в очередь ТОГО телефона, что выбран наверху.
+            return self._json(200, _hub_forward(self.path, raw=raw))
+
         if parsed.path == "/api/upload":
             targets = scheduler.normalize_targets((query.get("targets") or [""])[0])
             if not targets:
@@ -1559,8 +1608,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except (UnicodeDecodeError, json.JSONDecodeError):
             return self._json(400, {"ok": False, "error": "тело не разобралось"})
 
+        if ROLE["hub"] and name not in HUB_COMMANDS:
+            # Кнопки, очередь, расписание, вкусы, бот — у телефона, их делает
+            # его служба.
+            return self._json(200, _hub_forward("/api/" + name, body=body))
+
         try:
-            return self._json(200, handler(body) or {"ok": True})
+            result = handler(body) or {"ok": True}
+            if ROLE["hub"] and name == "settings":
+                _hub_broadcast("/api/prefs-reload")
+            return self._json(200, result)
         except Exception as e:
             # Ошибка команды — обычное дело (кривое правило, занятый телефон),
             # и человек должен прочитать её в окне, а не в консоли.
@@ -1570,6 +1627,185 @@ class Handler(http.server.BaseHTTPRequestHandler):
 class Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+
+# ------------------------------------------------------ окно-пульт (hub)
+#
+# Телефоном пульт не правит. Он видит, какие телефоны подключены, держит у
+# каждого службу (`fleet.FLEET.ensure`), раз в пару секунд спрашивает у служб
+# короткую сводку («свободен» / «сессия tiktok») для переключателя наверху,
+# а всё остальное пересылает службе ВЫБРАННОГО телефона.
+
+HUB = {"selected": "", "devices": [], "names": {}, "brief": {}, "vision": None,
+       "vision_at": 0.0}
+HUB_EVERY = 2.0
+# Команды самого пульта. Остальные — про телефон, их делает его служба.
+HUB_COMMANDS = {"device", "fleet-start", "fleet-stop", "fleet-stop-all", "settings"}
+
+
+def _hub_live():
+    return [d["serial"] for d in HUB["devices"] if d["state"] == "device"]
+
+
+def _hub_refresh():
+    """Кто подключён, у всех ли подключённых есть служба, как у служб дела."""
+    found = []
+    for serial, state in adb.devices():
+        name = HUB["names"].get(serial, "")
+        if state == "device" and not name:
+            try:
+                name = adb.raw("-s", serial, "shell", "getprop", "ro.product.model",
+                               check=False, timeout=10).strip()
+            except adb.AdbError:
+                name = ""
+            if name:
+                HUB["names"][serial] = name
+                devices.remember(serial, name)
+        found.append({"serial": serial, "state": state,
+                      "name": name or devices.name_of(serial) or serial,
+                      "link": "по сети" if ":" in serial else "кабель"})
+    HUB["devices"] = found
+    live = _hub_live()
+    for serial in live:
+        fleet.FLEET.ensure(serial)
+    known = [d["serial"] for d in devices.known(live)]
+    if not HUB["selected"] or HUB["selected"] not in known:
+        HUB["selected"] = live[0] if live else (known[0] if known else "")
+    for serial, svc in list(fleet.FLEET.services.items()):
+        if svc.ready() is None:
+            HUB["brief"].pop(serial, None)
+            continue
+        try:
+            HUB["brief"][serial] = svc.call("/api/brief", timeout=3)
+        except RuntimeError:
+            HUB["brief"].pop(serial, None)
+
+
+def _hub_loop():
+    while True:
+        try:
+            _hub_refresh()
+        except Exception as e:                        # пульт не должен падать
+            print(f"[пульт] сбой опроса телефонов: {type(e).__name__}: {e}", flush=True)
+        time.sleep(HUB_EVERY)
+
+
+def _hub_phones():
+    """Телефоны для переключателя: кто на связи и чем занят прямо сейчас."""
+    rows = []
+    live = _hub_live()
+    for d in devices.known(live):
+        svc = fleet.FLEET.services.get(d["serial"])
+        brief = HUB["brief"].get(d["serial"]) or {}
+        d = dict(d)
+        d["running"] = bool(svc and svc.running())
+        d["ready"] = bool(brief)
+        d["busy"] = bool(brief.get("busy"))
+        d["action"] = brief.get("action", "")
+        rows.append(d)
+    return rows
+
+
+def _hub_waiting(serial):
+    """Почему у выбранного телефона пока нет живой службы — для строки «Телефон»."""
+    if not serial:
+        return "телефонов не видно: кабель, «Отладка по USB» и подтверждение на телефоне"
+    svc = fleet.FLEET.services.get(serial)
+    if serial not in _hub_live():
+        return "не подключён"
+    if svc is None or not svc.running():
+        if svc is not None and svc.paused:
+            return "служба остановлена во «Флоте» — запусти её там"
+        return "запускаю работу с телефоном…"
+    if svc.stopped_reason:
+        return svc.stopped_reason
+    return "служба телефона поднимается…"
+
+
+def _hub_vision():
+    """Зрение — общее на все телефоны; пока служба не ответила, скажем сами."""
+    if time.time() - HUB["vision_at"] > 30 or HUB["vision"] is None:
+        ok, info = vision.available()
+        HUB["vision"] = {"ok": bool(ok), "where": vision.where(),
+                         "text": f"{info} · {vision.where()}" if ok else info}
+        HUB["vision_at"] = time.time()
+    return HUB["vision"]
+
+
+def _hub_state(since):
+    """Состояние для страницы: выбранного телефона — от его службы, общее — своё."""
+    serial = HUB["selected"]
+    svc = fleet.FLEET.services.get(serial) if serial else None
+    data = None
+    if svc is not None and svc.ready() is not None:
+        try:
+            data = svc.call(f"/api/state?since={int(since)}", timeout=5)
+        except RuntimeError:
+            data = None
+    if not data:
+        # Служба ещё не поднялась (или телефона нет): показываем общее, а в
+        # строке «Телефон» — что происходит. Кнопки при этом скажут сами.
+        data = state(since)
+        data["phone"] = {"ok": False, "text": _hub_waiting(serial)}
+        data["keyboard"] = {"ok": False, "text": "—"}
+        data["vision"] = _hub_vision()
+        data["busy"], data["action"], data["elapsed"] = False, "", 0
+        data["waiting"] = True
+    data["spaces"] = _hub_phones()
+    data["device"] = serial
+    data["fleet"] = _fleet_state()
+    data["devices"] = [{"serial": d["serial"], "state": d["state"], "name": d["name"],
+                        "link": d["link"]} for d in HUB["devices"]]
+    data["hub"] = True
+    return data
+
+
+def _hub_log(since):
+    serial = HUB["selected"]
+    svc = fleet.FLEET.services.get(serial) if serial else None
+    if svc is not None and svc.ready() is not None:
+        try:
+            data = svc.call(f"/api/log?since={int(since)}", timeout=5)
+            data["device"] = serial
+            return data
+        except RuntimeError:
+            pass
+    return {"total": 0, "lines": [], "busy": False, "action": "", "elapsed": 0,
+            "device": serial}
+
+
+def _hub_forward(path, body=None, raw=None):
+    """Переслать запрос страницы службе выбранного телефона."""
+    serial = HUB["selected"]
+    if not serial:
+        return {"ok": False, "error": "телефон не выбран — подключи его кабелем"}
+    svc = fleet.FLEET.services.get(serial)
+    if svc is None or svc.ready() is None:
+        return {"ok": False, "error": f"{devices.name_of(serial)}: {_hub_waiting(serial)}"}
+    try:
+        # Запуск действия отвечает сразу, а сохранение ключа или токена
+        # проверяет его по сети — даём время.
+        return svc.call(path, body=body, raw=raw, timeout=120)
+    except RuntimeError as e:
+        return {"ok": False, "error": f"{devices.name_of(serial)}: {e}"}
+
+
+def _hub_broadcast(path, body=None):
+    """Сказать всем живым службам (настройки зрения общие на все телефоны)."""
+    for serial, svc in list(fleet.FLEET.services.items()):
+        if svc.ready() is not None:
+            try:
+                svc.call(path, body=body if body is not None else {}, timeout=10)
+            except RuntimeError:
+                pass
+
+
+@command("prefs-reload")
+def _cmd_prefs_reload(body):
+    """Пульт сохранил общие настройки (зрение, ключ) — перечитать их здесь."""
+    prefs.apply()
+    PROBE.refresh_soon()
+    return {"ok": True}
 
 
 # ------------------------------------------------------------- запуск окна
@@ -1790,14 +2026,11 @@ def run(port=PORT, open_browser=True):
         return 0
 
     prefs.apply()         # выбранные мышкой зрение и телефон
-    # Открываем пространство телефона: очередь, расписание и вкусы у каждого
-    # свои. Не выбран — берём первый живой, а нет и его — общее пространство,
-    # чтобы окно поднялось и без телефона.
-    chosen = config.SERIAL or ""
-    if not chosen:
-        live = [s for s, state in adb.devices() if state == "device"]
-        chosen = live[0] if live else ""
-    devices.use(chosen)
+    # Окно — пульт (см. начало файла): само ни одним телефоном не правит.
+    # Выбранный в прошлый раз телефон — только какой показать первым.
+    ROLE["hub"] = True
+    HUB["selected"] = config.SERIAL or ""
+    devices.use("")
     # Уборка кадров и журналов — при каждом открытии окна, а не только в
     # начале сессии: иначе у того, кто окно открывает, а сессий не гоняет,
     # старое не убиралось бы никогда. В фоне — окно не должно ждать.
@@ -1805,10 +2038,8 @@ def run(port=PORT, open_browser=True):
     # Стоп-крана в окне больше нет, а файл от прошлых версий мог остаться и
     # молча блокировал бы службу. Снимаем на старте.
     config.set_stop(False)
-    PROBE.start()
-    DISPATCHER.start()      # очередь разгребается сама
-    KEEPER.start()          # расписание тоже: выключателя у него больше нет
-    _start_bot()          # токен не задан — поднимать нечего, выйдет сразу
+    # Телефоны, их службы и сводки для переключателя.
+    threading.Thread(target=_hub_loop, daemon=True).start()
 
     httpd = Server((HOST, port), Handler)
 
@@ -1826,6 +2057,77 @@ def run(port=PORT, open_browser=True):
         print("\nостановлено")
     finally:
         httpd.server_close()
+        _stop_phones()
+    return 0
+
+
+def _stop_phones():
+    """Окно закрыли — остановить службы всех телефонов. Параллельно и штатно:
+    идущая сессия прерывается, телефон блокируется, служба выходит сама."""
+    running = [s for s in fleet.FLEET.services.values() if s.alive()]
+    if not running:
+        return
+    print(f"останавливаю телефоны: {len(running)}", flush=True)
+    fleet.FLEET.stop_all()
+    print("телефоны остановлены", flush=True)
+
+
+def run_worker():
+    """Служба одного телефона: всё, что было в окне, — кнопки (через пульт),
+    расписание, сторож очереди, бот, статистика, — но без окна. Телефон —
+    из ANDROID_SERIAL, его раздаёт пульт (`fleet`)."""
+    import telegram_bot
+
+    serial = config.SERIAL or ""
+    if not serial:
+        print("службе не сказали, какой телефон вести (ANDROID_SERIAL)", flush=True)
+        return 1
+    ROLE["worker"] = True
+    devices.use(serial)
+    lock = fleet.device_gate(serial)
+    try:
+        lock.acquire(timeout=1)
+    except gate.Timeout:
+        print(f"Телефон {devices.name_of(serial)} уже ведёт другая служба — выхожу",
+              flush=True)
+        return 1
+
+    should_stop = fleet.install_child_stopper(
+        serial, watch_stdin=os.environ.get("PHONEAGENT_MANAGED") == "1")
+    PROBE.start()
+    DISPATCHER.start()      # очередь этого телефона
+    KEEPER.start()          # его расписание и отчёты статистики
+    _start_bot()            # его бот, если он у телефона есть
+
+    httpd = Server((HOST, 0), Handler)       # свободный порт — их много
+    fleet.write_control(serial, httpd.server_address[1], TOKEN)
+    print(f"служба телефона {devices.name_of(serial)} готова "
+          f"(порт {httpd.server_address[1]})", flush=True)
+
+    def closer():
+        while not should_stop():
+            time.sleep(0.5)
+        ROLE["closing"] = True
+        if RUNNER.cancel():
+            deadline = time.time() + CLOSE_GRACE_SEC
+            while RUNNER.busy() and time.time() < deadline:
+                time.sleep(0.5)
+        try:
+            telegram_bot.stop()
+        except Exception:
+            pass
+        httpd.shutdown()
+
+    threading.Thread(target=closer, daemon=True).start()
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
+        fleet.drop_control(serial)
+        lock.release()
+        print("служба телефона остановлена", flush=True)
     return 0
 
 

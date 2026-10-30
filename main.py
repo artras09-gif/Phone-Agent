@@ -828,6 +828,14 @@ def cmd_ui(args):
     return webui.run(port=args.port, open_browser=not args.no_window)
 
 
+def cmd_worker(args):
+    """Служба одного телефона для окна-пульта (телефон — ANDROID_SERIAL).
+    Руками её не запускают: её поднимает окно, по одной на телефон."""
+    import webui
+
+    return webui.run_worker()
+
+
 def cmd_install_keyboard(args):
     """Скачать ADBKeyboard и поставить на телефон. Нужен для кириллицы."""
     import setup as setup_mod
@@ -1352,6 +1360,7 @@ def build_parser():
     ui_cmd.add_argument("--no-window", action="store_true",
                         help="не открывать окно, только поднять сервер")
     ui_cmd.set_defaults(fn=cmd_ui)
+    sub.add_parser("worker").set_defaults(fn=cmd_worker)
 
     sub.add_parser("stop").set_defaults(fn=cmd_stop)
     sub.add_parser("resume").set_defaults(fn=cmd_resume)
@@ -1418,7 +1427,8 @@ def main():
     # Собранный exe каждый раз отмечается в «Установленных приложениях»:
     # отсюда его можно удалить начисто, как нормальную программу, а если exe
     # переложили в другую папку — запись догонит его сама.
-    if getattr(sys, "frozen", False):
+    # Служба телефона — не человек с двойным щелчком: регистрирует окно.
+    if getattr(sys, "frozen", False) and args.cmd != "worker":
         try:
             install.register(config.BASE)
         except Exception as e:                       # noqa: BLE001
@@ -1453,7 +1463,7 @@ def main():
     if args.cmd not in ("doctor", "stop", "resume", "queue", "add",
                         "install-keyboard", "analyze", "content", "vision",
                         "interests", "remote", "stats", "plan", "ui", "bench",
-                        "fleet", "bot", "links"):
+                        "fleet", "bot", "links", "worker"):
         if not adb.ensure():
             print("Телефон не отвечает. Проверь кабель и отладку по USB.")
             return 1
