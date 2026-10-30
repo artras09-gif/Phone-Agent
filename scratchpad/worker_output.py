@@ -52,5 +52,45 @@ text = open(LOG, encoding="utf-8").read() if os.path.exists(LOG) else ""
 say("служба телефона остановлена" in text and "после окна 49" in text,
     "строки после ухода окна — в её журнале")
 
+# 2026-10-30: при выходе службы, ждущей конца stdin, Python падал с «Fatal
+# Python error: _enter_buffered_busy … <stdin>» — поток держал замок
+# буферизованного stdin. Теперь stdin читается через дескриптор.
+STOPPER = f'''import sys, time
+sys.path.insert(0, {ROOT!r})
+import fleet
+fleet.CONTROL = {TMP!r}
+fleet.stop_path = lambda s: {os.path.join(TMP, "x.stop")!r}
+should_stop = fleet.install_child_stopper("X", watch_stdin=True)
+print("жду окна", flush=True)
+while not should_stop():
+    time.sleep(0.1)
+print("служба телефона остановлена", flush=True)
+'''
+for how in ("окна не стало", "окно попросило остановиться (stdin ещё открыт)"):
+    proc = subprocess.Popen([sys.executable, "-c", STOPPER], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, stdin=subprocess.PIPE, env=env)
+    proc.stdout.readline()
+    if how.startswith("окна"):
+        proc.stdin.close()
+    else:
+        # Так останавливает окно при закрытии: файлом, сам он ещё жив, и
+        # stdin службы открыт — поток чтения висит до самого выхода.
+        open(os.path.join(TMP, "x.stop"), "w").close()
+    try:
+        out = proc.stdout.read()
+        err = proc.stderr.read()
+        proc.wait(timeout=30)
+    finally:
+        if proc.stdin and not proc.stdin.closed:
+            proc.stdin.close()
+    text = (out + err).decode("utf-8", "replace")
+    say(proc.returncode == 0 and "Fatal Python error" not in text and "остановлена" in text,
+        f"{how} — служба вышла чисто (код {proc.returncode})"
+        + ("" if "Fatal" not in text else ": " + text.strip().splitlines()[-1][:80]))
+    try:
+        os.remove(os.path.join(TMP, "x.stop"))
+    except OSError:
+        pass
+
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)

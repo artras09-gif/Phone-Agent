@@ -246,13 +246,17 @@ def install_child_stopper(serial, watch_stdin=False):
             time.sleep(0.5)
 
     def orphan():
-        stream = getattr(sys.stdin, "buffer", None)
-        if stream is None:
+        # Через дескриптор, а не sys.stdin.buffer: поток, застрявший в чтении
+        # буферизованного stdin, держит его замок, и при выходе службы Python
+        # падал с «Fatal Python error: _enter_buffered_busy» (2026-10-30).
+        try:
+            fd = sys.stdin.fileno()
+        except (AttributeError, OSError, ValueError):
             return
         try:
-            while stream.read(1024):
+            while os.read(fd, 1024):
                 pass
-        except (OSError, ValueError):
+        except OSError:
             pass
         stop("окна программы больше нет")
 

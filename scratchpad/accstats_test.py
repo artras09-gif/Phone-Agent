@@ -166,6 +166,33 @@ say(taps == ["Профиль"], f"нажата кнопка нижней пан�
 say(got["followers"] is None and "не мой профиль" in got["why"],
     f"чужой профиль — цифры не взяты: {got['why']}")
 
+print("\n--- приложение открылось на прошлом экране — перезапуск и до профиля (2026-10-30) ---")
+# Живьём на Redmi: «YouTube: не нашёл кнопку профиля» — приложение встало на
+# свой прошлый экран без нижней панели.
+stuck = [N(t, b=(40, 300 + 120 * k, 1040, 400 + 120 * k), clickable=True)
+         for k, t in enumerate(["Закрыть", "Добавить трек", "Текст", "Эффекты", "Фильтры",
+                                "Стикеры", "Субтитры", "Изменить", "Далее", "Громкость"])]
+own_screen = [N("Профиль", desc="Профиль", b=(860, 2300, 1080, 2400), clickable=True),
+              N("Изменить профиль", b=(100, 760, 980, 840), clickable=True),
+              N("12,5 тыс.", b=(456, 640, 624, 701)), N("Подписчики", b=(413, 708, 666, 752))]
+state = {"restarted": False}
+accstats.device.stop_app = lambda pkg: (actions.append(("STOP", pkg)), state.update(restarted=True))
+ui.dump = lambda retries=3, tolerant=False, timeout=30: own_screen if state["restarted"] else stuck
+accstats.device.back = lambda: None
+accstats._posted_recently = lambda net, minutes=30: False
+actions.clear()
+taps.clear()
+got = accstats.collect("tiktok")
+say(("STOP", accstats.NETS["tiktok"]["package"]) in actions and not got["why"] and got["followers"] == 12500,
+    f"перезапустил приложение и снял профиль: {got['why'] or got['followers']}")
+state["restarted"] = False
+actions.clear()
+accstats._posted_recently = lambda net, minutes=30: True
+got = accstats.collect("tiktok")
+say(not any(a[0] == "STOP" for a in actions if isinstance(a, tuple)) and "недавно публиковал" in got["why"],
+    f"только что публиковал в эту сеть — приложение не закрываю: {got['why']}")
+accstats.device.stop_app = lambda pkg: actions.append(("STOP", pkg))
+
 print("\n--- в дереве цифр нет — спрашиваем модель по снимку ---")
 ui.dump = lambda retries=3, tolerant=False, timeout=30: [
     N("Профиль", desc="Профиль", b=(860, 2300, 1080, 2400), clickable=True),

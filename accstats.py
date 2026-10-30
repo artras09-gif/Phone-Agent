@@ -277,6 +277,19 @@ def _ask_vision(png_path, net):
 
 # --------------------------------------------------------------- сбор
 
+def _posted_recently(net, minutes=30):
+    """Публиковал ли агент в эту сеть за последние полчаса — тогда её
+    приложение может ещё догружать ролик, и закрывать его нельзя."""
+    try:
+        with jobs.connect() as con:
+            row = con.execute("SELECT COUNT(*) c FROM jobs WHERE done_at>? "
+                              "AND (',' || targets || ',') LIKE ?" + jobs._mine()[0],
+                              (time.time() - minutes * 60, f"%,{net},%") + jobs._mine()[1]).fetchone()
+        return bool(row and row["c"])
+    except Exception:
+        return True                  # не знаем — бережём загрузку
+
+
 def _read_profile(net, cfg, result):
     """Дойти до профиля и снять цифры в `result`. Ранний выход — причина в result."""
     device.open_app(cfg["package"])
@@ -296,37 +309,55 @@ def _read_profile(net, cfg, result):
                 return node, nodes
             time.sleep(0.7)
 
-    for i, step in enumerate(cfg["steps"]):
-        node, nodes = find(step, 8)
-        tries = 0
-        while node is None and tries < 3:
-            tries += 1
-            if ui.dismiss_popup(nodes):
-                pass
-            elif len(nodes or []) < 8 and cfg.get("pause_xy"):
-                px, py = cfg["pause_xy"]
-                adb.tap(int(px * w), int(py * h))      # играет видео — пауза, дерево оживёт
-            elif nodes and i == 0:
-                # Приложение вернулось на чужой экран (профиль автора, открытое
-                # видео) — там нижней панели нет. Назад, к главному экрану.
-                device.back()
-                human.pause(1.2, 1.8)
-                if adb.current_app()[0] != cfg["package"]:
-                    device.open_app(cfg["package"])
-                    device.wait_for_app(cfg["package"], timeout=15)
-            human.pause(1.5, 2)
-            node, nodes = find(step, 5)
-        if node is not None:
-            ui.tap_node(node)
-        elif i < len(cfg.get("tap_xy", [])) and len(nodes or []) < 8:
-            # Вслепую — только когда дерева нет вовсе (видео не встаёт на
-            # паузу): на любом другом экране так можно попасть не туда.
-            x, y = cfg["tap_xy"][i]
-            adb.tap(int(x * w), int(y * h))
+    def walk():
+        for i, step in enumerate(cfg["steps"]):
+            node, nodes = find(step, 8)
+            tries = 0
+            while node is None and tries < 3:
+                tries += 1
+                if ui.dismiss_popup(nodes):
+                    pass
+                elif len(nodes or []) < 8 and cfg.get("pause_xy"):
+                    px, py = cfg["pause_xy"]
+                    adb.tap(int(px * w), int(py * h))      # играет видео — пауза, дерево оживёт
+                elif nodes and i == 0:
+                    # Приложение вернулось на чужой экран (профиль автора, открытое
+                    # видео) — там нижней панели нет. Назад, к главному экрану.
+                    device.back()
+                    human.pause(1.2, 1.8)
+                    if adb.current_app()[0] != cfg["package"]:
+                        device.open_app(cfg["package"])
+                        device.wait_for_app(cfg["package"], timeout=15)
+                human.pause(1.5, 2)
+                node, nodes = find(step, 5)
+            if node is not None:
+                ui.tap_node(node)
+            elif i < len(cfg.get("tap_xy", [])) and len(nodes or []) < 8:
+                # Вслепую — только когда дерева нет вовсе (видео не встаёт на
+                # паузу): на любом другом экране так можно попасть не туда.
+                x, y = cfg["tap_xy"][i]
+                adb.tap(int(x * w), int(y * h))
+            else:
+                return False
+            human.pause(2.5, 3.5)
+        return True
+
+    if not walk():
+        # Приложение открылось на своём прошлом экране (видео, создание ролика)
+        # и до профиля не дошло — живьём 2026-10-30 на Redmi: «YouTube: не нашёл
+        # кнопку профиля». Перезапускаем его, оно встаёт на главную, и ещё раз.
+        # Но не сразу после публикации в эту сеть: закрыть приложение значит
+        # оборвать догрузку ролика.
+        if _posted_recently(net):
+            result["why"] = "не нашёл кнопку профиля (приложение не перезапускаю: недавно публиковал)"
         else:
-            result["why"] = "не нашёл кнопку профиля"
-            break
-        human.pause(2.5, 3.5)
+            device.stop_app(cfg["package"])
+            human.pause(1, 1.5)
+            device.open_app(cfg["package"])
+            device.wait_for_app(cfg["package"], timeout=25)
+            human.pause(3, 4)
+            if not walk():
+                result["why"] = "не нашёл кнопку профиля"
     nodes = ui.dump(retries=2, tolerant=True)
     own = _own_state(nodes, cfg, h)
     for _ in range(2):
@@ -995,9 +1026,46 @@ def _tiktok_red(r, g, b):
     return r > 200 and g < 110 and 40 < b < 150
 
 
+DAY_NUMBER = re.compile(r"^\d{1,2}$")
+TT_CAL = {"why": ""}        # что было в календаре, когда его не разобрали
+
+
+def _tt_numbered(nodes, w):
+    """Календарь, где в клетках написаны числа (другая версия TikTok, 2026-10-30:
+    на втором телефоне дни не выбирались, а на Redmi клетки без подписей).
+    Сегодня — ПОСЛЕДНЕЕ сегодняшнее число (выше — прошлые месяцы), и перед
+    ним должно стоять вчерашнее. ([], None) — не так."""
+    nums = [n for n in nodes or [] if DAY_NUMBER.match(_label(n)) and 1 <= int(_label(n)) <= 31
+            and 0 < n.bounds[2] - n.bounds[0] <= w / 7 + 8 and n.bounds[3] > n.bounds[1]]
+    if len(nums) < 20:
+        return [], None
+    nums = _reading_order(nums)
+    today = dt.date.today()
+    found = [i for i, n in enumerate(nums) if int(_label(n)) == today.day]
+    if not found or found[-1] == 0:
+        return [], None
+    at = found[-1]
+    if int(_label(nums[at - 1])) != (today - dt.timedelta(days=1)).day:
+        return [], None
+    return nums, at
+
+
+def _tt_describe(nodes, w):
+    """Коротко — что в календаре, для причины в сообщении бота."""
+    blank = [n for n in nodes or [] if not _label(n) and 0.05 * w < n.bounds[2] - n.bounds[0] < w / 6]
+    sizes = sorted({(n.bounds[2] - n.bounds[0], n.bounds[3] - n.bounds[1]) for n in blank},
+                   key=lambda s: -sum(1 for n in blank if (n.bounds[2] - n.bounds[0],
+                                                          n.bounds[3] - n.bounds[1]) == s))[:3]
+    nums = [n for n in nodes or [] if DAY_NUMBER.match(_label(n))]
+    return (f"в календаре клеток без подписи {len(blank)} "
+            f"({', '.join(f'{a}×{b}' for a, b in sizes) or '—'}), чисел {len(nums)}, "
+            f"ширина экрана {w}")
+
+
 def _tt_cells(w):
     """Клетки календаря TikTok по порядку дат и номер сегодняшней в нём.
     ([], None) — календарь не разобран."""
+    nodes = []
     for _ in range(5):
         nodes = ui.dump(retries=2, tolerant=True)
         cells = [n for n in nodes or [] if not _label(n)
@@ -1005,8 +1073,12 @@ def _tt_cells(w):
                  and abs((n.bounds[2] - n.bounds[0]) - (n.bounds[3] - n.bounds[1])) <= 8]
         if len(cells) >= 20:
             break
+        numbered = _tt_numbered(nodes, w)
+        if numbered[1] is not None:
+            return numbered
         time.sleep(1.0)
     else:
+        TT_CAL["why"] = _tt_describe(nodes, w)
         return [], None
     cells = _reading_order(cells)
     sizes = {}
@@ -1014,15 +1086,16 @@ def _tt_cells(w):
         sizes[c.bounds[2] - c.bounds[0]] = sizes.get(c.bounds[2] - c.bounds[0], 0) + 1
     usual = max(sizes, key=sizes.get)
     odd = [i for i, c in enumerate(cells) if abs(c.bounds[2] - c.bounds[0] - usual) >= 3]
-    if len(odd) != 1:
-        return [], None
     # Проверка, что «другая» клетка и правда сегодня: она стоит в столбце
     # сегодняшнего дня недели (неделя с воскресенья или с понедельника).
-    col = int(_center(cells[odd[0]])[0] // (w / 7))
     wd = dt.date.today().weekday()
-    if col not in ((wd + 1) % 7, wd):
-        return [], None
-    return cells, odd[0]
+    if len(odd) == 1 and int(_center(cells[odd[0]])[0] // (w / 7)) in ((wd + 1) % 7, wd):
+        return cells, odd[0]
+    numbered = _tt_numbered(nodes, w)
+    if numbered[1] is None:
+        TT_CAL["why"] = (f"сегодняшняя клетка не нашлась (особых по размеру: {len(odd)}); "
+                         + _tt_describe(nodes, w))
+    return numbered
 
 
 def _tt_pick_range(days, w):
@@ -1184,6 +1257,8 @@ def _tt_period(days, w, h):
                 device.back()                         # закрыть список
                 human.pause(1, 1.5)
     if other is None:
+        seen = ", ".join(f"«{s}»" for s in _seen_buttons(nodes, h, limit=5))
+        TT_CAL["why"] = "нет «Custom» среди периодов" + (f" (на экране: {seen})" if seen else "")
         return None
     if days in ("week", "month"):
         return _tt_span(days, w, h)
@@ -1330,9 +1405,12 @@ def _shot_tiktok(folder, w, h, days=None):
         note = (f"за {picked} — дольше TikTok Studio не показывает; всё время — на плитках профиля"
                 if picked else "период 365 дней выбрать не вышло" + (f" — показано {span}" if span else ""))
     elif days:
+        TT_CAL["why"] = ""
         picked = _tt_period(days, w, h)
         if picked is None:
-            note = f"за {PERIOD_WORDS[days]} выбрать не вышло" + (f" — показано {span}" if span else "")
+            note = (f"за {PERIOD_WORDS[days]} выбрать не вышло"
+                    + (f" ({TT_CAL['why']})" if TT_CAL["why"] else "")
+                    + (f" — показано {span}" if span else ""))
         elif days == 1:
             # Выбрал вчера, а TikTok его ещё не посчитал — покажет позавчера
             # (живьём 22.10 в 12:23 и 28.10 в 23:34).
@@ -1349,7 +1427,13 @@ def _shot_tiktok(folder, w, h, days=None):
     if path:
         nodes = ui.dump(retries=2, tolerant=True)
         shown = _range_of(_tt_range_text(nodes, h))
-        _views_note(folder, "tiktok", _tt_views(nodes, h), _span(*shown) if shown else "")
+        when = _span(*shown) if shown else ""
+        if days and days != ALL_TIME and picked is None:
+            # Период не выбрался — число не выдаём за вчера (2026-10-30: «он
+            # за 7 дней отправляет всё»), и говорим, что было в календаре.
+            when = ((when or "обычный период") + f", а не {PERIOD_WORDS[days]}"
+                    + (f": {TT_CAL['why']}" if TT_CAL["why"] else ""))
+        _views_note(folder, "tiktok", _tt_views(nodes, h), when)
     for _ in range(3):                                      # обратно к профилю
         device.back()
         human.pause(0.8, 1.2)
@@ -2034,7 +2118,7 @@ def _collect_all(nets=None, log=None, days=None, folder=None, fresh=True, full=T
             out[net] = data
         try:
             w, h = adb.screen_size()
-            fb = _shot_facebook(folder, w, h) if full else None
+            fb = _shot_facebook(folder, w, h) if full and config.STATS_FACEBOOK else None
             if log is not None and fb:
                 log.append("  Facebook: снимок статистики есть")
         except (adb.AdbError, RuntimeError, OSError):

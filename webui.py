@@ -1568,6 +1568,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send(204, "", "text/plain; charset=utf-8")
 
         if self.headers.get("X-Token") != TOKEN:
+            # Тело дочитываем, прежде чем отказать: закрытое с непрочитанными
+            # данными соединение Windows рвёт сбросом, и до клиента вместо 403
+            # доходил обрыв (тест keys_ui падал через раз, 2026-10-30). Не
+            # больше мегабайта — чужая страница не заставит читать гигабайты.
+            try:
+                self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 1 << 20))
+            except (OSError, ValueError):
+                pass
             return self._json(403, {"ok": False, "error": "чужой запрос"})
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""

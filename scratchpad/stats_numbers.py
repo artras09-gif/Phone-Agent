@@ -154,6 +154,36 @@ for label, want in (("30 days", "30 дней"), ("Last 30 days", "30 дней"),
     accstats.ui.dump = lambda **k: [N(label, (500, 400, 1000, 480), True)]
     say(accstats._ig_shown(W, H) == want, f"период Instagram «{label}» -> «{accstats._ig_shown(W, H)}»")
 
+print("\n--- календарь TikTok, где в клетках написаны числа (второй телефон, 2026-10-30) ---")
+
+
+def calendar(until):
+    """Числа прошлого и этого месяца сеткой 7 столбцов (неделя с воскресенья),
+    по 154 px на столбец, как на экране шириной 1080; дни после `until` — тоже
+    (будущие, серые)."""
+    today = dt.date.today()
+    first = (today.replace(day=1) - dt.timedelta(days=1)).replace(day=1)
+    nodes, y, day = [], 600, first
+    while day.month in (first.month, today.month):
+        col = (day.weekday() + 1) % 7
+        nodes.append(N(str(day.day), (col * 154 + 40, y, col * 154 + 114, y + 74)))
+        nxt = day + dt.timedelta(days=1)
+        if col == 6 or nxt.month != day.month:
+            y += 140 if nxt.month == day.month else 260
+        day = nxt
+    return nodes
+
+
+cal = calendar(dt.date.today())
+cells, at = accstats._tt_numbered(cal, W)
+today_d = dt.date.today()
+say(at is not None and cells[at].text == str(today_d.day)
+    and cells[at - 1].text == str((today_d - dt.timedelta(days=1)).day),
+    f"сегодня — последнее сегодняшнее число, перед ним вчерашнее: {cells[at].text if at is not None else None}")
+say(accstats._tt_numbered(cal[:10], W) == ([], None), "чисел мало — не календарь")
+desc = accstats._tt_describe(cal, W)
+say("чисел" in desc and "ширина экрана 1080" in desc, f"что в календаре — для причины: {desc}")
+
 print("\n--- бот шлёт просмотры следом за альбомом ---")
 sent = []
 for name in ("youtube", "instagram", "tiktok"):
