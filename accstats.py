@@ -64,6 +64,10 @@ NETS = {
         "steps": [{"find": ["Профиль", "Profile", "Perfil"], "bottom": True, "exact": True}],
         # В сетке «Публикации» просмотров нет — они на вкладке Reels профиля.
         "grid_tab": ["Reels"],
+        # Лента открывается с играющим видео, и дерево экрана не снимается
+        # («could not get idle state», живьём 31.10 на Android 15) — тогда
+        # профиль: пятая из пяти кнопок нижней панели, найденной по снимку.
+        "tab_of": [4, 5],
         "own": ["Редактировать профиль", "Изменить профиль", "Edit profile", "Editar perfil"],
     },
     "shorts": {
@@ -96,6 +100,35 @@ def _pick(nodes, words, h, bottom=False, exact=False, top_only=False):
         if hit and (not bottom or cy > h * 0.86) and (not top_only or cy < h * 0.85):
             found.append(n)
     return found[0] if found else None
+
+
+def _tab_row(w, h, count):
+    """y середины нижней панели из count кнопок, найденной ПО СНИМКУ: строки
+    внизу экрана, где у первых count-1 кнопок (они через равные промежутки)
+    значок отличается от фона между ними. Последнюю не смотрим: у Instagram
+    это аватарка, она любого цвета. None — панели не видно."""
+    shot = _raw_screen()
+    if shot is None or shot[0] != w:
+        return None
+    sw, sh, px = shot
+
+    def lum(x, y):
+        i = (y * sw + x) * 4
+        return (px[i] * 3 + px[i + 1] * 6 + px[i + 2]) // 10
+
+    step = sw / count
+    rows = []
+    for y in range(sh - 1, int(sh * 0.8), -2):
+        gaps = [lum(int(step * (k + 1)), y) for k in range(count - 1)]
+        if max(gaps) - min(gaps) > 25:
+            continue                              # между значками не ровный фон
+        bg = sum(gaps) // len(gaps)
+        if all(any(abs(lum(x, y) - bg) > 90 for x in range(int(step * (k + 0.3)), int(step * (k + 0.7)), 3))
+               for k in range(count - 1)):
+            rows.append(y)
+    bands = _runs(rows, 6)
+    bands = [(a, b) for a, b in bands if 0.008 * sh < b - a < 0.05 * sh]
+    return (bands[-1][0] + bands[-1][1]) // 2 if bands else None
 
 
 def _settled(wait=20.0):
@@ -337,6 +370,9 @@ def _read_profile(net, cfg, result):
                 # паузу): на любом другом экране так можно попасть не туда.
                 x, y = cfg["tap_xy"][i]
                 adb.tap(int(x * w), int(y * h))
+            elif i == 0 and cfg.get("tab_of") and len(nodes or []) < 8 \
+                    and (y := _tab_row(w, h, cfg["tab_of"][1])) is not None:
+                adb.tap(int((cfg["tab_of"][0] + 0.5) * w / cfg["tab_of"][1]), y)
             else:
                 return False
             human.pause(2.5, 3.5)
@@ -353,9 +389,18 @@ def _read_profile(net, cfg, result):
         """Свой ли профиль на экране: (True/False/None, дерево)."""
         nodes = ui.dump(retries=2, tolerant=True)
         own = _own_state(nodes, cfg, h)
-        for _ in range(2):
+        last = cfg["steps"][-1]
+        for k in range(4):
             if own is not None:
                 break
+            if k == 2:
+                # Касание по кнопке профиля не дошло (живьём 31.10 на втором
+                # телефоне: после «Profile» осталась лента с чужим роликом) —
+                # нажать ещё раз, прежде чем перезапускать приложение.
+                again = _pick(nodes, last["find"], h, last.get("bottom"), last.get("exact"))
+                if again is not None:
+                    ui.tap_node(again)
+                    human.pause(2, 3)
             # Ни своих, ни чужих признаков — профиль ещё грузится.
             human.pause(1.5, 2.2)
             nodes = ui.dump(retries=2, tolerant=True)
@@ -538,8 +583,9 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
         folder = folder or shots_dir()
         said = _notes_in(folder)
         try:
-            _note(folder, SHOT_FILES[net] + "_miss",
-                  said.get(SHOT_FILES[net]) or "на снимке не нашёл просмотров")
+            if not said.get(SHOT_FILES[net] + "_views"):
+                _note(folder, SHOT_FILES[net] + "_miss",
+                      said.get(SHOT_FILES[net]) or "на снимке не нашёл просмотров")
         except OSError:
             pass
     say(f"  {TITLES[net]}: подписчики {result['followers']}, видео {len(result['videos'])}"
@@ -1306,15 +1352,30 @@ def _tt_find_other(w, h):
 def _tt_close(h):
     """Закрыть календарь «назад» — только если он открыт. Пока открыт, ряда
     периодов в дереве нет (живьём 30.10). «Назад» на самой «Аналитике»
-    уводил на главную TikTok Studio — и снималась она, без цифры."""
-    if not _tt_analytics_open(ui.dump(retries=2, tolerant=True), h):
+    уводил на главную TikTok Studio — и снималась она, без цифры.
+    У «Аналитики» без подписей календарь узнаётся по «Update» в дереве."""
+    nodes = ui.dump(retries=2, tolerant=True)
+    wide = max((n.bounds[2] for n in nodes or []), default=0)
+    if _tt_update(nodes)[0] is not None or not (
+            _tt_analytics_open(nodes, h) or _tt_blind_row(nodes, wide, h)):
         device.back()
         human.pause(1, 1.5)
 
 
-def _tt_period(days, w, h):
+def _tt_period(days, w, h, blind=False):
     """На «Аналитике» TikTok выбрать период. Подпись периода («19 окт»; "" —
-    выбран, но подписи не прочитать) или None — не вышло."""
+    выбран, но подписи не прочитать) или None — не вышло. blind — «Аналитика»
+    без подписей: всё по снимку, подпись потом читает модель."""
+    if blind:
+        if days in ("week", "month"):
+            return _tt_span(days, w, h, blind=True)
+        if not _tt_blind_calendar(w, h):
+            TT_CAL["why"] = "«Аналитика» без подписей: календарь «Custom» не открылся"
+            return None
+        if not _tt_blind_range(days, w, h):
+            _tt_close(h)
+            return None
+        return ""
     other, nodes = _tt_find_other(w, h)
     chips = _tt_chips(nodes, h)
     if other is None and len(chips) == 1 and days not in ("week", "month"):
@@ -1345,7 +1406,7 @@ def _tt_period(days, w, h):
     return _tt_range_text(ui.dump(retries=2, tolerant=True), h)
 
 
-def _tt_span(days, w, h):
+def _tt_span(days, w, h, blind=False):
     """Неделя или месяц в TikTok Studio. Подпись периода или None.
 
     Календарь TikTok сдвинут на день: выбрал 19–25 окт. — показал «18 окт -
@@ -1356,26 +1417,40 @@ def _tt_span(days, w, h):
     yesterday = dt.date.today() - dt.timedelta(days=1)
     text = None
     for shift in (1, 0):
-        other, nodes = _tt_find_other(w, h)
-        if other is None:
-            return text
-        ui.tap_node(_clickable_at(nodes, other))
-        human.pause(2, 2.5)
         pick = (first + dt.timedelta(days=shift), min(last + dt.timedelta(days=shift), yesterday))
-        if not _tt_pick_dates(*pick, w):
-            _tt_close(h)
-            return text
-        text = _tt_range_text(ui.dump(retries=2, tolerant=True), h)
+        if blind:
+            if not _tt_blind_calendar(w, h):
+                return text
+            if not _tt_blind_pick(*pick, w, h):
+                _tt_close(h)
+                return text
+            text = _tt_blind_label()
+        else:
+            other, nodes = _tt_find_other(w, h)
+            if other is None:
+                return text
+            ui.tap_node(_clickable_at(nodes, other))
+            human.pause(2, 2.5)
+            if not _tt_pick_dates(*pick, w):
+                _tt_close(h)
+                return text
+            text = _tt_range_text(ui.dump(retries=2, tolerant=True), h)
         got = _range_of(text)
         if got is None or got[0] != pick[0]:
             return text                               # сдвиг есть (или подписи нет)
     return text
 
 
-def _tt_longest(w, h):
+def _tt_longest(w, h, blind=False):
     """«Всё время» в TikTok Studio — самый длинный из готовых периодов (365
     дней). Ряд периодов листается вбок: длинный может быть за краем. Подпись
     периода или None."""
+    if blind:
+        # Без подписей: ряд дотянут до конца, «365 days» — второй с конца.
+        if not _tt_blind_chip(w, h, last=2):
+            return None
+        human.pause(4, 5)
+        return "365 дней"
     for _ in range(3):
         nodes = ui.dump(retries=2, tolerant=True)
         chips = [n for n in nodes or [] if TT_CHIP.match(_label(n)) and _sized(n) and n.bounds[1] < h * 0.35]
@@ -1390,6 +1465,411 @@ def _tt_longest(w, h):
         adb.shell(f"input swipe {int(w * 0.8)} {y} {int(w * 0.25)} {y} 350", check=False)
         human.pause(1, 1.4)
     return None
+
+
+# ------------------------------------------ «Аналитика» TikTok без подписей
+# TikTok 47.5 (второй телефон, Android 15, 31.10): в дереве «Аналитики» и её
+# календаря нет НИ ОДНОЙ подписи — только рамки блоков. Поэтому:
+# - «Аналитика» узнаётся по устройству экрана: вверху два горизонтальных ряда
+#   во всю ширину — вкладки (Inspiration · Overview · …) и под ними периоды;
+# - «Custom» — крайний правый текст ряда периодов на снимке, когда ряд
+#   дотянут влево до конца;
+# - числа календаря — по пикселям: семь столбцов с воскресенья, доступные
+#   дни чёрные, сегодняшний (в кольце) и будущие серые, выбранный — красный
+#   круг. Даты идут подряд, и каждая сверяется со своим днём недели;
+# - период и просмотры читает модель зрения по снимку, как у YouTube Studio.
+# Выбор «Oct 29» показал «Oct 28 - Oct 28» — тот же сдвиг на день, что на Redmi.
+TT_UPDATE = ["Update", "Обновить", "Actualizar"]
+TT_ASK = ("Это скриншот TikTok Studio, раздел «Аналитика» (Analytics). Перепиши с экрана "
+          "ровно как написано, ничего не считая: «период» — даты под заголовком «Основные "
+          "метрики» / «Key metrics» (вида «Oct 28 - Oct 28» или «22 окт - 28 окт»), «просмотры» "
+          "— большое число в карточке «Просмотры публикаций» / «Post views» (вида «909» или "
+          "«3.8K»). Чего на экране нет — null. Ответь ТОЛЬКО JSON без пояснений: "
+          '{"период": "...", "просмотры": "..."}')
+
+
+def _tt_blind_rows(nodes, w, h):
+    """Ряды «Аналитики» без подписей: (рамка вкладок, рамка периодов) или
+    None. В ряду вкладок — не меньше четырёх вкладок."""
+    rows = sorted((n for n in nodes or [] if n.cls.endswith("HorizontalScrollView") and _sized(n)
+                   and n.bounds[2] - n.bounds[0] > 0.8 * w and n.bounds[1] < h * 0.3
+                   and 0.025 * h < n.bounds[3] - n.bounds[1] < 0.08 * h),
+                  key=lambda n: n.bounds[1])
+    if len(rows) < 2:
+        return None
+    x1, y1, x2, y2 = rows[0].bounds
+    tabs = [n for n in nodes if _sized(n) and n.bounds[1] >= y1 and n.bounds[3] <= y2
+            and 0.1 * w < n.bounds[2] - n.bounds[0] < 0.5 * w
+            and n.bounds[3] - n.bounds[1] > 0.5 * (y2 - y1)]
+    return (rows[0].bounds, rows[1].bounds) if len(tabs) >= 4 else None
+
+
+def _tt_blind_row(nodes, w, h):
+    """Ряд периодов «Аналитики» без подписей: рамка (x1, y1, x2, y2) или None."""
+    rows = _tt_blind_rows(nodes, w, h)
+    return rows[1] if rows else None
+
+
+def _tt_tab_mark(nodes, w, h):
+    """Черта под выбранной вкладкой «Аналитики» без подписей: (x1, x2) или None."""
+    rows = _tt_blind_rows(nodes, w, h)
+    if not rows:
+        return None
+    _, y1, _, y2 = rows[0]
+    mark = next((n for n in nodes if _sized(n) and y1 <= n.bounds[1] and n.bounds[3] <= y2
+                 and n.bounds[3] - n.bounds[1] <= 12 and n.bounds[2] - n.bounds[0] > 0.1 * w), None)
+    return (mark.bounds[0], mark.bounds[2]) if mark else None
+
+
+def _tt_update(nodes):
+    """«Update» календаря в дереве (его подпись есть и у TikTok без подписей):
+    (узел, горит ли) или (None, False)."""
+    for n in nodes or []:
+        parts = [p.strip() for p in _label(n).split(",")]
+        if parts[-1] in TT_UPDATE:
+            return n, "disabled" not in (p.lower() for p in parts)
+    return None, False
+
+
+def _ink(r, g, b):
+    """Чем закрашен пиксель календаря: "r" — красный круг выбранного дня,
+    "d" — тёмное число (доступный день), "g" — серое (сегодня, будущие,
+    дни недели), "" — фон, кольцо сегодняшнего дня, подсветка диапазона."""
+    if r > 200 and g < 120 and b < 160:
+        return "r"
+    top, low = max(r, g, b), min(r, g, b)
+    if top < 100:
+        return "d"
+    if top < 200 and low > 100 and top - low < 25:
+        return "g"
+    return ""
+
+
+def _runs(xs, gap):
+    """Отрезки подряд идущих x (с разрывами меньше gap): [(начало, конец)]."""
+    out = []
+    for x in sorted(xs):
+        if out and x - out[-1][1] < gap:
+            out[-1][1] = x
+        else:
+            out.append([x, x])
+    return [tuple(r) for r in out]
+
+
+def _tt_chip_runs(row, w):
+    """Тексты ряда периодов на снимке: отрезки x [(начало, конец)] слева
+    направо. Снимаем, пока два снимка подряд не совпадут: ряд мог ещё ехать."""
+    x1, y1, x2, y2 = row
+    last = None
+    for _ in range(4):
+        shot = _raw_screen()
+        if shot is None or shot[0] != w:
+            return []
+        sw, _, px = shot
+        xs = set()
+        for yy in range(y1 + (y2 - y1) // 4, y2 - (y2 - y1) // 4, 2):
+            row_at = yy * sw * 4
+            for x in range(x1, x2, 2):
+                i = row_at + 4 * x
+                if max(px[i], px[i + 1], px[i + 2]) < 150:
+                    xs.add(x)
+        runs = _runs(xs, int(0.035 * w))
+        if runs == last:
+            return runs
+        last = runs
+        human.pause(0.3, 0.4)
+    return last or []
+
+
+def _tt_blind_chip(w, h, last=1):
+    """В ряду периодов без подписей нажать last-й с конца текст: 1 —
+    «Custom», 2 — «365 days». True — нажато.
+
+    Последний обрезан краем — ряд листаем ОДИН раз и внутри него: живьём
+    31.10 второй свайп по уже долистанному ряду перелистнул саму страницу на
+    вкладку «Content». Если вкладка всё же сменилась — возвращаемся."""
+    nodes = ui.dump(retries=2, tolerant=True)
+    row = _tt_blind_row(nodes, w, h)
+    mark = _tt_tab_mark(nodes, w, h)
+    if row is None:
+        return False
+    x1, y1, x2, y2 = row
+    y = (y1 + y2) // 2
+    for attempt in range(2):
+        runs = _tt_chip_runs(row, w)
+        if len(runs) < 3:              # «28 days · 60 days · 365 days · Custom»
+            return False
+        if runs[-1][1] < x2 - 0.02 * w or attempt:
+            a, b = runs[-last]
+            adb.tap((a + b) // 2, y)
+            return True
+        adb.shell(f"input swipe {int(x1 + 0.65 * (x2 - x1))} {y} {int(x1 + 0.2 * (x2 - x1))} {y} 500",
+                  check=False)
+        human.pause(0.8, 1.1)
+        now = _tt_tab_mark(ui.dump(retries=2, tolerant=True), w, h)
+        if mark and now and now != mark:
+            tabs_y = (_tt_blind_rows(nodes, w, h)[0][1] + _tt_blind_rows(nodes, w, h)[0][3]) // 2
+            adb.tap((mark[0] + mark[1]) // 2, tabs_y)
+            human.pause(2, 2.5)
+    return False
+
+
+def _tt_blind_calendar(w, h):
+    """Открыть календарь «Custom» на «Аналитике» без подписей. True — открыт
+    (в дереве появилась «Update»)."""
+    for _ in range(2):
+        if not _tt_blind_chip(w, h):
+            return False
+        for _ in range(3):
+            human.pause(1, 1.3)
+            if _tt_update(ui.dump(retries=2, tolerant=True))[0] is not None:
+                return True
+    return False
+
+
+def _tt_blind_cells(w, h):
+    """Числа открытого календаря по пикселям: (клетки по порядку дат, рамка
+    списка (верх, низ)). Клетка — {"x", "y", "col", "kind", "head"}: kind —
+    "d", "g" или "r" (как в _ink), head — первая клетка после заголовка
+    месяца (значит, 1-е число). ([], None) — календаря на экране нет."""
+    upd, _ = _tt_update(ui.dump(retries=2, tolerant=True))
+    shot = _raw_screen()
+    if upd is None or shot is None or shot[0] != w:
+        return [], None
+    sw, sh, px = shot
+    bottom = min(upd.bounds[1], sh) - 4
+    # Верх шторки — первая сплошь белая строка: выше неё затемнённый экран.
+    top = next((y for y in range(int(sh * 0.15), int(sh * 0.7), 4)
+                if all(min(px[(y * sw + x) * 4: (y * sw + x) * 4 + 3]) > 245
+                       for x in range(sw // 20, sw - sw // 20, sw // 20))), None)
+    if top is None:
+        return [], None
+
+    def line(y):
+        """Тонкая светло-серая черта во всю ширину (разделитель шторки)."""
+        at = [(y * sw + x) * 4 for x in range(sw // 20, sw - sw // 20, sw // 40)]
+        return all(205 <= max(px[i:i + 3]) <= 248 and max(px[i:i + 3]) - min(px[i:i + 3]) < 12
+                   for i in at)
+    # Под списком, над «Update», после выбора появляется подпись «Oct 29» —
+    # её отделяет черта; числом она быть не должна (живьём 31.10 сбивала даты).
+    bottom = next((y for y in range(bottom, (top + bottom) // 2, -1) if line(y)), bottom)
+    col_w = w / 7
+    bands, cur = [], None
+    for y in range(top, bottom, 2):
+        row_at = y * sw * 4
+        hits = {}
+        for x in range(0, sw, 3):
+            i = row_at + 4 * x
+            k = _ink(px[i], px[i + 1], px[i + 2])
+            if k:
+                hits[x] = k
+        if hits:
+            if cur is None:
+                cur = {"y1": y, "y2": y, "hits": {}}
+            cur["y2"] = y
+            for x, k in hits.items():
+                cur["hits"].setdefault(x, set()).add(k)
+        elif cur is not None:
+            bands.append(cur)
+            cur = None
+    if cur is not None:
+        bands.append(cur)
+    cells, started, after_head, list_top = [], False, False, None
+    for band in bands:
+        runs = _runs(band["hits"], int(0.04 * w))
+        cols = [int(((a + b) / 2) // col_w) for a, b in runs]
+        dated = runs and len(set(cols)) == len(cols) and all(
+            b - a < 0.8 * col_w and abs((a + b) / 2 - (c + 0.5) * col_w) < 0.3 * col_w
+            for (a, b), c in zip(runs, cols))
+        kinds = [set().union(*(band["hits"][x] for x in band["hits"] if a <= x <= b)) for a, b in runs]
+        if not started:
+            # Строка дней недели: все семь столбцов, серым. Выше — заголовок.
+            if dated and len(runs) == 7 and all(k == {"g"} for k in kinds):
+                started, list_top = True, band["y2"]
+            continue
+        if not dated:
+            after_head = True                     # заголовок месяца (или подпись внизу)
+            continue
+        for (a, b), c, k in zip(runs, cols, kinds):
+            cells.append({"x": int((c + 0.5) * col_w), "y": (band["y1"] + band["y2"]) // 2,
+                          "col": c, "kind": "r" if "r" in k else "d" if "d" in k else "g",
+                          "head": after_head})
+            after_head = False
+    return cells, (list_top, bottom) if started else None
+
+
+def _sun_col(day):
+    """Столбец дня в календаре с воскресенья: 0 — вс, 6 — сб."""
+    return (day.weekday() + 1) % 7
+
+
+def _tt_blind_dates(cells, known=None):
+    """Даты клеток: [(дата, клетка)] или [] — не сходится.
+
+    Опора — сегодняшний день TikTok (первая серая клетка: его часовой пояс
+    бывает на день позади), выбранная клетка (known — её дата) или 1-е число
+    после заголовка месяца. Проверка: каждая дата — в столбце своего дня
+    недели, а клетка после заголовка — 1-е число."""
+    if not cells:
+        return []
+    today = dt.date.today()
+    anchors = []
+    grey = next((i for i, c in enumerate(cells) if c["kind"] == "g"), None)
+    if grey is not None:
+        anchors += [(grey, today + dt.timedelta(days=d)) for d in (0, -1, 1)]
+    red = next((i for i, c in enumerate(cells) if c["kind"] == "r"), None)
+    if known is not None and red is not None:
+        anchors.append((red, known))
+    for i, c in enumerate(cells):
+        if c["head"]:
+            month = today.replace(day=1)
+            for _ in range(3):
+                anchors.append((i, month))
+                month = (month - dt.timedelta(days=1)).replace(day=1)
+    for at, day in anchors:
+        dates = [day - dt.timedelta(days=at - j) for j in range(len(cells))]
+        if all(_sun_col(d) == c["col"] and (not c["head"] or d.day == 1)
+               for d, c in zip(dates, cells)):
+            return list(zip(dates, cells))
+    return []
+
+
+def _tt_blind_today(dated):
+    """Сегодняшний день TikTok — дата первой серой клетки, или None."""
+    return next((d for d, c in dated if c["kind"] == "g"), None)
+
+
+def _tt_blind_describe(cells):
+    if not cells:
+        return "календарь без подписей: чисел на снимке не нашёл"
+    kinds = {k: sum(1 for c in cells if c["kind"] == k) for k in "dgr"}
+    return (f"календарь без подписей: чисел {len(cells)} (чёрных {kinds['d']}, серых {kinds['g']}, "
+            f"выбранных {kinds['r']}), даты по дням недели не сошлись")
+
+
+def _tt_blind_pick(first, last, w, h):
+    """В календаре без подписей выбрать first..last, листая к нужному месяцу,
+    и нажать «Update». True — нажато."""
+    known = None
+    for target in (first, last):
+        for _ in range(6):
+            cells, frame = _tt_blind_cells(w, h)
+            dated = _tt_blind_dates(cells, known)
+            hit = next((c for d, c in dated if d == target), None)
+            if hit is not None and hit["kind"] != "g":
+                adb.tap(hit["x"], hit["y"])
+                human.pause(1.0, 1.4)         # после касания календарь сам листается
+                known = target
+                break
+            if hit is not None or not dated or frame is None:
+                TT_CAL["why"] = (f"день {target:%d.%m} в календаре не выбирается" if hit is not None
+                                 else _tt_blind_describe(cells))
+                return False
+            # Нужный день раньше видимых — листать к прошлому, позже — вперёд.
+            a, b = frame
+            y1, y2 = (a + (b - a) // 3, b - (b - a) // 4)
+            if target > dated[-1][0]:
+                y1, y2 = y2, y1
+            adb.shell(f"input swipe {w // 2} {y1} {w // 2} {y2} 600", check=False)
+            human.pause(1.2, 1.5)
+        else:
+            TT_CAL["why"] = f"день {target:%d.%m} в календаре не нашёл"
+            return False
+    _, lit = _tt_update(ui.dump(retries=2, tolerant=True))
+    y = _wide_band(_tiktok_red)
+    if not lit or y is None or adb.current_app()[0] != SNAP_APPS["tiktok"]:
+        TT_CAL["why"] = "дни выбраны, а «Update» не загорелась"
+        return False
+    adb.tap(w // 2, y)
+    human.pause(4, 5)
+    return True
+
+
+def _tt_blind_range(days, w, h):
+    """Последние `days` дней в календаре без подписей: конец — вчерашний для
+    TikTok день, не выбирается — позавчерашний. True — выбрано и обновлено."""
+    cells, _ = _tt_blind_cells(w, h)
+    dated = _tt_blind_dates(cells)
+    today = _tt_blind_today(dated)
+    if today is None:
+        TT_CAL["why"] = _tt_blind_describe(cells)
+        return False
+    kind = {d: c["kind"] for d, c in dated}
+    picked = False
+    for back in (1, 2):
+        end = today - dt.timedelta(days=back)
+        if kind.get(end) != "d":
+            continue
+        if picked and not _tt_blind_calendar(w, h):
+            return True                                # остаётся выбранное раньше
+        if not _tt_blind_pick(end - dt.timedelta(days=days - 1), end, w, h):
+            return picked
+        picked = True
+        # Вместо чисел прочерки — этот день TikTok ещё не посчитал (живьём
+        # 31.10 в 6 утра по телефону: «Oct 29 - Oct 29», всюду «-»). Тогда —
+        # на день раньше. Подписи у такой «Аналитики» нет, смотрит модель.
+        seen = _tt_blind_seen()
+        if not seen or seen.get("просмотры"):         # {} — модели нет: судить не по чему
+            return True
+    if not picked:
+        TT_CAL["why"] = f"вчера и позавчера в календаре не выбираются (сегодня у TikTok {today:%d.%m})"
+    return picked
+
+
+def _tt_read(png_path):
+    """Период и «Просмотры публикаций» со снимка «Аналитики» моделью зрения:
+    {"период": «Oct 28 - Oct 28», "просмотры": «909»}. Не похожее на дату
+    или число — пусто, а не выдумка в чате. {} — зрения нет."""
+    try:
+        import vision
+        with open(png_path, "rb") as f:
+            png = f.read()
+        answer = vision.ask(png, TT_ASK, max_tokens=120, temperature=0.0, shrink=YT_SHRINK)
+    except Exception as e:
+        print(f"  TikTok: число со снимка не прочитал — {str(e)[:80]}", flush=True)
+        return {}
+    m = re.search(r"\{.*\}", answer or "", re.S)
+    try:
+        data = json.loads(m.group(0)) if m else {}
+    except ValueError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    period = str(data.get("период") or "").strip()
+    views = str(data.get("просмотры") or "").strip()
+    return {"период": period if TT_RANGE.match(period) else "",
+            "просмотры": _num(views) if NUMBER.match(views) and not views.startswith("-") else ""}
+
+
+def _tt_blind_seen(waits=2):
+    """Что сейчас на «Аналитике» без подписей — моделью по снимку экрана:
+    {"период", "просмотры"}. Прочерк вместо числа бывает и пока данные
+    грузятся — тогда подождать и посмотреть ещё (waits раз)."""
+    shot = os.path.join(tempfile.gettempdir(), "pa_tt_period.png")
+    seen = {}
+    try:
+        for attempt in range(waits + 1):
+            adb.screenshot(shot)
+            seen = _tt_read(shot)
+            if seen.get("просмотры") or not seen or attempt == waits:
+                break
+            human.pause(3, 4)
+    except (adb.AdbError, OSError):
+        pass
+    finally:
+        try:
+            os.remove(shot)
+        except OSError:
+            pass
+    return seen
+
+
+def _tt_blind_label():
+    """Подпись периода с экрана моделью зрения (для недели и месяца, где по
+    ней проверяется сдвиг календаря). "" — не прочлась."""
+    period = _tt_blind_seen(waits=0).get("период", "")
+    a, _, b = period.partition(" - ")
+    return a if a.strip() == b.strip() else period
 
 
 def _menu_icon(nodes, w, h):
@@ -1446,9 +1926,12 @@ def _shot_tiktok(folder, w, h, days=None):
     while time.time() < end:
         human.pause(2, 2.5)
         nodes = ui.dump(retries=2, tolerant=True)
-        if _tt_analytics_open(nodes, h):
+        if _tt_analytics_open(nodes, h) or _tt_blind_row(nodes, w, h):
             break
-    if not _tt_analytics_open(nodes, h):
+    blind = not _tt_analytics_open(nodes, h) and _tt_blind_row(nodes, w, h) is not None
+    if blind:
+        human.pause(2, 3)              # рамки есть сразу, числа приходят позже
+    if not _tt_analytics_open(nodes, h) and not blind:
         # Под заголовком оказалось не то (у других аккаунтов сверху бывает
         # баннер). Главная TikTok Studio — тоже статистика: просмотры,
         # подписчики и лайки за 7 дней. Снимаем её, а не что попало.
@@ -1471,14 +1954,37 @@ def _shot_tiktok(folder, w, h, days=None):
         device.back()
         return path
     span = _tt_range_text(nodes, h)
+    picked = None
+    if days == ALL_TIME:
+        picked = _tt_longest(w, h, blind)
+    elif days:
+        TT_CAL["why"] = ""
+        picked = _tt_period(days, w, h, blind)
+    path = _snap(folder, "tiktok")
+    nodes = ui.dump(retries=2, tolerant=True) if path else []
+    shown_text, views = _tt_range_text(nodes, h), _tt_views(nodes, h)
+    if path and blind:
+        # В дереве ни подписи периода, ни числа — читает модель по снимку.
+        # «-» вместо числа — данные ещё не пришли: подождать и снять ещё раз.
+        seen = _tt_read(path)
+        for _ in range(2):
+            if seen.get("просмотры"):
+                break
+            human.pause(3, 4)
+            path = _snap(folder, "tiktok") or path
+            seen = _tt_read(path)
+        period = seen.get("период", "")
+        a, _, b = period.partition(" - ")
+        shown_text = a if a.strip() == b.strip() else period
+        views = seen.get("просмотры", "")
+        span = span or shown_text
+        if picked == "":
+            picked = shown_text
     note = f"за {span}" if span else ""
     if days == ALL_TIME:
-        picked = _tt_longest(w, h)
         note = (f"за {picked} — дольше TikTok Studio не показывает; всё время — на плитках профиля"
                 if picked else "период 365 дней выбрать не вышло" + (f" — показано {span}" if span else ""))
     elif days:
-        TT_CAL["why"] = ""
-        picked = _tt_period(days, w, h)
         if picked is None:
             note = (f"за {PERIOD_WORDS[days]} выбрать не вышло"
                     + (f" ({TT_CAL['why']})" if TT_CAL["why"] else "")
@@ -1493,19 +1999,17 @@ def _shot_tiktok(folder, w, h, days=None):
                                "последние дни TikTok Studio ещё не посчитал")
         else:
             note = f"за {picked or PERIOD_WORDS[days]}"
-    path = _snap(folder, "tiktok")
     if path and note:
         _note(folder, "tiktok", note)
     if path:
-        nodes = ui.dump(retries=2, tolerant=True)
-        shown = _range_of(_tt_range_text(nodes, h))
+        shown = _range_of(shown_text)
         when = _span(*shown) if shown else ""
         if days and days != ALL_TIME and picked is None:
             # Период не выбрался — число не выдаём за вчера (2026-10-30: «он
             # за 7 дней отправляет всё»), и говорим, что было в календаре.
             when = ((when or "обычный период") + f", а не {PERIOD_WORDS[days]}"
                     + (f": {TT_CAL['why']}" if TT_CAL["why"] else ""))
-        _views_note(folder, "tiktok", _tt_views(nodes, h), when)
+        _views_note(folder, "tiktok", views, when)
     for _ in range(3):                                      # обратно к профилю
         device.back()
         human.pause(0.8, 1.2)
@@ -1846,10 +2350,15 @@ def _ig_find_today(w, h):
     Сегодня ниже края (на другом телефоне календарь выше или длиннее) —
     листаем календарь вниз."""
     seq, now = [], None
-    for attempt in range(3):
+    for attempt in range(5):
         seq, now = _ig_today(ui.dump(retries=2, tolerant=True), w)
-        if now is not None or not seq:
+        if now is not None:
             break
+        if not seq:
+            # Чисел нет — календарь ещё открывается (живьём 31.10: «чисел в
+            # календаре не видно» с первого же взгляда). Подождать.
+            human.pause(1.2, 1.6)
+            continue
         adb.shell(f"input swipe {w // 2} {int(h * 0.65)} {w // 2} {int(h * 0.4)} 500", check=False)
         human.pause(1.2, 1.5)
     if now is None:

@@ -332,10 +332,14 @@ def permission_dialog(nodes):
     return (question, deny) if (question or deny) else (None, None)
 
 
-def handle_permission(nodes=None, strict=False):
+def handle_permission(nodes=None, strict=False, app="", access=True):
     """Окно разрешения: микрофон, камера, геолокация — отказать (для
     публикации готового видео они не нужны). Доступ к фото и видео нужен —
     `NeedsPermission`, человек разрешает сам. True — окно закрыто.
+
+    access=False — свой экран приложения «нужен доступ к камере» не повод
+    останавливаться: у TikTok галерея видна и под ним (живьём 2026-10-31).
+    app — имя приложения для текста человеку.
 
     Сами программа ничего не РАЗРЕШАЕТ: выдать приложению доступ — решение
     человека, а не автоматизации.
@@ -343,13 +347,15 @@ def handle_permission(nodes=None, strict=False):
     nodes = nodes if nodes is not None else dump(retries=2, tolerant=True)
     question, deny = permission_dialog(nodes)
     if question is None and deny is None:
-        screen = access_screen(nodes) if strict else None
+        screen = access_screen(nodes) if strict and access else None
         if screen:
+            # Раньше текст всегда звал в Instagram — и для TikTok тоже (31.10).
+            app = app or "приложение"
             raise NeedsPermission(
-                f"приложение просит доступ к камере и микрофону («{screen[:80]}»). "
-                "Сам доступ я не выдаю. Открой на телефоне камеру Reels в Instagram "
-                "и нажми «Allow access» → «While using the app» для камеры и "
-                "микрофона — один раз, потом публикация пойдёт сама")
+                f"{app} просит доступ к камере и микрофону («{screen[:80]}»). "
+                f"Сам доступ я не выдаю. Открой на телефоне камеру в {app} и нажми "
+                "«Allow access» (или «Open settings») → «While using the app» для камеры "
+                "и микрофона — один раз, потом публикация пойдёт сама")
         return False
     if question and any(w in question.lower() for w in MEDIA_WORDS):
         if not strict:

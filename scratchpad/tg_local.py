@@ -46,6 +46,9 @@ def make(kind):
             pass
 
         def _answer(self):
+            # Тело дочитать до ответа: иначе Windows рвёт соединение сбросом
+            # (WinError 10053), и проверка падала через раз (31.10).
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
             method = self.path.rsplit("/", 1)[-1]
             calls[kind].append(method)
             if method == "getFile":

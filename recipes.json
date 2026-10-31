@@ -103,13 +103,18 @@
       {
         "op": "permissions",
         "timeout": 3,
+        "access_screen": false,
         "desc": "окна доступа к камере и микрофону — отказ"
       },
       {
         "op": "tap",
-        "desc": "галерея (справа от кнопки съёмки)",
+        "desc": "галерея (у кнопки съёмки или слева внизу)",
         "timeout": 15,
         "any": [
+          {
+            "rid": "upload_hot_area",
+            "clickable": true
+          },
           {
             "rid": "bib",
             "clickable": true
@@ -178,11 +183,18 @@
         "items": [
           {
             "rid": "eve"
+          },
+          {
+            "rid": "ioj",
+            "clickable": true
           }
         ],
         "duration": [
           {
             "rid": "dp3"
+          },
+          {
+            "rid": "gs5"
           }
         ]
       },
@@ -239,6 +251,10 @@
           {
             "desc": "Eliminar sonido",
             "clickable": true
+          },
+          {
+            "rid": "e1m",
+            "desc": "Close"
           }
         ],
         "pause_xy": [
@@ -359,8 +375,13 @@
         "desc": "ФИНАЛЬНАЯ КНОПКА"
       }
     ],
-    "rev": 2,
+    "rev": 3,
     "_note": [
+      "rev 3 (живьём 2026-10-31, TikTok 47.5 на Android 15): галерея — миниатюра СЛЕВА внизу,",
+      "у вкладок CAMERA / CREATE, id upload_hot_area. Своё окно TikTok «Allow TikTok to access",
+      "your camera and microphone / Open settings» галерею не закрывает — публикацию не стопорит",
+      "(access_screen: false). В галерее кружок выбора — id ioj (был eve), длина — gs5 (был dp3).",
+      "Крестик подставленной музыки в редакторе — ImageView e1m «Close» (подписи «Remove sound» нет).",
       "rev 2 (живьём 2026-10-30, Redmi): публикация С ГЛАВНОЙ, а не Intent'ом в редактор.",
       "Главная (вкладка «Главная» selected; лента играет — касание по ролику для дерева) ->",
       "«Создать» -> камера -> галерея справа от кнопки съёмки (id bib) -> вкладка «Видео» ->",
@@ -669,6 +690,9 @@
     "title": "YouTube Shorts",
     "share_uri": "file",
     "_note": [
+      "rev 9 (живьём 2026-10-31, YouTube 20.25 на Android 15): «Create» сразу открывает «Upload",
+      "from gallery» в режиме Video; режим — кнопка «Short» (не «Shorts»), в камере Shorts",
+      "галерея — reel_camera_gallery_button_delegate («Import video from photo library»).",
       "share_uri=file обязателен: по content:// YouTube не открывается вообще.",
       "YouTube по Intent открывает СРАЗУ экран «Добавьте информацию»:",
       "шага «Далее» здесь нет вообще, он был в стартовых догадках зря.",
@@ -760,6 +784,10 @@
           {
             "rid": "creation_mode_button",
             "text": "Shorts"
+          },
+          {
+            "rid": "creation_mode_button",
+            "text": "Short"
           }
         ]
       },
@@ -782,6 +810,9 @@
           },
           {
             "rid": "shorts_camera_gallery_button"
+          },
+          {
+            "rid": "reel_camera_gallery_button_delegate"
           },
           {
             "desc": "Галерея"
@@ -1043,7 +1074,7 @@
         "verify_gone": true
       }
     ],
-    "rev": 8,
+    "rev": 9,
     "needs_storage": true
   },
   "_feed_apps": {

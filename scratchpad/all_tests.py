@@ -77,6 +77,7 @@ TESTS = [
     ("scratchpad/stats_numbers.py", "цифры со снимков текстом: TikTok и Instagram из дерева, YouTube — DeepSeek по снимку"),
     ("scratchpad/stats_daily.py","статистика за вчера каждый день: пересъёмка, альбом один раз, график YouTube"),
     ("scratchpad/stats_hidden.py", "невидимые копии кнопок TikTok, обрезанная «Custom», календарь Instagram ниже края"),
+    ("scratchpad/stats_blind.py", "«Аналитика» TikTok без подписей — по снимку; Instagram без дерева; окно доступа TikTok"),
     ("scratchpad/caption_hashtag.py", "подпись кончается хэштегом — TikTok не прячет «Опубликовать»"),
     ("scratchpad/overlays_upload.py", "перед публикацией не убивать идущую загрузку"),
     ("scratchpad/yt_tags_test.py", "YouTube: описание и теги от DeepSeek вбиваются при загрузке"),

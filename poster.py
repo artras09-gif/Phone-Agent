@@ -266,7 +266,8 @@ def run_step(step, ctx, log_path, index):
         # все, что всплывут за отведённое время.
         closed, deadline = 0, time.time() + step.get("timeout", 6)
         while time.time() < deadline and closed < 3:
-            if ui.handle_permission(strict=True):
+            if ui.handle_permission(strict=True, app=ctx.get("title", ""),
+                                    access=step.get("access_screen", True)):
                 closed += 1
                 deadline = time.time() + 3
             else:
@@ -807,7 +808,7 @@ def _to_home(step, ctx, log_path, index):
         # Строго — только при настоящем системном окне: на главной в подписях
         # чужих роликов бывает что угодно, и «доступ к камере и микрофону» из
         # подписи принялся бы за экран разрешений.
-        if any(ui.permission_dialog(nodes)) and ui.handle_permission(nodes, strict=True):
+        if any(ui.permission_dialog(nodes)) and ui.handle_permission(nodes, strict=True, app=ctx.get("title", "")):
             continue
         if ui.find_any(nodes, step["home"]) is not None:
             ctx["at_home"] = True
@@ -970,7 +971,7 @@ def _reel_gallery(step, ctx, log_path, index):
         end, nodes = time.time() + seconds, []
         while time.time() < end:
             nodes = ui.dump(retries=1, tolerant=True)
-            if ui.handle_permission(nodes, strict=True):
+            if ui.handle_permission(nodes, strict=True, app=ctx.get("title", "")):
                 continue
             draft = ui.find_any(nodes, step.get("new_draft", []))
             if draft is not None:
@@ -1020,7 +1021,7 @@ def _reel_gallery(step, ctx, log_path, index):
         human.pause(0.8, 1.4)
         device.open_app(package)
         human.pause(3.0, 4.5)
-    ui.handle_permission(strict=True)
+    ui.handle_permission(strict=True, app=ctx.get("title", ""))
     nodes, ok = ui.dump(retries=1, tolerant=True), False
     create = _exact(nodes, step.get("create_words", []))
     if create is not None:
@@ -1543,6 +1544,7 @@ def post(video_path, caption, target, recipes=None, extra=None):
         tx_open = device.tx_bytes()            # счёт загрузки — с открытия приложения
 
         ctx = {"caption": caption, "video": video_path, "package": package,
+               "title": recipe.get("title", target),
                "video_name": os.path.basename(remote),
                "video_seconds": mp4_seconds(video_path), **(extra or {})}
         steps = recipe["steps"]
