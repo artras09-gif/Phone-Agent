@@ -68,13 +68,13 @@ say(job["status"] == "draft" and job["caption"] == caption,
     "подпись целиком стала описанием (слово «тикток» не вырезано), задача — черновик")
 say(jobs.due() is None and not jobs.pending(), "черновик не публикуется и не в очереди")
 rows = markup_of(draft[-1])
-say([b["text"] for b in rows[0]] == ["✅ TikTok", "✅ Reels", "✅ Shorts"], "сети — все отмечены")
+say([b["text"] for b in rows[0]] == ["✅ TikTok", "✅ Reels", "✅ Shorts", "✅ Facebook"], "сети — все отмечены")
 say(any("Сейчас" in b["text"] for r in rows for b in r) and any("Своё время" in b["text"] for r in rows for b in r),
     "кнопки времени: «Сейчас» … «Своё время»")
 
 print("\n--- снять сеть, выбрать время ---")
 press("t:1:shorts")
-say(jobs.by_id(1)["targets"] == "tiktok,reels", "Shorts снят")
+say(jobs.by_id(1)["targets"] == "tiktok,reels,facebook", "Shorts снят")
 edited = [c for c in calls if c[0] == "editMessageText"]
 say(edited and "⬜ Shorts" in json.dumps(markup_of(edited[-1]), ensure_ascii=False),
     "сообщение перерисовано: ⬜ Shorts")
@@ -87,14 +87,14 @@ text = [c for c in calls if c[0] == "editMessageText"][-1][1]["text"]
 say("TikTok" in text and "Reels" in text and "Shorts" not in text and "завтра в 12:00" in text
     and "пиццу" in text, "подтверждение: сети, время, описание")
 press("t:1:tiktok")
-say(jobs.by_id(1)["targets"] == "tiktok,reels", "после выбора времени сети уже не меняются")
+say(jobs.by_id(1)["targets"] == "tiktok,reels,facebook", "после выбора времени сети уже не меняются")
 say(not os.path.exists(os.path.join(tmp, "bot_post.json")),
     "снятая галочка НЕ запоминается (2026-10-14: по умолчанию — все сети)")
 
 print("\n--- следующее видео: снова все сети, «Своё время» ---")
 bot._handle({"chat": {"id": 1}, "video": {"file_id": "f", "file_size": 1000}, "caption": "кот"})
 rows = markup_of([c for c in calls if c[0] == "sendMessage"][-1])
-say([b["text"] for b in rows[0]] == ["✅ TikTok", "✅ Reels", "✅ Shorts"], "снова отмечены все")
+say([b["text"] for b in rows[0]] == ["✅ TikTok", "✅ Reels", "✅ Shorts", "✅ Facebook"], "снова отмечены все")
 calls.clear()
 press("w:2:ask")
 prompt_msg = [c for c in calls if c[0] == "sendMessage"][-1]
@@ -132,6 +132,7 @@ bot._handle({"chat": {"id": 1}, "video": {"file_id": "f", "file_size": 1000}, "c
 press("t:5:tiktok")
 press("t:5:reels")
 press("t:5:shorts")
+press("t:5:facebook")
 press("w:5:now")
 answers = [c for c in calls if c[0] == "answerCallbackQuery"]
 say(jobs.by_id(5)["status"] == "draft" and "хотя бы одну" in answers[-1][1]["text"],

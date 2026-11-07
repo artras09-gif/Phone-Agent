@@ -445,7 +445,7 @@ report = last_text(OWNER, m2, "опубликовано")
 say(report, "«Сейчас» — отчёт о публикации пришёл в чат")
 say(wait(lambda: jobs.by_id(job["id"])["status"] == "done"), "задача — опубликована")
 nets = [t for name, _, t in POSTED if job["video_path"].endswith(name)]
-say(nets == ["tiktok", "reels"], f"опубликовано в TikTok и Reels, без YouTube: {nets}")
+say(nets == ["tiktok", "reels", "facebook"], f"опубликовано везде, кроме YouTube: {nets}")
 say([p for _, p in FAKE.calls("editMessageText", m2) if "✅ Пост" in p["text"]],
     "черновик превратился в «✅ Пост … — сейчас»")
 idle()
@@ -464,7 +464,7 @@ m = FAKE.mark()
 say_to(OWNER, OWNER, "без ютуба\nОписание без ютуба", media=video())
 d = draft_of(OWNER, m)
 j = job_by_caption("Описание без")
-say(j and j["targets"] == "tiktok,reels" and "без ютуба\n" not in j["caption"],
+say(j and j["targets"] == "tiktok,reels,facebook" and "без ютуба\n" not in j["caption"],
     f"«без ютуба» — YouTube снят, строка не в описании: {j and j['targets']}")
 m = FAKE.mark()
 files_before = len(FAKE.calls("getFile"))

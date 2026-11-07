@@ -677,7 +677,13 @@ DISTRACT_EVERY_SEC = 7 * 60
 
 # Приложения для живых сессий. Маршруты к их лентам — в recipes.json
 # («_feed_apps»), там же правятся селекторы вкладок.
-FEED_APPS = ["tiktok", "shorts", "reels"]
+FEED_APPS = ["tiktok", "shorts", "reels", "facebook"]
+
+# Из чего выбирать сессию, когда расписания (plan.json) нет. Facebook сюда не
+# входит: он стоит не на каждом телефоне, и случайная сессия в нём на
+# телефоне без Facebook кончилась бы ошибкой «приложение не открылось».
+# Сессии в Facebook ставятся правилом расписания явно.
+DEFAULT_SESSION_APPS = ["tiktok", "shorts", "reels"]
 
 for d in (WATCH_DIR, QUEUE_DIR, LOG_DIR, FRAMES_DIR):
     os.makedirs(d, exist_ok=True)

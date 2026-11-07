@@ -93,7 +93,14 @@ def _off_feed(cfg, timeout=4):
     """
     nodes = ui.dump(retries=1, tolerant=True, timeout=timeout)
     if not nodes:
-        return ""                   # дерево не снялось — играет видео, это лента
+        # Дерево не снялось — играет видео. У TikTok и Instagram это и есть
+        # лента. У Facebook наоборот: в Reels дерево снимается всегда, а НЕ
+        # снимается оно на «Главной», где сами играют видео из ленты (живьём
+        # 2026-11-04: сессия так и листала «Главную»). Рецепт говорит это
+        # явно — `feed_no_tree: false`.
+        if cfg.get("feed_no_tree") is False:
+            return "дерево не снимается — похоже на «Главную» с видео"
+        return ""
     if _pick(nodes, cfg.get("feed_selected") or []) is not None:
         return ""
     markers = cfg.get("feed_markers") or []
@@ -130,7 +137,7 @@ def _open_feed(cfg, log):
 
     if uri:
         device.open_uri(uri, package)
-        if device.wait_for_app(package, timeout=25):
+        if _wait_app(package, timeout=25):
             # Приложение поднялось — но ЛЕНТА ли это? Раньше здесь стоял
             # `return True`, и ссылке верили на слово.
             #
@@ -149,10 +156,66 @@ def _open_feed(cfg, log):
             log.append("прямая ссылка не сработала, открываю приложение")
 
     device.open_app(package)
-    if not device.wait_for_app(package, timeout=25):
+    if not _wait_app(package, timeout=25):
         return False
     _ensure_feed(cfg, log)
     return True
+
+
+def _wait_app(package, timeout=25):
+    """Дождаться приложения на экране, по пути закрыв системный запрос.
+
+    Холодный старт Facebook первым делом спрашивает «Allow Facebook to send
+    you notifications?» (живьём 2026-11-04): на экране окно системы, а не
+    Facebook, и простое ожидание сдавалось через 25 с с «приложение не
+    открылось». Окно закрывается тем же `ui.handle_permission`, что и везде,
+    то есть ОТКАЗОМ — сама программа ничего не разрешает.
+    """
+    deadline = time.time() + timeout
+    while True:
+        left = max(1.0, deadline - time.time())
+        if device.wait_for_app(package, timeout=min(left, 6)):
+            return True
+        if time.time() >= deadline:
+            return False
+        try:
+            pkg, _act = adb.current_app()
+        except adb.AdbError:
+            pkg = None
+        if pkg in ui.PERMISSION_PACKAGES:
+            ui.handle_permission(ui.dump(retries=2, tolerant=True, timeout=8))
+
+
+def _reveal_feed_tab(cfg, log):
+    """Вернуть спрятанную нижнюю панель и найти в ней вкладку ленты.
+
+    Facebook прячет панель вкладок, пока «Главная» прокручена вниз, и помнит
+    прокрутку даже после перезапуска (живьём 2026-11-04: сессия так и листала
+    «Главную»). Короткая протяжка вниз по ленте панель возвращает — это свайп,
+    нажать им ничего нельзя.
+
+    Возвращает узел вкладки; "tapped" — дерево так и не снялось (на «Главной»
+    играет видео), и вкладка нажата по месту (`feed_tab_point`) — сразу после
+    протяжки, пока панель точно на экране; None — не вышло.
+    """
+    w, h = adb.screen_size()
+    for _ in range(2):
+        adb.swipe(int(w * 0.5), int(h * 0.40), int(w * 0.5), int(h * 0.62),
+                  random.randint(250, 400))
+        human.pause(0.9, 1.4)
+        nodes = ui.dump(retries=1, tolerant=True, timeout=5)
+        tab = _pick(nodes, cfg.get("feed_tabs") or []) if nodes else None
+        if tab is not None:
+            return tab
+        if nodes:
+            continue                # дерево есть, вкладки нет — ещё протяжка
+        point = _point(cfg, "feed_tab_point", w, h)
+        if point:
+            adb.tap(*point)
+            human.pause(1.2, 2.0)
+            return "tapped"
+    log.append("вкладку ленты не нашёл и после протяжки")
+    return None
 
 
 def _ensure_feed(cfg, log, timeout=4):
@@ -207,13 +270,18 @@ def _ensure_feed(cfg, log, timeout=4):
                 return False
 
     nodes = ui.dump(retries=1, tolerant=True, timeout=timeout)
+    if not nodes and no_tree:
+        return True
     if not nodes:
+        # Лента, у которой дерево снимается и на ходу (Facebook): пустой ответ
+        # — не лента, а «Главная» с играющим видео. Второй взгляд — на случай
+        # мгновенного сбоя uiautomator.
+        nodes = ui.dump(retries=1, tolerant=True, timeout=timeout)
+    if nodes and _pick(nodes, selected) is not None:
         return True
-    if _pick(nodes, selected) is not None:
+    if markers and nodes and _pick(nodes, markers) is not None:
         return True
-    if markers and _pick(nodes, markers) is not None:
-        return True
-    here = _selected_tab(nodes)
+    here = _selected_tab(nodes) if nodes else ""
     if here:
         log.append(f"на вкладке «{here}» — это не лента, перехожу")
 
@@ -223,7 +291,24 @@ def _ensure_feed(cfg, log, timeout=4):
     # признак «нижнюю кнопку жать не надо».
     inside = _pick(nodes, for_you_tabs) if for_you_tabs else None
     if inside is None:
-        tab = _pick(nodes, feed_tabs)
+        tab = _pick(nodes, feed_tabs) if nodes else None
+        if tab is None and cfg.get("reveal_swipe"):
+            tab = _reveal_feed_tab(cfg, log)
+            if tab == "tapped":
+                if in_feed(wait=10.0):
+                    log.append("вернулся в ленту: вкладка по месту")
+                    return True
+                tab = None
+        if tab is None and cfg.get("open_uri"):
+            # Вкладки не видно (Facebook прячет нижнюю панель, пока лента
+            # «Главной» прокручена, а дерева с играющим видео нет вовсе) —
+            # прямая ссылка ведёт в ленту мимо вкладок.
+            device.open_uri(cfg["open_uri"], cfg.get("package"))
+            human.pause(2.0, 3.5)
+            if in_feed(wait=8.0):
+                log.append("перешёл в ленту по прямой ссылке")
+                return True
+            return False
         if tab is None:
             return False       # незнакомый экран — разберётся _unstick по ходу
         ui.tap_node(tab)
@@ -470,8 +555,62 @@ def _read_caption(state):
         return "", "", ""
 
     state["no_caption"] = 0
+    cfg = state.get("cfg") or {}
+    if cfg.get("caption_fullscreen_skip"):
+        caption, author = _recipe_caption(nodes, cfg, state.get("package"))
+        return caption, author, ""
     return ui.feed_caption(nodes, screen=state.get("screen"),
                            package=state.get("package"))
+
+
+def _author_name(desc):
+    """Имя автора из подписи кнопки: у каждой сети своя обёртка вокруг него.
+
+    «Профиль x» (TikTok), «Фото профиля x» (Reels), «Перейти на канал "@x"»
+    (Shorts), «View x's reels» (Facebook). Кавычки снимаются отдельно — иначе
+    они уедут в подборку.
+    """
+    name = desc or ""
+    m = re.match(r"^view\s+(.+?)['’]s reels$", name.strip(), flags=re.I)
+    if m:
+        name = m.group(1)
+    name = re.sub(
+        r"^(перейти на канал|фото профиля|профиль|посмотреть видео reels|"
+        r"go to channel|profile)\s*", "", name, flags=re.I)
+    return name.strip().strip('"«»')
+
+
+def _recipe_caption(nodes, cfg, package=None):
+    """(описание, автор) у ленты, где описание лежит на кадре целиком.
+
+    Так устроен Facebook Reels: у строки описания под роликом нет ни id, ни
+    подписи — в дереве это безымянная кнопка, у которой desc и есть сам
+    текст. Тот же текст висит на полноэкранном узле ролика, и вот его найти
+    можно: самый крупный кликабельный узел с подписью. Служебные подписи того
+    же размера («Reels tab details», «Tap to show video controls») отсекает
+    `caption_fullscreen_skip` из рецепта.
+
+    Позиционный разбор (`ui.feed_caption`) здесь не годится: дерево полное, с
+    правой колонкой, и в «описание» уезжало «Like button. Double tap and hold
+    to react» — самая длинная строка внизу кадра.
+    """
+    if package:
+        nodes = [n for n in nodes if not n.pkg or n.pkg == package]
+    skip = [s.lower() for s in cfg.get("caption_fullscreen_skip") or []]
+    best = None
+    for n in nodes:
+        label = (n.desc or n.text or "").strip()
+        if not (n.clickable and label and n.area > 0):
+            continue
+        low = label.lower()
+        if any(s in low for s in skip):
+            continue
+        if best is None or n.area > best.area:
+            best = n
+    caption = (best.desc or best.text) if best is not None else ""
+    node = _pick(nodes, cfg.get("author_selectors") or [])
+    author = _author_name(node.desc or node.text) if node is not None else ""
+    return _clean(caption)[:400], _clean(author)[:60]
 
 
 def _feed_frozen(state, png):
@@ -1401,9 +1540,16 @@ def _back_to_feed(cfg, home_at, log):
         human.pause(0.6, 1.1)
 
     blind = not (cfg.get("home_tabs") or [])
+    seen = cfg.get("feed_selected") if cfg.get("feed_no_tree") is False else None
     for _ in range(4):
         tree = ui.dump(retries=1, tolerant=True, timeout=5)
         if not tree and not blind:
+            return True
+        # Лента, где дерево снимается и на ходу (Facebook): там пустое дерево
+        # не признак, зато выбранная вкладка ленты видна. Без этой проверки
+        # агент тапал бы по уже выбранной «Reels» — а это у Facebook
+        # обновление ленты и прыжок к другому ролику.
+        if tree and seen and _pick(tree, seen) is not None:
             return True
         tab = _pick(tree, cfg.get("home_tabs") or []) if tree else None
         if tab is not None:
@@ -1435,6 +1581,9 @@ SENDING_WORDS = (
     "истори", "story", "отправ", "send", "опубликов", "publish", "post",
     "репост", "repost", "директ", "direct", "поделиться в", "share to",
     "добавить в", "add to", "чат", "chat",
+    # Facebook: «Share now» в листе «поделиться» сразу публикует ролик у себя
+    # в ленте (живьём 2026-11-04), «Group» — в группу.
+    "share now", "поделиться сейчас", "group", "групп",
 )
 
 
@@ -1480,6 +1629,31 @@ def _link_row(sheet, w):
         return None
     rows.sort(key=lambda n: n.bounds[1])
     return rows[0]
+
+
+def _scroll_link_row(sheet, w, log):
+    """Докрутить ряд значков листа «поделиться» — там прячется «Copy link».
+
+    Так у Facebook (живьём 2026-11-04): нижний ряд «Your story, Messenger,
+    WhatsApp, WhatsApp Status, Text» уходит за край, и «Copy link» стоит
+    вторым экраном. Ряд — самая нижняя полоса узких кликабельных значков.
+    Протяжка справа налево по нему: это свайп, а не тап, и ни один значок
+    не нажимается. Возвращает новое дерево листа или None.
+    """
+    icons = [n for n in sheet
+             if n.clickable and 0 < (n.bounds[2] - n.bounds[0]) < w * 0.30
+             and n.bounds[3] > n.bounds[1]]
+    if not icons:
+        return None
+    bottom = max(n.bounds[1] for n in icons)
+    row = [n for n in icons if n.bounds[1] >= bottom - 10]
+    if len(row) < 3:
+        return None                         # не ряд, а одиночная кнопка
+    y = sorted(n.center[1] for n in row)[len(row) // 2]
+    adb.swipe(int(w * 0.85), y, int(w * 0.15), y, random.randint(350, 500))
+    human.pause(0.9, 1.5)
+    log.append("  докрутил ряд значков до «копировать ссылку»")
+    return ui.dump(retries=2, tolerant=True, timeout=10)
 
 
 def _likes_when_liked(tree, cfg):
@@ -1611,17 +1785,14 @@ def _save_link(state, cfg, w, h, log, app):
     author = caption = ""
     node = _pick(tree, cfg.get("author_selectors") or [])
     if node is not None:
-        # У каждой сети своя обёртка вокруг имени: «Профиль x» (TikTok),
-        # «Фото профиля x» (Reels), «Перейти на канал "@x"» (Shorts).
-        # Кавычки снимаются отдельно — иначе они уедут в подборку.
-        author = re.sub(
-            r"^(перейти на канал|фото профиля|профиль|go to channel|profile)\s*",
-            "", node.desc, flags=re.I)
-        author = author.strip().strip('"«»')
+        author = _author_name(node.desc)
     node = _pick(tree, cfg.get("caption_selectors") or [])
     if node is not None:
         caption = node.text or node.desc
-    if not (author or caption) and not cfg.get("caption_selectors"):
+    if cfg.get("caption_fullscreen_skip"):
+        caption, found = _recipe_caption(tree, cfg, state.get("package"))
+        author = author or found
+    elif not (author or caption) and not cfg.get("caption_selectors"):
         caption, author, _ = ui.feed_caption(tree, screen=state.get("screen"),
                                              package=state.get("package"))
     author, caption = _clean(author)[:60], _clean(caption)[:400]
@@ -1639,6 +1810,9 @@ def _save_link(state, cfg, w, h, log, app):
     # проверено живьём, 93 узла. Поэтому здесь обычный селектор, а не вес кадра.
     sheet = ui.dump(retries=2, tolerant=True, timeout=10)
     link = _pick(sheet, cfg.get("link_selectors") or []) if sheet else None
+    if link is None and sheet and cfg.get("link_row_scroll"):
+        sheet = _scroll_link_row(sheet, w, log) or sheet
+        link = _pick(sheet, cfg.get("link_selectors") or [])
     if link is None and sheet and cfg.get("link_row_fallback"):
         # Разрешаем поимённо, а не всем подряд: выбор «по месту» опирается на
         # порядок строк, и в чужом листе на этом месте может оказаться кнопка

@@ -15,7 +15,7 @@ import time
 import jobs
 
 TITLES = {"tiktok": "TikTok", "reels": "Instagram", "shorts": "YouTube",
-          "instagram": "Instagram", "youtube": "YouTube"}
+          "instagram": "Instagram", "youtube": "YouTube", "facebook": "Facebook"}
 
 RE_APP = re.compile(r"сессия в (\w+)")
 RE_TOTAL = re.compile(r"итог:\s*(\d+)\s*видео,\s*(\d+)\s*лайков")

@@ -19,6 +19,7 @@ import re
 import tempfile
 import time
 
+import abort
 import adb
 import config
 import device
@@ -26,7 +27,7 @@ import human
 import jobs
 import ui
 
-TITLES = {"tiktok": "TikTok", "reels": "Instagram", "shorts": "YouTube"}
+TITLES = {"tiktok": "TikTok", "reels": "Instagram", "shorts": "YouTube", "facebook": "Facebook"}
 
 # Как дойти до своего профиля. Шаг — {"find": [варианты подписи], "bottom":
 # только нижняя панель, "exact": подпись целиком}. ТОЧНО и ВНИЗУ — не каприз:
@@ -83,6 +84,29 @@ NETS = {
                 # Телефон пользователя — на испанском (его снимки 2026-10-18).
                 "Configuración del canal", "Estadísticas", "Gestionar vídeos",
                 "Personalizar canal", "Editar canal"],
+    },
+    # Facebook (2026-11-04, второй телефон, Facebook 585 по-английски, личный
+    # профиль Dan Morris без профессионального режима). «Профиль» — шестая
+    # вкладка нижней панели, но панель прячется, пока лента прокручена, а на
+    # «Главной» с видео дерева нет вовсе — тогда протяжка вниз и касание по
+    # месту вкладки. Свой профиль — «Edit profile» и «Add to story». Плитки —
+    # вкладка «Reels» профиля (All · Photos · Reels), она под нижней панелью:
+    # профиль сперва подтягивается вверх. У плитки описание «Reel number 1,
+    # 246 plays» — просмотры только из «plays», номер рилса — не число.
+    "facebook": {
+        "package": "com.facebook.katana",
+        "optional": True,
+        "steps": [{"find": ["Profile, tab", "Профиль, вкладка", "Perfil, pestaña"], "bottom": True}],
+        "reveal_swipe": True,
+        "tap_xy": [[0.917, 0.948]],
+        "own": ["Edit profile", "Редактировать профиль", "Изменить профиль", "Editar perfil",
+                "Add to story", "Добавить в историю", "Agregar a historia", "Añadir a historia",
+                "Edit cover photo", "Open profile switcher"],
+        "other": ["Add friend", "Добавить в друзья", "Agregar", "Message", "Сообщение",
+                  "Enviar mensaje", "Follow", "Подписаться", "Seguir"],
+        "grid_tab": ["Reels, 3 of", "Reels, 3 из", "Reels"],
+        "grid_scroll": True,
+        "tile_re": r"(?:reel number|рилс(?: номер)?|reel n\.?º?)\s*\d+,\s*(.+?)\s*(?:plays?|воспроизведени\w*|просмотр\w*|reproducciones?)",
     },
 }
 
@@ -160,6 +184,19 @@ def _account_name(nodes, w, h):
     return min(names, key=lambda n: n.bounds[1]).text.strip() if names else ""
 
 
+def _fb_name(nodes):
+    """Имя в шапке профиля Facebook: подпись в одной строке с кнопкой
+    «Open profile switcher» (шапка у Facebook ниже обложки, не вверху)."""
+    switch = next((n for n in nodes or [] if "profile switcher" in (n.desc or "").lower()
+                   or "сменить профиль" in (n.desc or "").lower()), None)
+    if switch is None:
+        return ""
+    cy = (switch.bounds[1] + switch.bounds[3]) / 2
+    names = [n for n in nodes or [] if (n.text or "").strip() and n.bounds[2] <= switch.bounds[0]
+             and n.bounds[1] < cy < n.bounds[3] and len(n.text.strip()) <= 60]
+    return names[0].text.strip() if names else ""
+
+
 def _sized(n):
     x1, y1, x2, y2 = n.bounds
     return x2 > x1 and y2 > y1
@@ -225,7 +262,25 @@ def _center(n):
     return (x1 + x2) / 2, (y1 + y2) / 2
 
 
-def parse_profile(nodes, height=2400):
+def _tiles_by_re(nodes, tile_re):
+    """Плитки, у которых просмотры — в описании по образцу (Facebook: «Reel
+    number 1, 246 plays»). Отдельные числа под плитками — те же просмотры
+    ещё раз, их не берём."""
+    pat = re.compile(tile_re, re.I)
+    seen, out = set(), []
+    for n in _reading_order([n for n in nodes or [] if _sized(n)]):
+        m = pat.search((n.desc or n.text or "").strip())
+        views = parse_count(m.group(1)) if m else None
+        # Та же плитка дважды: кнопка и картинка в ней, рамки на пиксель разные.
+        key = tuple(round(c / 40) for c in _center(n))
+        if views is None or key in seen:
+            continue
+        seen.add(key)
+        out.append({"views": views, "title": ""})
+    return out[:12]
+
+
+def parse_profile(nodes, height=2400, tile_re=None):
     """Подписчики и просмотры видео с экрана профиля.
 
     Подписчики: узел с «подписчик/followers» — число в нём самом («7
@@ -233,6 +288,7 @@ def parse_profile(nodes, height=2400):
     пишут число отдельной строкой над подписью).
     Видео: числа в сетке ниже шапки — по порядку чтения, сверху вниз, слева
     направо (первым — свежее, если не закреплено). Подпись рядом — название.
+    tile_re — у плиток просмотры в описании по образцу (Facebook).
     """
     followers, label_y = None, None
     for n in nodes:
@@ -284,6 +340,8 @@ def parse_profile(nodes, height=2400):
             continue
         seen.add(key)
         out.append({"views": views, "title": title})
+    if tile_re:
+        out = _tiles_by_re(nodes, tile_re)
     return {"followers": followers, "videos": out[:12]}
 
 
@@ -342,9 +400,33 @@ def _read_profile(net, cfg, result):
                 return node, nodes
             time.sleep(0.7)
 
+    def reveal(step):
+        """Facebook прячет нижнюю панель, пока лента прокручена: короткая
+        протяжка вниз её возвращает. Дерева нет (на «Главной» играет видео) —
+        касание по месту вкладки сразу после протяжки, пока панель видна.
+        (узел, дерево) или (None, дерево); «tapped» вместо узла — нажато по месту."""
+        nodes = []
+        for _ in range(2):
+            adb.swipe(w // 2, int(h * 0.40), w // 2, int(h * 0.62), 260)
+            human.pause(0.6, 0.9)
+            nodes = ui.dump(retries=1, tolerant=True)
+            node = _pick(nodes, step["find"], h, step.get("bottom"), step.get("exact"))
+            if node is not None:
+                return node, nodes
+            if len(nodes or []) < 8 and cfg.get("tap_xy"):
+                x, y = cfg["tap_xy"][0]
+                adb.tap(int(x * w), int(y * h))
+                return "tapped", nodes
+        return None, nodes
+
     def walk():
         for i, step in enumerate(cfg["steps"]):
             node, nodes = find(step, 8)
+            if node is None and i == 0 and cfg.get("reveal_swipe"):
+                node, nodes = reveal(step)
+                if node == "tapped":
+                    human.pause(2.5, 3.5)
+                    continue
             tries = 0
             while node is None and tries < 3:
                 tries += 1
@@ -438,9 +520,18 @@ def _read_profile(net, cfg, result):
                          + (f" (на экране: {', '.join('«' + s + '»' for s in seen)})"
                             if seen else " (экран не прочитался)"))
     if not result["why"]:
-        result["account"] = _account_name(nodes, w, h)
+        result["account"] = _account_name(nodes, w, h) or _fb_name(nodes)
     if not result["why"] and cfg.get("grid_tab"):
         tab = _pick(nodes, cfg["grid_tab"], h, top_only=True)   # не нижняя панель
+        for _ in range(2 if cfg.get("grid_scroll") else 0):
+            if tab is not None:
+                break
+            # Вкладки профиля ниже края или под нижней панелью (Facebook) —
+            # подтянуть профиль вверх, медленно, без разгона.
+            adb.shell(f"input swipe {w // 2} {int(h * 0.75)} {w // 2} {int(h * 0.4)} 700", check=False)
+            human.pause(1.5, 2)
+            nodes = ui.dump(retries=2, tolerant=True)
+            tab = _pick(nodes, cfg["grid_tab"], h, top_only=True)
         chosen = tab is not None and any(
             n.selected and n.bounds == tab.bounds for n in nodes or [])
         if tab is not None and not chosen:
@@ -455,7 +546,7 @@ def _read_profile(net, cfg, result):
             nodes = _settled()
     if result["why"]:
         return result
-    found = parse_profile(nodes, h)
+    found = parse_profile(nodes, h, cfg.get("tile_re"))
     readable = sum(1 for n in nodes or [] if (n.text or n.desc or "").strip()) >= 8
     # Модель — только если экран не читается вовсе. Прочитали, а видео нет —
     # это честный ноль (живьём: у TikTok видео не оказалось), и модель по
@@ -488,13 +579,16 @@ def _read_profile(net, cfg, result):
 # «за всё время». Снимаем свой профиль на вкладке с видео — один первый экран
 # (2026-10-29: «плитки не обязательно полностью фоткать, можно просто первый
 # экран с плитками один раз и всё»; раньше был второй снимок, пролистав).
-TILE_FILES = {"tiktok": "tiktok_tiles", "shorts": "youtube_tiles", "reels": "instagram_tiles"}
+TILE_FILES = {"tiktok": "tiktok_tiles", "shorts": "youtube_tiles", "reels": "instagram_tiles",
+              "facebook": "facebook_tiles"}
 TILE_TITLES = {"tiktok": "TikTok — плитки профиля", "shorts": "YouTube — плитки канала (Shorts)",
-               "reels": "Instagram — плитки профиля (Reels)"}
+               "reels": "Instagram — плитки профиля (Reels)",
+               "facebook": "Facebook — плитки профиля (Reels)"}
 
 
-def _tile_keys(nodes, h):
-    return {(v.get("title") or "", v.get("views")) for v in parse_profile(nodes, h).get("videos") or []}
+def _tile_keys(nodes, h, tile_re=None):
+    return {(v.get("title") or "", v.get("views"))
+            for v in parse_profile(nodes, h, tile_re).get("videos") or []}
 
 
 def _shot_tiles(net, folder, w, h, videos):
@@ -514,7 +608,7 @@ def _shot_tiles(net, folder, w, h, videos):
         nodes = ui.dump(retries=2, tolerant=True)
     first = _snap(folder, TILE_FILES[net])
     out = [first] if first else []
-    seen = _tile_keys(nodes, h)
+    seen = _tile_keys(nodes, h, cfg.get("tile_re"))
     for _ in range(2 if pulled else 0):                # обратно наверх профиля
         adb.shell(f"input swipe {w // 2} {int(h * 0.3)} {w // 2} {int(h * 0.85)} 300", check=False)
         human.pause(0.6, 0.9)
@@ -536,6 +630,11 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
     result = {"followers": None, "videos": [], "why": ""}
     try:
         _read_profile(net, cfg, result)
+        if abort.requested():
+            # После «Остановить» паузы обрываются, и дальше шаги шли бы
+            # вслепую, без ожиданий — не начинаем, а сразу на рабочий стол.
+            result["why"] = result["why"] or "остановлено"
+            return result
         # Снимки — только со СВОЕГО открытого профиля: иначе «☰ справа вверху»
         # нажалось бы на любом экране, где агент застрял.
         if shots and not result["why"] and net in SHOTS:
@@ -548,7 +647,8 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
                     except (adb.AdbError, RuntimeError, OSError) as e:
                         result["tiles"] = []
                         say(f"  {TITLES[net]}: плитки снять не вышло — {str(e)[:80]}")
-                result["shot"] = SHOTS[net](folder, w, h, days)
+                result["shot"] = _shot_facebook(folder, w, h, days, result["videos"]) \
+                    if net == "facebook" else SHOTS[net](folder, w, h, days)
             except (adb.AdbError, RuntimeError, OSError) as e:
                 result["shot"] = None
                 say(f"  {TITLES[net]}: снимок статистики не вышел — {str(e)[:80]}")
@@ -631,7 +731,7 @@ def _snap_app(name):
     if name.startswith("youtube"):
         return SNAP_APPS["youtube_tiles"] if "tiles" in name else STUDIO
     if name.startswith("facebook"):
-        return META_SUITE
+        return NETS["facebook"]["package"]
     return SNAP_APPS.get(name.split("_")[0])
 
 
@@ -823,7 +923,7 @@ def numbers_text(folder, nets=None):
     (за вчера TikTok даёт позавчера); нет общего — у всех. Или ""."""
     said = _notes_in(folder)
     rows = [(net, said.get(SHOT_FILES[net] + "_views"), said.get(SHOT_FILES[net] + "_when") or "")
-            for net in ("reels", "tiktok", "shorts") if nets is None or net in nets]
+            for net in ("reels", "tiktok", "shorts", "facebook") if nets is None or net in nets]
     failed = [(net, said.get(SHOT_FILES[net] + "_why")) for net, views, _ in rows
               if not views and said.get(SHOT_FILES[net] + "_why")]
     missed = [(net, said.get(SHOT_FILES[net] + "_miss")) for net, views, _ in rows
@@ -833,7 +933,10 @@ def numbers_text(folder, nets=None):
     whens = [when for _, _, when in rows if when]
     top = max(set(whens), key=whens.count) if whens else ""
     common = top if whens.count(top) > 1 or len(set(whens)) == 1 else ""
-    return "\n".join([f"{TITLES[net]} — {views}" + (f" (за {when})" if when and when != common else "")
+    # Facebook — всегда с периодом: он посчитан по своим снимкам, и часы
+    # у него не те, что у календарей остальных сетей.
+    return "\n".join([f"{TITLES[net]} — {views}"
+                      + (f" (за {when})" if when and (when != common or net == "facebook") else "")
                       for net, views, when in rows]
                      + [f"{TITLES[net]} — не снял: {why}" for net, why in failed]
                      + [f"{TITLES[net]} — числа нет, снимок в альбоме: {why}" for net, why in missed])
@@ -841,6 +944,18 @@ def numbers_text(folder, nets=None):
 
 def _installed(package):
     return bool((adb.shell(f"pm path {package}", check=False) or "").strip())
+
+
+def _has_app(net):
+    """Есть ли на телефоне приложение сети, которой может и не быть (Facebook).
+    Обязательные сети — всегда «да»: их отсутствие — сбой, о нём скажут."""
+    cfg = NETS.get(net) or {}
+    if not cfg.get("optional"):
+        return True
+    try:
+        return _installed(cfg["package"])
+    except adb.AdbError:
+        return True
 
 
 def _label(n):
@@ -1911,23 +2026,39 @@ def _shot_tiktok(folder, w, h, days=None):
 
     # Карточка «Аналитика»: на английском телефоне подписана («Analytics»),
     # на Redmi подписи в дереве нет — тогда по месту, сразу под заголовком.
+    # Главная Studio догружается: пока внизу нет карточек (у второго телефона
+    # «Join», «More ways to get paid»), касание по «Аналитике» пропадает —
+    # живьём 05.11 вместо неё снялась главная, а по загруженной то же
+    # касание открыло «Аналитику» сразу.
+    end = time.time() + 10
     home = ui.dump(retries=2, tolerant=True)
+    while time.time() < end and sum(1 for n in home or [] if _label(n) and _sized(n)) < 6:
+        human.pause(1, 1.5)
+        home = ui.dump(retries=2, tolerant=True)
     title = studio_title()
-    card = next((n for n in home or [] if _label(n) in TT_ANALYTICS
-                 and n.bounds[1] < h * 0.45), None)
-    if card is not None:
-        ui.tap_node(_clickable_at(home, card))
-    else:
-        below = (title.bounds[3] if title else int(h * 0.081)) + int(h * 0.062)
-        adb.tap(int(w * 0.5), below)
+
+    def open_card():
+        card = next((n for n in home or [] if _label(n) in TT_ANALYTICS
+                     and n.bounds[1] < h * 0.45), None)
+        if card is not None:
+            ui.tap_node(_clickable_at(home, card))
+        else:
+            below = (title.bounds[3] if title else int(h * 0.081)) + int(h * 0.062)
+            adb.tap(int(w * 0.5), below)
+
+    open_card()
     # Ждём, а не смотрим один раз: на медленном телефоне или в плохой сети
     # «Аналитика» грузится дольше, и программа принимала её за «не открылась».
-    nodes, end = [], time.time() + 16
+    nodes, start = [], time.time()
+    end, again = start + 16, True
     while time.time() < end:
         human.pause(2, 2.5)
         nodes = ui.dump(retries=2, tolerant=True)
         if _tt_analytics_open(nodes, h) or _tt_blind_row(nodes, w, h):
             break
+        if again and time.time() - start > 6 and studio_title() is not None:
+            again = False                  # всё ещё главная — касание не дошло
+            open_card()
     blind = not _tt_analytics_open(nodes, h) and _tt_blind_row(nodes, w, h) is not None
     if blind:
         human.pause(2, 3)              # рамки есть сразу, числа приходят позже
@@ -2571,42 +2702,231 @@ def _shot_instagram(folder, w, h, days=None):
     return path
 
 
-META_SUITE = "com.facebook.pages.app"
-META_INSIGHTS = ["Статистика", "Insights", "Estadísticas", "Estadisticas"]
-META_MORE = ["Ещё", "Еще", "More", "Más", "Menú", "Меню", "Menu"]
+# ------------------------------------------------------------- Facebook
+#
+# «Настрой сбор статы с фейсбука» (2026-11-04). Снято живьём на втором
+# телефоне: профиль Dan Morris ЛИЧНЫЙ, без профессионального режима — у него
+# нет ни «Профессиональной панели», ни статистики аккаунта за период (в меню
+# только «Upgrades → Public presence», то есть предложение его включить).
+# Meta Business Suite на телефоне стоит, но не залогинен и показывает только
+# Страницы. Что есть у личного профиля:
+# - вкладка «Reels» профиля: под каждой плиткой «Reel number 1, 246 plays» —
+#   просмотры рилса за всё время (это плитки);
+# - у своего рилса «View insights» → «Post details»: Views 246, Interactions,
+#   Reactions, Comments, Shares, Saves — это снимок статистики.
+# Числа за период («за вчера», неделю, месяц) Facebook личному профилю не
+# показывает, поэтому они считаются по снимкам: сумма просмотров рилсов
+# сейчас минус та, что была на начало периода (сдвиг новых рилсов —
+# views_gain). Какие именно часы вышли, пишется в скобках.
+
+FB_INSIGHTS = ["View insights", "Посмотреть статистику", "Статистика", "Ver estadísticas"]
+FB_DETAILS = re.compile(r"^(views|просмотры|visualizaciones|reproducciones),\s*(.+)$", re.I)
 
 
-def _shot_facebook(folder, w, h):
-    """Meta Business Suite на телефоне → «Статистика» (как «Estadísticas» на снимке
-    человека). Приложения нет — пропускаем: публикаций в Facebook агент не ведёт."""
-    if not _installed(META_SUITE):
+def _fb_tiles(nodes, h):
+    """Плитки рилсов профиля над нижней панелью, по порядку (первая — свежая)."""
+    pat = re.compile(NETS["facebook"]["tile_re"], re.I)
+    bar = [n.bounds[1] for n in nodes or [] if re.search(r", tab \d+ of \d+|вкладка \d+ из", n.desc or "")]
+    top = min(bar) if bar else h * 0.9
+    tiles = [n for n in nodes or [] if n.clickable and _sized(n) and pat.search(n.desc or "")
+             and _center(n)[1] < top - 40]
+    return _reading_order(tiles)
+
+
+def _fb_wait(test, wait=10.0):
+    """Дерево, в котором нашёлся узел test(n), и сам узел — или (дерево, None)."""
+    end = time.time() + wait
+    nodes = []
+    while True:
+        nodes = ui.dump(retries=1, tolerant=True)
+        node = next((n for n in nodes or [] if _sized(n) and test(n)), None)
+        if node is not None or time.time() > end:
+            return nodes, node
+        time.sleep(0.8)
+
+
+def _fb_cutoff(days, now):
+    """С какого снимка считать прибавку: время, не позже которого он снят.
+    None — периода нет (всё время, «как в приложении»)."""
+    if days in (1, 2):
+        return now - (days * 24 - 4) * 3600              # снимок вчерашнего (позавчерашнего) отчёта
+    if days in ("week", "month"):
+        first, _ = report_span(days, dt.date.fromtimestamp(now))
+        clock = dt.datetime.fromtimestamp(now).time()
+        return time.mktime(dt.datetime.combine(first, clock).timetuple()) + 2 * 3600
+    return None
+
+
+def _fb_period(videos, days, now=None):
+    """Просмотры рилсов Facebook за период по снимкам: (число, за что) или ("", "")."""
+    now = now or time.time()
+    cur = [int(v["views"]) for v in videos or [] if isinstance(v.get("views"), int)]
+    if not cur:
+        return "", ""
+    total = _fmt(sum(cur))
+    cutoff = _fb_cutoff(days, now)
+    if cutoff is None:
+        return total, "всё время, сумма по рилсам"
+    with jobs.connect() as con:
+        _table(con)
+        before = _snapshot(con, "facebook", before=cutoff)
+        hint = _posted(con, "facebook", before["at"]) if before else 0
+    if not before or not before["videos"]:
+        return total, "всё время; за период посчитаю со следующего снимка"
+    gain, _ = views_gain(cur, [v["views"] for v in before["videos"]], hint)
+    if gain is None:
+        return total, "всё время: с прошлым снимком рилсы не сопоставились"
+    return _fmt(gain), (f"{dt.datetime.fromtimestamp(before['at']):%d.%m %H:%M} – "
+                        f"{dt.datetime.fromtimestamp(now):%d.%m %H:%M}")
+
+
+# Профессиональный режим (включён пользователем 2026-11-04): на профиле
+# кнопка «Dashboard» → «Creator Dashboard» (первый раз поверх — шторка
+# «Welcome to the new Creator Dashboard» с «Start with challenges» / «Explore
+# on your own»: закрываем «назад», ничего не выбирая) → вкладка «Analytics,
+# 1 of 4». Там «Views» за период и график по дням; период — «Select date
+# range»: Today · Last 7 / 14 / 28 / 90 days (каждый кончается вчера, своего
+# диапазона нет). Над графиком подпись выбранной точки «Nov 3, 0» — день и
+# число, по умолчанию последний, то есть вчера. Считает Facebook только с
+# включения режима: просмотры рилса до него сюда не попали.
+FB_DASHBOARD = ["Dashboard", "Панель", "Профессиональная панель", "Panel"]
+FB_ANALYTICS_TAB = re.compile(r"^(analytics|аналитика|estadísticas|análisis), 1 (of|из|de) \d", re.I)
+FB_RANGE_BTN = ["Select date range", "Выбрать диапазон дат", "Seleccionar intervalo de fechas"]
+FB_RANGES = {7: r"^(last 7 days|последние 7 дней|últimos 7 días),", 28: r"^(last 28 days|последние 28 дней|últimos 28 días),",
+             90: r"^(last 90 days|последние 90 дней|últimos 90 días),"}
+FB_POINT = re.compile(r"^([A-Za-zА-Яа-яéñ.]+\s+\d{1,2}|\d{1,2}\s+[A-Za-zА-Яа-яéñ.]+),\s*([\d.,]+\s*[KMКМ]?)$")
+FB_SPAN = re.compile(r",\s*(.+?\d{1,2})\s*[-–]\s*(.+?\d{1,2})$")
+
+
+def _fb_dashboard(folder, w, h, days):
+    """Аналитика профессиональной панели: путь к снимку или None (режима нет
+    или не открылась — тогда снимаем по-старому статистику рилса)."""
+    button = None
+    for k in range(3):
+        nodes = ui.dump(retries=2, tolerant=True)
+        button = next((n for n in nodes or [] if n.clickable and _label(n) in FB_DASHBOARD
+                       and _center(n)[1] < h * 0.9), None)
+        if button is not None or k == 2:
+            break
+        # Профиль прокручен (после плиток) — кнопка выше края. Вниз, к шапке.
+        adb.shell(f"input swipe {w // 2} {int(h * 0.3)} {w // 2} {int(h * 0.85)} 300", check=False)
+        human.pause(1, 1.4)
+    if button is None:
         return None
-    device.open_app(META_SUITE)
-    if not device.wait_for_app(META_SUITE, timeout=25):
+    ui.tap_node(button)
+    backs = 1
+    nodes, tab = _fb_wait(lambda n: n.clickable and bool(FB_ANALYTICS_TAB.match((n.desc or "").strip())), 10)
+    if tab is None and any(_label(n) in ("Explore on your own", "Start with challenges") for n in nodes or []):
+        device.back()                                     # шторка приветствия — без выбора
+        human.pause(1.5, 2)
+        nodes, tab = _fb_wait(lambda n: n.clickable and bool(FB_ANALYTICS_TAB.match((n.desc or "").strip())), 8)
+    if tab is None:
+        _note(folder, "facebook", "панель открылась, а вкладки «Analytics» не нашёл")
+        device.back()
         return None
-    human.pause(5, 6)
+    ui.tap_node(tab)
+    backs = 2
+    nodes, rng = _fb_wait(lambda n: n.clickable and _label(n) in FB_RANGE_BTN, 12)
+    want = {1: 7, 2: 7, "week": 7, "month": 28, ALL_TIME: 90}.get(days)
+    picked = ""
+    if rng is not None and want:
+        ui.tap_node(rng)
+        human.pause(1.5, 2)
+        opt = next((n for n in ui.dump(retries=2, tolerant=True) or []
+                    if n.clickable and re.match(FB_RANGES[want], (n.desc or "").strip(), re.I)), None)
+        if opt is not None:
+            picked = opt.desc.strip()
+            ui.tap_node(opt)
+            human.pause(4, 5)
+        else:
+            device.back()                                  # список закрыть, ничего не выбрав
+            human.pause(1, 1.5)
     nodes = ui.dump(retries=2, tolerant=True)
-    item = _pick(nodes, META_INSIGHTS, h, exact=True)
-    if item is None:
-        more = _pick(nodes, META_MORE, h, exact=True)
-        if more is not None:
-            ui.tap_node(more)
-            human.pause(2, 3)
-            item = _pick(ui.dump(retries=2, tolerant=True), META_INSIGHTS, h, exact=True)
-    if item is None:
-        device.go_home()
-        return None
-    ui.tap_node(item)
-    human.pause(6, 7)
     path = _snap(folder, "facebook")
-    device.go_home()
+    total = next((n for n in nodes or [] if _sized(n) and _label(n) == "Views"
+                  and n.selected), None)
+    value = _value_below(nodes, total, dy=60) if total is not None else None
+    point = next((FB_POINT.match((n.desc or "").strip()) for n in nodes or []
+                  if FB_POINT.match((n.desc or "").strip())), None)
+    span = FB_SPAN.search(picked)
+    yesterday = dt.date.today() - dt.timedelta(days=1)
+    views, when = "", ""
+    if days == 1:
+        # Вчера — подпись точки графика; не за вчера — число по снимкам.
+        if point and _day_of(point.group(1)) == yesterday:
+            views, when = _num(point.group(2)), f"{yesterday:%d.%m}"
+            _note(folder, "facebook_end", yesterday.isoformat())
+    elif days in ("week", "month", ALL_TIME) and value is not None and span:
+        first, last = _day_of(span.group(1)), _day_of(span.group(2))
+        # Месяц календарный, а у Facebook только «последние 28 дней» — такое
+        # число не за тот период: остаётся подсчёт по снимкам.
+        if days == ALL_TIME or (first, last) == report_span(days):
+            views, when = _num(value.text), _span(first, last) if first and last else picked
+    elif not days and value is not None:
+        views, when = _num(value.text), "последние 28 дней"
+    if views:
+        _views_note(folder, "facebook", views, when)
+    _note(folder, "facebook", "Creator Dashboard · Analytics"
+          + (f", {picked.split(',')[0]}" if picked else "")
+          + (f" — за {when}: {views}" if views else "")
+          + "; Facebook считает с включения профессионального режима")
+    for _ in range(backs):
+        device.back()
+        human.pause(0.8, 1.2)
     return path
 
 
-SHOTS = {"tiktok": _shot_tiktok, "shorts": _shot_youtube, "reels": _shot_instagram}
+def _shot_facebook(folder, w, h, days=None, videos=None):
+    """Снимок статистики Facebook и просмотры за период. Начало — свой профиль
+    на вкладке Reels (_read_profile). Есть профессиональная панель — её
+    «Analytics»; нет — «Post details» свежего рилса, а число за период —
+    по своим снимкам."""
+    views, when = _fb_period(videos, days)
+    _views_note(folder, "facebook", views, when)
+    try:
+        path = _fb_dashboard(folder, w, h, days)
+    except (adb.AdbError, RuntimeError):
+        path = None
+    if path:
+        return path
+    tiles = _fb_tiles(ui.dump(retries=2, tolerant=True), h)
+    for _ in range(3):
+        if tiles:
+            break
+        # После снимка плиток профиль вернулся наверх — плитки под нижней
+        # панелью (живьём 04.11). Подтянуть вверх, медленно.
+        adb.shell(f"input swipe {w // 2} {int(h * 0.75)} {w // 2} {int(h * 0.4)} 700", check=False)
+        human.pause(1.5, 2)
+        tiles = _fb_tiles(ui.dump(retries=2, tolerant=True), h)
+    if not tiles:
+        _note(folder, "facebook", "рилсов в профиле не видно — статистики рилса нет")
+        return None
+    ui.tap_node(tiles[0])
+    nodes, button = _fb_wait(lambda n: n.clickable and _label(n) in FB_INSIGHTS)
+    if button is None:
+        _note(folder, "facebook", "у рилса нет «View insights» — статистику не открыл")
+        device.back()
+        return None
+    ui.tap_node(button)
+    nodes, total = _fb_wait(lambda n: bool(FB_DETAILS.match((n.desc or "").strip())))
+    path = _snap(folder, "facebook") if total is not None else None
+    if total is not None:
+        one = FB_DETAILS.match(total.desc.strip()).group(2)
+        _note(folder, "facebook", f"свежий рилс: {_num(one)} просмотров за всё время"
+              + (f"; за период — {views} ({when})" if views and when and "всё время" not in when else ""))
+    else:
+        _note(folder, "facebook", "статистика рилса не открылась")
+    for _ in range(2 if total is not None else 1):          # к рилсу и к профилю
+        device.back()
+        human.pause(0.8, 1.2)
+    return path
+
+
+SHOTS = {"tiktok": _shot_tiktok, "shorts": _shot_youtube, "reels": _shot_instagram,
+         "facebook": _shot_facebook}
 SHOT_FILES = {"tiktok": "tiktok", "shorts": "youtube", "reels": "instagram", "facebook": "facebook"}
 SHOT_TITLES = {"tiktok": "TikTok Studio — аналитика", "shorts": "YouTube Studio — аналитика",
-               "reels": "Instagram — статистика", "facebook": "Facebook — статистика (Meta Business Suite)"}
+               "reels": "Instagram — статистика", "facebook": "Facebook — статистика"}
 
 
 def latest_shots():
@@ -2678,6 +2998,11 @@ def collect_all(nets=None, log=None, days=None):
     if pending:
         out = {}
         for kind, part in pending:
+            # «Остановить» — значит все отчёты, а не только текущий: 2026-11-02
+            # (понедельник, 2-е) подряд шли вчера, неделя и октябрь, и после
+            # кнопки телефон был занят ещё 10 минут. Остальные снимутся позже.
+            if abort.requested():
+                break
             out.update(report_run(kind, part, log=log))
         return out
     if asked is None:
@@ -2753,17 +3078,16 @@ def _collect_all(nets=None, log=None, days=None, folder=None, fresh=True, full=T
         for net in nets or config.FEED_APPS:
             if net not in NETS:
                 continue
+            if abort.requested():                 # «Остановить» — следующую сеть не начинаем
+                if log is not None:
+                    log.append("  остановлено: остальные сети не снимаю")
+                break
+            if not _has_app(net):
+                continue                          # Facebook есть не на каждом телефоне
             data = collect(net, log, shots=True, days=days, folder=folder, tiles=full)
             if data["followers"] is not None or data["videos"]:
                 save(net, data)
             out[net] = data
-        try:
-            w, h = adb.screen_size()
-            fb = _shot_facebook(folder, w, h) if full and config.STATS_FACEBOOK else None
-            if log is not None and fb:
-                log.append("  Facebook: снимок статистики есть")
-        except (adb.AdbError, RuntimeError, OSError):
-            pass
     finally:
         try:
             device.keep_awake(False)
@@ -3078,7 +3402,7 @@ def report_run(kind, part="main", log=None):
     events = _report_events(kind, first)
     fresh = not any(what == part + " try" for _, what in events)
     _report_log(kind, first, part + " try")
-    nets = [n for n in config.FEED_APPS if n in SHOTS]
+    nets = [n for n in config.FEED_APPS if n in SHOTS and _has_app(n)]
     # Неделя и месяц сразу после конца — TikTok ещё не досчитал: он назавтра.
     later_tt = (kind != "day" and part == "main" and "tiktok" in nets
                 and (now.date() - last).days < TT_LAG_DAYS)
@@ -3093,6 +3417,10 @@ def report_run(kind, part="main", log=None):
     days = 1 if kind == "day" else kind
     out = _collect_all(todo, log, days=days, folder=folder, fresh=fresh and part == "main",
                        full=False) if todo else {}
+    if abort.requested():
+        # Остановили посреди съёмки — недоснятый отчёт не шлём: доснимется
+        # следующей попыткой (снятое лежит в его папке).
+        return out
     behind = _behind(folder, nets, last, wait_for)
     h, m = map(int, config.DAILY_STATS_UNTIL.split(":"))
     again = now + dt.timedelta(minutes=config.DAILY_STATS_RETRY_MIN)

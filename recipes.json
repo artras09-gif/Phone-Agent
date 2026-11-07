@@ -1077,6 +1077,157 @@
     "rev": 9,
     "needs_storage": true
   },
+  "facebook": {
+    "package": "com.facebook.katana",
+    "title": "Facebook Reels",
+    "optional_app": true,
+    "_note": [
+      "rev 1 (живьём 2026-11-04, второй телефон, Facebook 585, английский интерфейс).",
+      "Системное «Поделиться» сюда НЕ годится: обе точки входа Facebook ведут в редактор",
+      "ИСТОРИИ (там «Share» сразу выкладывает историю) или обычного поста. Поэтому как",
+      "человек: главная → «Create» → «Reel» → галерея → наш ролик (сверка длины «00:15»)",
+      "→ редактор → «Next» → подпись → «Share now».",
+      "В редакторе дерево пустое (играет видео, тап по видео паузу не ставит), поэтому",
+      "«Next» — по месту (0.918, 0.908) и только когда галерея ушла (tap_xy + unless).",
+      "Разовое окно «Review audience» → «Continue»; следующее за ним «Who can see your",
+      "future posts and reels?» маршрут НЕ проходит: это настройка аккаунта (выставлено",
+      "Public вручную 04.11). Появится снова — ошибка со снимком, решает человек.",
+      "Остался черновик с прошлой попытки — окно «Continue editing your last reel?»:",
+      "«Save as draft», не «Discard»: черновик мог быть и человеческий.",
+      "optional_app: на телефоне без Facebook публикация туда пропускается (scheduler).",
+      "Русские подписи — догадки, на русском Facebook не проверялись."
+    ],
+    "steps": [
+      {
+        "op": "home",
+        "desc": "главная Facebook",
+        "reveal": true,
+        "home": [
+          {"desc": "Create, Double tap"},
+          {"desc": "Создать, "}
+        ],
+        "tab": [
+          {"desc": "Home, tab", "clickable": true},
+          {"desc": "Главная, вкладка", "clickable": true}
+        ]
+      },
+      {
+        "op": "tap",
+        "timeout": 15,
+        "any": [
+          {"desc": "Create, Double tap", "clickable": true},
+          {"desc": "Создать, ", "clickable": true}
+        ],
+        "desc": "«Create» в шапке"
+      },
+      {
+        "op": "tap",
+        "timeout": 15,
+        "any": [
+          {"text": "Reel"},
+          {"text": "Видео Reels"},
+          {"text": "Reels"}
+        ],
+        "desc": "«Reel» в меню создания"
+      },
+      {
+        "op": "optional_tap",
+        "timeout": 5,
+        "any": [
+          {"text": "SAVE AS DRAFT"},
+          {"text": "Save as draft"},
+          {"text": "СОХРАНИТЬ КАК ЧЕРНОВИК"},
+          {"text": "Сохранить как черновик"}
+        ],
+        "desc": "старый черновик — сохранить и начать новый"
+      },
+      {
+        "op": "wait",
+        "timeout": 30,
+        "any": [
+          {"desc": "Create reel with Video"},
+          {"text": "Create reel"},
+          {"text": "Создать видео Reels"}
+        ],
+        "desc": "галерея Reels"
+      },
+      {
+        "op": "pick_video",
+        "desc": "наш ролик — первый видео, сверка по длине",
+        "timeout": 20,
+        "items": [
+          {"desc": "Create reel with Video", "clickable": true},
+          {"desc": "с видео", "clickable": true}
+        ],
+        "duration": []
+      },
+      {
+        "op": "tap_xy",
+        "x": 0.918,
+        "y": 0.908,
+        "timeout": 20,
+        "unless": [
+          {"desc": "Create reel with"},
+          {"text": "Create reel"},
+          {"text": "Создать видео Reels"}
+        ],
+        "desc": "«Next» в редакторе"
+      },
+      {
+        "op": "optional_tap",
+        "timeout": 6,
+        "any": [
+          {"desc": "Continue", "clickable": true},
+          {"desc": "Продолжить", "clickable": true}
+        ],
+        "desc": "разовое окно «Review audience»"
+      },
+      {
+        "op": "wait",
+        "timeout": 30,
+        "any": [
+          {"contains": "Describe your reel"},
+          {"contains": "Опишите"},
+          {"desc": "Share now", "clickable": true}
+        ],
+        "desc": "экран подписи"
+      },
+      {
+        "op": "tap",
+        "any": [
+          {"contains": "Describe your reel"},
+          {"contains": "Опишите"},
+          {"cls": "AutoCompleteTextView"}
+        ],
+        "desc": "фокус в поле подписи"
+      },
+      {
+        "op": "type",
+        "value": "$caption"
+      },
+      {
+        "op": "hide_keyboard",
+        "desc": "убрать клавиатуру"
+      },
+      {
+        "op": "sleep",
+        "min": 1,
+        "max": 2
+      },
+      {
+        "op": "publish",
+        "timeout": 25,
+        "any": [
+          {"desc": "Share now", "clickable": true},
+          {"desc": "Поделиться сейчас", "clickable": true}
+        ],
+        "verify_gone": true,
+        "gone_timeout": 25,
+        "desc": "ФИНАЛЬНАЯ КНОПКА"
+      }
+    ],
+    "rev": 1
+  },
   "_feed_apps": {
     "_readme": [
       "Ленты для живых сессий. Открытое приложение — ещё не лента:",
@@ -1546,6 +1697,93 @@
       ],
       "search_uri": "instagram://explore",
       "comments_need_playing": false
+    },
+    "facebook": {
+      "package": "com.facebook.katana",
+      "title": "Facebook Reels",
+      "_note": [
+        "Снято живьём 2026-11-04 (второй телефон, Facebook 585, английский интерфейс).",
+        "В отличие от Instagram, дерево в ленте Reels снимается и на ходу (2.7 с, 89 узлов),",
+        "и правая колонка подписана: «Like button…», «716 comments», «Share, 1.4K shares».",
+        "Поэтому лента опознаётся по выбранной вкладке «Reels, tab 2 of 6» и по",
+        "полноэкранной кнопке «Reels tab details», а не по пустому дереву.",
+        "Лайк — двойной тап по кадру (проверено: кнопка стала «Like button, pressed»).",
+        "Одиночный тап ставит на паузу и снимает с неё. Комментарии открываются с паузы,",
+        "кадр легчает в 0.34 раза. «Copy link» в листе «поделиться» спрятан во втором",
+        "экране ряда значков — его докручивает link_row_scroll. В листе есть «Share now»",
+        "и «Your story»: их не трогает _is_sending.",
+        "Русские подписи — догадки, на русском Facebook не проверялись."
+      ],
+      "feed_tabs": [
+        {"desc": "Reels, tab", "clickable": true},
+        {"desc": "Reels, вкладка", "clickable": true},
+        {"desc": "Видео Reels, вкладка", "clickable": true}
+      ],
+      "for_you_tabs": [],
+      "_reveal_note": "«Главная» Facebook прячет нижнюю панель, пока прокручена, и помнит прокрутку после перезапуска; там же сами играют видео, и дерево не снимается. Поэтому: протяжка вниз возвращает панель (reveal_swipe), а если дерева нет и после неё — вкладка Reels по месту (2-я из 6). Прямых ссылок на вкладку нет: fb://reels открывает «Главную», fb://video_home — отдельный проигрыватель с полем комментария внизу (проверено 2026-11-04).",
+      "reveal_swipe": true,
+      "feed_tab_point": [0.251, 0.948],
+      "feed_no_tree": false,
+      "feed_selected": [
+        {"desc": "Reels, tab", "selected": true},
+        {"desc": "Reels, вкладка", "selected": true},
+        {"desc": "Видео Reels, вкладка", "selected": true}
+      ],
+      "feed_check_every": 6,
+      "feed_markers": [
+        {"desc": "Reels tab details"},
+        {"desc": "Подробнее о вкладке Reels"}
+      ],
+      "like_selectors": [
+        {"desc": "Like button", "clickable": true},
+        {"desc": "Кнопка «Нравится»", "clickable": true}
+      ],
+      "liked_selectors": [
+        {"desc": "Like button, pressed", "clickable": true},
+        {"desc": "Кнопка «Нравится», нажато", "clickable": true}
+      ],
+      "like_count_selectors": [
+        {"desc": " reactions", "clickable": true},
+        {"desc": " reaction", "clickable": true},
+        {"desc": "реакц", "clickable": true}
+      ],
+      "comment_selectors": [
+        {"desc": " comments", "clickable": true},
+        {"desc": " comment", "clickable": true},
+        {"desc": "коммент", "clickable": true}
+      ],
+      "comments_need_playing": false,
+      "share_selectors": [
+        {"desc": "Share,", "clickable": true},
+        {"desc": "Share", "clickable": true},
+        {"desc": "Поделиться", "clickable": true}
+      ],
+      "share_needs_playing": false,
+      "link_selectors": [
+        {"contains": "Copy link", "clickable": true},
+        {"contains": "Копировать ссылку", "clickable": true}
+      ],
+      "link_row_scroll": true,
+      "author_selectors": [
+        {"desc": "'s reels", "clickable": true},
+        {"desc": "Посмотреть видео Reels", "clickable": true}
+      ],
+      "caption_fullscreen_skip": [
+        "reels tab details", "tap to show video controls",
+        "подробнее о вкладке reels", "нажмите, чтобы"
+      ],
+      "discover_tabs": [
+        {"desc": "Search", "clickable": true},
+        {"desc": "Поиск", "clickable": true}
+      ],
+      "search_boxes": [
+        {"cls": "EditText"}
+      ],
+      "home_tabs": [
+        {"desc": "Reels, tab", "clickable": true},
+        {"desc": "Reels, вкладка", "clickable": true},
+        {"desc": "Видео Reels, вкладка", "clickable": true}
+      ]
     }
   }
 }

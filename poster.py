@@ -1,6 +1,7 @@
 """Исполнитель маршрутов публикации из recipes.json."""
 import json
 import os
+import random
 import re
 import struct
 import time
@@ -234,6 +235,19 @@ def run_step(step, ctx, log_path, index):
     if op == "tap_xy":
         # Доля экрана, а не пиксели: у кнопки нет ни текста, ни id (миниатюра
         # галереи в камере Instagram), но место у неё постоянное.
+        # `unless` — экран, на котором по этому месту жать НЕЛЬЗЯ. У Facebook
+        # «Next» редактора Reels нажимается по месту (дерево пустое, пока
+        # играет видео), а прямо перед редактором — галерея: если она ещё не
+        # ушла, тап пришёлся бы в клетку с ДРУГИМ роликом. Ждём, пока уйдёт.
+        unless = step.get("unless") or []
+        if unless:
+            end = time.time() + step.get("timeout", 15)
+            while ui.find_any(ui.dump(retries=1, tolerant=True, timeout=8), unless) is not None:
+                if time.time() >= end or abort.requested():
+                    _snap(log_path, index, "STUCK")
+                    raise StepFailed(f"экран не сменился — по месту не жму ({label})")
+                time.sleep(1.0)
+            human.pause(1.0, 1.8)
         _ensure_front(ctx, label)
         w, h = adb.screen_size()
         x, y = int(w * step["x"]), int(h * step["y"])
@@ -799,6 +813,7 @@ def _to_home(step, ctx, log_path, index):
         raise StepFailed(f"{package} не открылся")
     human.pause(2.5, 4.0)
     paused = tab_tapped = False
+    reveals = 0
     end = time.time() + step.get("timeout", 40)
     nodes = []
     while time.time() < end:
@@ -823,6 +838,19 @@ def _to_home(step, ctx, log_path, index):
             human.pause(1.0, 1.6)
             continue
         if nodes and ui.dismiss_popup(nodes):
+            continue
+        if nodes and step.get("reveal") and reveals < 3 \
+                and ui.find_any(nodes, step.get("tab", [])) is None:
+            # Facebook прячет шапку («Create») и нижние вкладки, пока лента
+            # прокручена вниз, — а приложение помнит прокрутку и после
+            # перезапуска (живьём 2026-11-04). Короткая протяжка вниз по ленте
+            # их возвращает. Это свайп, не тап: нажать им ничего нельзя.
+            _ensure_front(ctx, label)
+            w, h = adb.screen_size()
+            adb.swipe(int(w * 0.5), int(h * 0.40), int(w * 0.5), int(h * 0.62),
+                      random.randint(250, 400))
+            reveals += 1
+            human.pause(1.0, 1.6)
             continue
         tab = ui.find_any(nodes, step.get("tab", []))
         if tab is not None and not tab_tapped:
@@ -1403,7 +1431,7 @@ def _upload_on_screen(package):
 # YouTube грузит исходник, Instagram и TikTok пережимают (меньше), а Instagram
 # ещё и начинает грузить заранее, пока набирается подпись. Поэтому счёт — с
 # открытия приложения, а не с нажатия кнопки.
-UPLOAD_SHARE = {"shorts": 0.5, "reels": 0.04, "tiktok": 0.04}
+UPLOAD_SHARE = {"shorts": 0.5, "reels": 0.04, "tiktok": 0.04, "facebook": 0.04}
 
 
 def wait_upload(package, video_path, log, since=None, target=""):

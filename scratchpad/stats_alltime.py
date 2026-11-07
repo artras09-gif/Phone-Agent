@@ -90,7 +90,7 @@ def dump(**k):
 
 ui.dump = dump
 parsed = []
-accstats.parse_profile = lambda nodes, h=2400: parsed.pop(0) if parsed else {"videos": []}
+accstats.parse_profile = lambda nodes, h=2400, tile_re=None: parsed.pop(0) if parsed else {"videos": []}
 same = {"videos": [{"title": "a", "views": 10}, {"title": "b", "views": 20}]}
 screens[:] = [[], [], []]
 parsed[:] = [same, {"videos": same["videos"] + [{"title": "c", "views": 5}]}]

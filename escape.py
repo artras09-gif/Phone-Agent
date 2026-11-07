@@ -461,7 +461,8 @@ def hands_why():
 
 FEED_TITLES = {"com.zhiliaoapp.musically": "TikTok", "com.ss.android.ugc.trill": "TikTok",
                "com.google.android.youtube": "YouTube Shorts",
-               "com.instagram.android": "Instagram Reels"}
+               "com.instagram.android": "Instagram Reels",
+               "com.facebook.katana": "Facebook Reels"}
 
 
 def _point_of(text):

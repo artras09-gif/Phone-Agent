@@ -1123,12 +1123,22 @@ $("b-cancel").onclick = () => send("cancel", {});
 /* Куда постить из окна — галочками, а не одной строкой списка: раньше
    выбиралась одна сеть, а перетащенное видео и её не учитывало и уходило
    только в TikTok (жалоба 2026-10-14). Выбор запоминается. */
-const TARGET_TITLES = {tiktok: "TikTok", reels: "Instagram Reels", shorts: "YouTube Shorts"};
+const TARGET_TITLES = {tiktok: "TikTok", reels: "Instagram Reels", shorts: "YouTube Shorts",
+                       facebook: "Facebook Reels"};
 let pickedTargets = null;
 function loadTargets(all){
   if(pickedTargets) return;
   try{ pickedTargets = JSON.parse(localStorage.getItem("pa-targets") || "null"); }catch(e){}
   if(!Array.isArray(pickedTargets)) pickedTargets = all.slice();
+  // Сеть, которой не было, когда выбор запоминался (Facebook, 2026-11-04),
+  // приходит отмеченной: по умолчанию постим во все сети.
+  let known = null;
+  try{ known = JSON.parse(localStorage.getItem("pa-targets-known") || "null"); }catch(e){}
+  if(!Array.isArray(known)) known = ["tiktok", "reels", "shorts"];   // до 04.11 сетей было три
+  {
+    all.forEach(t => { if(!known.includes(t) && !pickedTargets.includes(t)) pickedTargets.push(t); });
+  }
+  try{ localStorage.setItem("pa-targets-known", JSON.stringify(all)); }catch(e){}
   pickedTargets = pickedTargets.filter(t => all.includes(t));
 }
 function renderTargets(all){
@@ -1425,7 +1435,8 @@ function renderLangs(){
 // Карточки «насколько настроены ленты». Перерисовываем, только когда данные
 // поменялись: страница опрашивает раз в секунду, а шкалы анимированы.
 const APP_COLORS = {tiktok: "#25f4ee", shorts: "#ff3040",
-                    reels: "linear-gradient(135deg,#f58529,#dd2a7b,#8134af)"};
+                    reels: "linear-gradient(135deg,#f58529,#dd2a7b,#8134af)",
+                    facebook: "#1877f2"};
 let tuningShown = "";
 function renderTuning(rows, topic){
   const key = JSON.stringify([rows, topic]);

@@ -71,7 +71,7 @@ say(spec["when"] == dt.datetime(2026, 10, 12, 18, 30) and spec["exact"], "вре
 say(spec["caption"] == "Мой первый тикток про пиццу #еда\nвторая строка с ссылкой "
     "instagram.com/reel/AbC", "описание дословно: слово «тикток» и ссылка не тронуты")
 spec2 = postspec.parse("описание: Общий текст\nописание шортс: Короткое название", now)
-say(spec2["targets"] == ["tiktok", "shorts", "reels"] and spec2["when"] is None,
+say(spec2["targets"] == ["tiktok", "shorts", "reels", "facebook"] and spec2["when"] is None,
     "без «куда» и «когда» — во все сети и сразу")
 say(postspec.caption_for(spec2, "shorts") == "Короткое название"
     and postspec.caption_for(spec2, "tiktok") == "Общий текст", "своё описание для шортс")
@@ -91,7 +91,7 @@ say(not free["template"] and free["targets"] == ["tiktok"] and free["caption"] =
     and free["when"] == dt.datetime(2026, 10, 11, 21, 0),
     "свободная подпись: сеть и время отдельными строками")
 inline = postspec.parse("смешной кот в тикток в 21:00 — Me da igual", now)
-say(inline["targets"] == ["tiktok", "shorts", "reels"] and inline["when"] is None
+say(inline["targets"] == ["tiktok", "shorts", "reels", "facebook"] and inline["when"] is None
     and inline["caption"] == "смешной кот в тикток в 21:00 — Me da igual",
     "слова внутри текста («тикток», «21:00», «igual») не трогаются, сети — все")
 shown = postspec.describe(spec, 7, now)

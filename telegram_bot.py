@@ -45,6 +45,7 @@ ALIASES = {
     "tiktok": ("tiktok", "тикток", "тик-ток", "тт"),
     "shorts": ("shorts", "шорт", "youtube", "ютуб", "yt"),
     "reels": ("reels", "рилс", "рилз", "instagram", "инст", "ig"),
+    "facebook": ("facebook", "фейсбук", "фэйсбук", "fb", "фб"),
 }
 
 # Сколько ссылок берём из одного сообщения. Предел не от жадности:
@@ -2143,7 +2144,11 @@ def _later(fn):
 # кнопками под одним сообщением. Состояние черновика живёт в базе (сети — в
 # `jobs.targets`, статус 'draft'), поэтому кнопки работают и после перезапуска.
 
-TARGET_ORDER = ("tiktok", "reels", "shorts")
+TARGET_ORDER = ("tiktok", "reels", "shorts", "facebook")
+# Подпись сети на кнопке черновика. Раньше бралось последнее слово названия
+# («Instagram Reels» -> «Reels»), и у Facebook Reels вышла бы вторая «Reels».
+BUTTON_TITLES = {"tiktok": "TikTok", "reels": "Reels", "shorts": "Shorts",
+                 "facebook": "Facebook"}
 _ASK_TIME = {}          # «чат:человек» -> задача, для которой ждём «своё время» текстом
 ASK_TIME_SEC = 15 * 60  # дольше не ждём: человек передумал и пишет уже о другом
 
@@ -2201,7 +2206,7 @@ def _draft_markup(job):
 
     picked = [t for t in job["targets"].split(",") if t]
     jid = job["id"]
-    nets = [{"text": ("✅ " if t in picked else "⬜ ") + postspec.TITLES[t].split()[-1],
+    nets = [{"text": ("✅ " if t in picked else "⬜ ") + BUTTON_TITLES.get(t, postspec.TITLES[t]),
              "callback_data": f"t:{jid}:{t}"} for t in TARGET_ORDER]
     times = [{"text": label, "callback_data": f"w:{jid}:{code}"}
              for label, code in _time_choices()]

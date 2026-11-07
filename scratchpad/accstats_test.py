@@ -239,11 +239,11 @@ for name in ("tiktok", "youtube", "instagram", "facebook"):
     open(os.path.join(folder, name + ".png"), "wb").write(b"png")
 items, day = accstats.latest_shots()
 say([c for _, c in items] == ["YouTube Studio — аналитика", "Instagram — статистика",
-                              "Facebook — статистика (Meta Business Suite)", "TikTok Studio — аналитика"],
+                              "Facebook — статистика", "TikTok Studio — аналитика"],
     f"альбом: YouTube, Instagram, Facebook, TikTok — {[c.split(' ')[0] for _, c in items]}")
 say(day == dt.date.today().isoformat(), "снимки сегодняшние")
 accstats._installed = lambda pkg: False
-say(accstats._shot_facebook(folder, 1080, 2400) is None, "нет Meta Business Suite — Facebook пропущен")
+say(not accstats._has_app("facebook"), "нет Facebook — сеть пропущена (подробно — stats_facebook.py)")
 
 print("\n--- когда снимать ---")
 import telegram_bot  # noqa: E402

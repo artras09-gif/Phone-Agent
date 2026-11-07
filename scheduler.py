@@ -62,7 +62,7 @@ def _plan_for_today(day=None):
             base = dt.datetime.combine(today, dt.time(h, m))
             shift = random.uniform(-config.JITTER_MIN, config.JITTER_MIN)
             items.append((base + dt.timedelta(minutes=shift), "session",
-                          (random.choice(config.FEED_APPS), None)))
+                          (random.choice(config.DEFAULT_SESSION_APPS), None)))
 
     # Подборка ссылок в Telegram. Без разброса и БЕЗ пропуска задним числом
     # (см. `_already_past`): телефона это не касается, а письмо, отложенное
@@ -352,6 +352,14 @@ def _post_job(job, notify):
             text = postspec.shorts_title(text)
         text = postspec.fit(text, target)
         extra = _youtube_extra(job, captions) if target == "shorts" else None
+        missing = _missing_app(target)
+        if missing:
+            # Facebook стоит не на каждом телефоне, а «все сети» по умолчанию
+            # включают и его. Пропуск — не сбой: пост во все остальные вышел.
+            results.append(missing)
+            if notify:
+                notify(missing)
+            continue
         try:
             ok, report = (poster.post(job["video_path"], text, target, extra=extra) if extra
                           else poster.post(job["video_path"], text, target))
@@ -374,6 +382,30 @@ def _post_job(job, notify):
         if notify:
             notify(shelf)
     return "\n\n".join(results)
+
+
+def _missing_app(target):
+    """Строка «приложения нет — пропускаю» или "" (есть или проверять не надо).
+
+    Только для маршрутов с `optional_app` (Facebook): у остальных сетей
+    отсутствие приложения — настоящая поломка, и о ней пусть кричит `poster`.
+    """
+    try:
+        recipe = poster.load_recipes().get(target) or {}
+    except (OSError, ValueError):
+        return ""
+    if not recipe.get("optional_app") or not recipe.get("package"):
+        return ""
+    import adb
+
+    try:
+        there = bool((adb.shell(f"pm path {recipe['package']}", check=False) or "").strip())
+    except adb.AdbError:
+        return ""                # телефон не ответил — пусть разбирается poster
+    if there:
+        return ""
+    title = recipe.get("title", target)
+    return f"{title}: приложения нет на этом телефоне — пропускаю"
 
 
 def _shelve(job, ok_all):

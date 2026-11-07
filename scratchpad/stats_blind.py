@@ -226,5 +226,47 @@ try:
 except ui.NeedsPermission as e:
     say("TikTok" in str(e) and "Instagram" not in str(e), f"текст про TikTok, а не про Instagram: {str(e)[:70]}…")
 
+print("\n--- «Остановить» прерывает все отчёты подряд (2026-11-02) ---")
+import abort  # noqa: E402
+ran = []
+accstats.take_request = lambda: None
+accstats.reports_due = lambda now=None: [("day", "main"), ("week", "main"), ("month", "main")]
+
+
+def fake_run(kind, part="main", log=None):
+    ran.append(kind)
+    if kind == "day":
+        abort.request()                      # нажали посреди отчёта за вчера
+    return {}
+
+
+real_report_run = accstats.report_run
+accstats.report_run = fake_run
+abort.clear()
+accstats.collect_all()
+say(ran == ["day"], f"после кнопки неделя и месяц не начались: {ran}")
+accstats.report_run = real_report_run
+
+collected = []
+device.unlock = device.ensure_awake = lambda *a, **k: True
+device.keep_awake = lambda *a, **k: None
+adb.screen_size = lambda: (W, H)
+accstats.save = lambda *a, **k: None
+
+
+def fake_collect(net, log=None, **k):
+    collected.append(net)
+    abort.request()
+    return {"followers": 1, "videos": [], "why": ""}
+
+
+accstats.collect = fake_collect
+abort.clear()
+log = []
+accstats._collect_all(["tiktok", "shorts", "reels"], log=log, folder=tempfile.mkdtemp(prefix="pa_stop_"))
+say(collected == ["tiktok"] and any("остановлено" in s for s in log),
+    f"после кнопки следующую сеть не начинает: {collected}")
+abort.clear()
+
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ОШИБКИ")
 sys.exit(0 if ok else 1)
