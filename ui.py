@@ -90,7 +90,7 @@ def dump(retries=3, tolerant=False, timeout=30):
 
 
 def _matches(node, text=None, contains=None, rid=None, desc=None,
-             cls=None, clickable=None, selected=None):
+             cls=None, clickable=None, selected=None, desc_exact=None):
     if selected is not None and node.selected != selected:
         return False
     if text is not None and node.text.lower() != text.lower():
@@ -104,6 +104,8 @@ def _matches(node, text=None, contains=None, rid=None, desc=None,
         if node.rid != rid and tail != rid:
             return False
     if desc is not None and desc.lower() not in node.desc.lower():
+        return False
+    if desc_exact is not None and node.desc.lower() != desc_exact.lower():
         return False
     if cls is not None and cls.lower() not in node.cls.lower():
         return False

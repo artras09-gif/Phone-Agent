@@ -80,10 +80,11 @@ print("\n--- счётчиков сети нет (закрыты прошивко
 done, took, _ = scenario(counters=False)
 say(done and took >= 160, f"ждёт хотя бы по объёму (40 МБ ≈ 160 с): {took:.0f} с")
 
-print("\n--- загрузка бесконечная ---")
-done, took, text = scenario(lambda t: 300 * 1024)
-say(not done and took >= config.UPLOAD_WAIT_MAX and took < config.UPLOAD_WAIT_MAX + 10,
-    f"сдался через {took / 60:.0f} мин и сказал: {text.splitlines()[-1].strip()[:50]}")
+print("\n--- загрузка дольше 15 минут ---")
+slow = config.UPLOAD_WARN_SEC + 60
+done, took, text = scenario(lambda t: 300 * 1024 if t < slow else 0)
+say(done and took > slow and text.count("продолжаю ждать") == 1,
+    f"предупредил один раз и дождался конца: {took:.0f} с")
 
 print("\n--- живьём 2026-10-20: YouTube за 2 мин отправил 0,1 МБ — это не конец ---")
 open(video, "wb").write(b"\0" * (100 * 1024 * 1024))          # 100 МБ
@@ -107,9 +108,9 @@ def run(rates, target, since_offset=0):
     return done, clock[0] - start, log.text()
 
 
-done, took, text = run(lambda t: 1000 if t < 100 else 0, "shorts")
-say(not done and took >= config.UPLOAD_WAIT_MAX and "не ушло" in text,
-    f"не объявил «закончилась» на 0,1 МБ: ждал {took / 60:.0f} мин и предупредил")
+done, took, text = run(lambda t: 1000 if t < 100 else (2 * MB if slow < t < slow + 50 else 0), "shorts")
+say(done and took > slow + 50 and "загрузка не подтверждена" in text,
+    f"не объявил «закончилась» на 0,1 МБ: дождался отправки файла за {took:.0f} с")
 done, took, _ = run(lambda t: 0, "reels", since_offset=30 * 1024 * 1024)
 say(done and took < 120, f"Instagram загрузил заранее, пока набиралась подпись, — засчитано: {took:.0f} с")
 done, took, _ = run(lambda t: 2 * 1024 * 1024 if t < 50 else 0, "shorts")
@@ -125,13 +126,15 @@ say(poster.wait_upload("com.app", video, log) is False and "остановили
 abort.clear()
 
 print("\n--- в публикации: файл удаляется только после загрузки ---")
-removed, stopped = [], []
+removed, stopped, homes = [], [], []
 for name, fn in {"unlock": lambda: True, "keep_awake": lambda on=True: None,
                  "close_overlays": lambda *a, **k: None,
                  "push_video": lambda path: "/sdcard/Movies/v.mp4",
                  "refresh_media": lambda remote: None,
                  "share_video": lambda *a, **k: None, "wait_for_app": lambda pkg, timeout=25: True,
                  "stop_app": lambda pkg: stopped.append(pkg),
+                 "_remove_recent_tasks": lambda pkg: None,
+                 "go_home": lambda: homes.append(1),
                  "remove_remote": lambda path: removed.append(path),
                  "cleanup_pushed": lambda keep_sec=None: 0}.items():
     setattr(device, name, fn)
@@ -141,17 +144,20 @@ recipe = {"demo": {"package": "com.app", "title": "demo", "steps": [{"op": "slee
 poster.run_step = lambda step, ctx, log_path, i: "шаг"
 config.DRY_RUN = False
 order = []
-poster.wait_upload = lambda pkg, path, log, **kw: order.append(("ждал", list(removed))) or True
+poster.wait_upload = lambda pkg, path, log, **kw: order.append(("ждал", removed[:], stopped[:])) or True
 good, report = poster.post(video, "x", "demo", recipes=recipe)
-say(good and order == [("ждал", [])] and removed == ["/sdcard/Movies/v.mp4"],
+say(good and order == [("ждал", [], [])] and removed == ["/sdcard/Movies/v.mp4"],
     "сперва дождался загрузки, файл удалил потом")
-say(not stopped, "приложение после публикации не закрывали")
+say(stopped == ["com.app"], "после загрузки приложение закрыли")
 removed.clear()
+stopped.clear()
 poster.wait_upload = lambda pkg, path, log, **kw: False
-poster.post(video, "x", "demo", recipes=recipe)
+good, _ = poster.post(video, "x", "demo", recipes=recipe)
 pushed = open(os.path.join(os.path.dirname(config.QUEUE_DIR), "pushed.json"), encoding="utf-8").read()
 say(not removed and "/sdcard/Movies/v.mp4" in pushed,
     "не дождался — файл оставлен и записан, его уберут через несколько часов")
+say(not good and not stopped and not homes and poster.LAST_FAIL["upload_unconfirmed"],
+    "без подтверждения загрузки — остаёмся в приложении, без отчёта об успехе")
 config.DRY_RUN = True
 waited = []
 poster.wait_upload = lambda pkg, path, log, **kw: waited.append(1) or True
@@ -172,6 +178,35 @@ data["/sdcard/Movies/old.mp4"] -= 4 * 3600
 json.dump(data, open(device._pushed_path(), "w", encoding="utf-8"))
 say(device.cleanup_pushed() == 1 and gone == ["/sdcard/Movies/old.mp4"],
     "убран только свой файл старше 3 часов; свежий (может ещё грузиться) — нет")
+
+print("\n--- список недавних на Xiaomi: ADB возвращает CRLF ---")
+recent = "\r\n".join((
+    "  * RecentTaskInfo #0: ",
+    "    id=635 userId=0 hasTask=false",
+    "    realActivity={com.app/.Main}",
+    "  * RecentTaskInfo #1: ",
+    "    id=639 userId=0 hasTask=true",
+    "    realActivity={org.telegram.messenger/.LaunchActivity}",
+    "  * RecentTaskInfo #2: ",
+    "    id=640 userId=10 hasTask=false",
+    "    realActivity={com.app/.Main}",
+))
+commands = []
+shell = device.adb.shell
+
+
+def fake_shell(command, **kwargs):
+    commands.append(command)
+    return {"am get-current-user": "0", "dumpsys activity recents": recent}.get(command, "")
+
+
+try:
+    device.adb.shell = fake_shell
+    device.finish_app("com.app", check_upload=False)
+finally:
+    device.adb.shell = shell
+say([cmd for cmd in commands if cmd.startswith("am stack remove")] == ["am stack remove 635"],
+    "удалена карточка нужного приложения текущего пользователя")
 
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)

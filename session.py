@@ -2134,6 +2134,7 @@ def browse(app="tiktok", duration=None, keep_open=False):
     # проснулся, приложение не открылось) случается раньше, чем поток создан —
     # и вместо понятной причины сессия падала с UnboundLocalError.
     feed, shrink = None, None
+    opening = False
     try:
         # Проверяем экран снимком, а не опросом: unlock() выше мог отчитаться
         # об успехе при погашенном экране — так уже случалось.
@@ -2143,6 +2144,7 @@ def browse(app="tiktok", duration=None, keep_open=False):
             return "экран не включился — сессия отменена"
 
         w, h = adb.screen_size()
+        opening = True
         if not _open_feed(cfg, log):
             _alert(f"⛔ PhoneAgent, {title}: сессия не началась — приложение не "
                    "открылось. Экран — на снимке.", log)
@@ -2549,12 +2551,15 @@ def browse(app="tiktok", duration=None, keep_open=False):
         return log.text()
 
     finally:
-        if feed is not None:
-            feed.stop()
-        device.keep_awake(False)
-        # Остановили кнопкой — следующего куска блока не будет (его отменяет
-        # сторож расписания), и оставлять телефон разблокированным незачем.
-        if not keep_open or abort.requested():
-            device.go_home()
-            human.pause(1, 2)
-            device.lock()
+        try:
+            if feed is not None:
+                feed.stop()
+        finally:
+            if opening:
+                device.finish_app(package, log)
+            device.keep_awake(False)
+            # keep_open оставляет телефон разблокированным для следующей ленты.
+            if not keep_open or abort.requested():
+                device.go_home()
+                human.pause(1, 2)
+                device.lock()

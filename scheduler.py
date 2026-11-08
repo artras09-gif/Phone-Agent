@@ -374,6 +374,8 @@ def _post_job(job, notify):
             notify(report)
         if not ok:
             _tell_failure(target, report)
+            if poster.LAST_FAIL.get("upload_unconfirmed"):
+                break                       # приложение остаётся на экране
 
     jobs.mark(job["id"], "done" if ok_all else "failed", "\n\n".join(results))
     shelf = _shelve(job, ok_all)

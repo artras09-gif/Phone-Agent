@@ -44,8 +44,15 @@ check("кнопка черновика бота — «Facebook», а не вто
 recipe = poster.load_recipes()["facebook"]
 ops = [s["op"] for s in recipe["steps"]]
 check("маршрут начинается с главной", ops[0] == "home")
+final = recipe["steps"][ops.index("publish")]
 check("финальная кнопка одна — «Share now»",
-      ops.count("publish") == 1 and recipe["steps"][ops.index("publish")]["any"][0]["desc"] == "Share now")
+      ops.count("publish") == 1 and final["any"][0]["desc_exact"] == "Share now")
+share = ui.Node({"content-desc": "Share now", "enabled": "true", "clickable": "false",
+                 "bounds": "[260,2538][1228,2681]"})
+story = ui.Node({"content-desc": "Share now to your story", "enabled": "true", "clickable": "true",
+                 "bounds": "[0,2133][1280,2319]"})
+check("видимая «Share now» без clickable находится по точной подписи", ui.find_any([story, share], final["any"]) is share)
+check("«Share now to your story» не подходит для финальной кнопки", ui.find_any([story], final["any"]) is None)
 words = " ".join(str(s) for s in recipe["steps"]
                  if s["op"] in ("tap", "optional_tap", "tap_first")).lower()
 check("нигде, кроме финала, не жмётся «share» и «story»", "share now" not in words and "story" not in words)

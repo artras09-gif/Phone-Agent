@@ -131,9 +131,9 @@ class Runner:
             self.title = title
             self.started_at = time.time()
             self.preempted = False
+            abort.clear()      # сбрасываем прошлую остановку до запуска потока
             self._thread = threading.Thread(target=self._wrap(fn), daemon=True)
             self._thread.start()
-        abort.clear()          # прошлая остановка не должна гасить новое
 
     def _wrap(self, fn):
         """Обёртка вокруг работы: журнал, перехват падений, побудка ждущих."""

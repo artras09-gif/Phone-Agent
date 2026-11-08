@@ -58,7 +58,8 @@ print("\n--- экран публикации не остаётся открыт�
 
 saved_dev = {n: getattr(device, n) for n in (
     "unlock", "keep_awake", "close_overlays", "push_video", "share_video",
-    "wait_for_app", "stop_app", "remove_remote")}
+    "wait_for_app", "stop_app", "remove_remote", "_remove_recent_tasks", "tx_bytes",
+    "cleanup_pushed", "remember_pushed", "forget_pushed")}
 device.unlock = lambda: True
 device.keep_awake = lambda on=True: None
 device.close_overlays = lambda *a, **k: None
@@ -68,6 +69,11 @@ device.share_video = lambda *a, **k: None
 device.wait_for_app = lambda pkg, timeout=25: True
 device.stop_app = lambda pkg: закрыто.append(pkg)
 device.remove_remote = lambda path: None
+device._remove_recent_tasks = lambda pkg: None
+device.tx_bytes = lambda: 0
+device.cleanup_pushed = lambda: 0
+device.remember_pushed = lambda path: None
+device.forget_pushed = lambda path: None
 poster.wait_upload = lambda *a, **k: True      # телефон в этом тесте не трогаем
 saved_step, saved_dry = poster.run_step, config.DRY_RUN
 try:
@@ -88,7 +94,7 @@ try:
     закрыто.clear()
     poster.run_step = lambda step, ctx, log_path, i: "шаг"
     poster.post("x.mp4", "", "demo", recipes=РЕЦЕПТ)
-    say(not закрыто, "настоящая публикация прошла — приложение не трогаем")
+    say(закрыто == ["com.example.app"], "загрузка закончилась — приложение закрыто")
 finally:
     for n, f in saved_dev.items():
         setattr(device, n, f)

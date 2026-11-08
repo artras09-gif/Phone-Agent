@@ -1406,9 +1406,10 @@ def failure_files(log_path):
     return shot, screen
 
 
-UPLOAD_WORDS = re.compile(r"(загрузк|загружа|uploading|публику|публикац|posting|sharing|"
-                          r"обработк|processing|отправк)", re.I)
-UPLOAD_PERCENT = re.compile(r"(?<![\d.,])(?:\d{1,2}|100)\s?%")
+UPLOAD_WORDS = re.compile(
+    r"^(?:загрузка|загружа\w+|uploading|публику\w+|публикация|posting|sharing|"
+    r"обработка|обрабатыва\w+|processing|отправка|отправля\w+)(?:$|[\s.:…])", re.I)
+UPLOAD_PERCENT = re.compile(r"\d{1,2}\s?%")
 
 
 def _upload_on_screen(package):
@@ -1421,9 +1422,10 @@ def _upload_on_screen(package):
     except Exception:
         return False
     for n in nodes or []:
-        text = f"{n.text} {n.desc}"
-        if UPLOAD_PERCENT.search(text) or UPLOAD_WORDS.search(text):
-            return True
+        for label in (n.text, n.desc):
+            text = (label or "").strip()
+            if UPLOAD_PERCENT.fullmatch(text) or UPLOAD_WORDS.match(text):
+                return True
     return False
 
 
@@ -1461,7 +1463,8 @@ def wait_upload(package, video_path, log, since=None, target=""):
     # Без счётчиков сети — хотя бы по объёму: ~2 Мбит/с отправки.
     floor = config.UPLOAD_MIN_SEC if known else \
         max(config.UPLOAD_MIN_SEC, min(600, size / 1024 / 1024 * 4))
-    idle_since, sent, peak = None, 0, 0.0
+    idle_since, sent = None, 0
+    warned = False
     while True:
         abort.sleep(config.UPLOAD_POLL_SEC)
         if abort.requested():
@@ -1473,7 +1476,6 @@ def wait_upload(package, video_path, log, since=None, target=""):
         if tx is not None and last_bytes is not None:
             rate = max(0, tx - last_bytes) / max(0.5, now - last_at)
             sent = tx - base
-            peak = max(peak, rate)
         last_bytes, last_at = tx, now
         progress = device.upload_progress(package)
         busy = bool(progress) or (rate is not None and rate > config.UPLOAD_IDLE_RATE) \
@@ -1489,15 +1491,15 @@ def wait_upload(package, video_path, log, since=None, target=""):
             how = f", ушло {sent / 1024 / 1024:.1f} МБ" if known else ""
             log.append(f"  загрузка закончилась: ждал {elapsed:.0f} с{how}")
             return True
-        if elapsed >= config.UPLOAD_WAIT_MAX:
+        if not warned and elapsed >= config.UPLOAD_WARN_SEC:
+            warned = True
             if short:
-                log.append(f"  [!] видео, похоже, не ушло: за {elapsed / 60:.0f} мин отправлено "
-                           f"{sent / 1024 / 1024:.1f} МБ из ~{size / 1024 / 1024:.0f} — проверь "
-                           "публикацию в приложении; файл на телефоне оставляю")
+                log.append(f"  [!] загрузка не подтверждена: за {elapsed / 60:.0f} мин отправлено "
+                           f"{sent / 1024 / 1024:.1f} МБ из ~{size / 1024 / 1024:.0f}; "
+                           "продолжаю ждать в приложении")
             else:
                 log.append(f"  [!] загрузка не кончилась за {elapsed / 60:.0f} мин — "
-                           "дальше не жду, файл на телефоне оставляю")
-            return False
+                           "продолжаю ждать в приложении")
 
 
 def _open_for_post(recipe, package, remote, caption):
@@ -1525,6 +1527,7 @@ def _open_for_post(recipe, package, remote, caption):
 def post(video_path, caption, target, recipes=None, extra=None):
     """Опубликовать видео в одну соцсеть. Возвращает (успех, отчёт).
     extra — что ещё нужно маршруту: описание и теги YouTube (`yt_details`)."""
+    LAST_FAIL.update(dir="", target="", upload_unconfirmed=False)
     recipes = recipes or load_recipes()
     if target not in recipes:
         # Через Log, а не голой строкой: иначе при живом журнале сообщение
@@ -1611,6 +1614,8 @@ def post(video_path, caption, target, recipes=None, extra=None):
         if published:
             report.append("  жду, пока видео догрузится…")
             uploaded = wait_upload(package, video_path, report, since=tx_open, target=target)
+            if not uploaded:
+                raise StepFailed("загрузка не подтверждена")
         report.append("готово")
         # Маршрут прошёл — снимки шагов больше не нужны: они для разбора
         # СБОЯ, а сбоя не было. Остаётся текстовый отчёт. Иначе каждая
@@ -1621,11 +1626,12 @@ def post(video_path, caption, target, recipes=None, extra=None):
     except (StepFailed, adb.AdbError, RuntimeError) as e:
         # NeedsPermission — тоже RuntimeError: текст для человека готовый.
         report.append(f"ОШИБКА: {e}")
-        if FINAL["tapped"] and not config.DRY_RUN:
-            report.append("[!] финальная кнопка была нажата — приложение не закрываю и файл "
-                          "оставляю: загрузка могла пойти. Проверь в приложении, вышел ли пост, "
+        unconfirmed = not uploaded and (published or (FINAL["tapped"] and not config.DRY_RUN))
+        if unconfirmed:
+            report.append("[!] загрузка могла пойти — оставляю приложение открытым и файл на телефоне. "
+                          "Проверь в приложении, вышел ли пост, "
                           "прежде чем публиковать заново")
-        LAST_FAIL.update(dir=log_path, target=target)
+        LAST_FAIL.update(dir=log_path, target=target, upload_unconfirmed=unconfirmed)
         _snap(log_path, 99, "FAIL")
         return False, report.text()
 
@@ -1639,20 +1645,8 @@ def post(video_path, caption, target, recipes=None, extra=None):
         # нажимает в приложении ничего (в отличие от «назад», за которым у
         # Instagram идёт окно «Сохранить черновик / Удалить»), а
         # недоделанный ролик при этом не сохраняется.
-        if opened and not published and FINAL["tapped"] and not config.DRY_RUN:
-            # Финальную кнопку нажимали — ролик мог уйти и сейчас грузится.
-            # Закрыть приложение значит оборвать загрузку; на рабочий стол.
-            try:
-                device.go_home()
-            except adb.AdbError:
-                pass
-        elif opened and not published:
-            try:
-                device.stop_app(package)
-                report.append("приложение закрыто: экран публикации не оставлен")
-            except adb.AdbError:
-                report.append("[!] не смог закрыть приложение — "
-                              "экран публикации мог остаться открытым")
+        if opened and (uploaded or (not published and not FINAL["tapped"]) or config.DRY_RUN):
+            device.finish_app(package, report, check_upload=False)
         device.keep_awake(False)
         # Файл удаляем, только когда приложение его больше не читает: не
         # публиковали — или загрузка кончилась. Не дождались — оставляем,

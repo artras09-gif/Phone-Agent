@@ -1218,15 +1218,19 @@
         "op": "publish",
         "timeout": 25,
         "any": [
-          {"desc": "Share now", "clickable": true},
-          {"desc": "Поделиться сейчас", "clickable": true}
+          {"desc_exact": "Share now", "clickable": true},
+          {"desc_exact": "Поделиться сейчас", "clickable": true},
+          {"desc_exact": "Share now"},
+          {"desc_exact": "Поделиться сейчас"},
+          {"text": "Share now"},
+          {"text": "Поделиться сейчас"}
         ],
         "verify_gone": true,
         "gone_timeout": 25,
         "desc": "ФИНАЛЬНАЯ КНОПКА"
       }
     ],
-    "rev": 1
+    "rev": 2
   },
   "_feed_apps": {
     "_readme": [

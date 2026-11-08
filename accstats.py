@@ -383,7 +383,15 @@ def _posted_recently(net, minutes=30):
 
 def _read_profile(net, cfg, result):
     """Дойти до профиля и снять цифры в `result`. Ранний выход — причина в result."""
-    device.open_app(cfg["package"])
+    def check_stopped():
+        if abort.requested():
+            raise RuntimeError("остановлено")
+
+    def open_profile_app():
+        check_stopped()
+        device.open_app(cfg["package"])
+
+    open_profile_app()
     if not device.wait_for_app(cfg["package"], timeout=25):
         result["why"] = "приложение не открылось"
         return result
@@ -394,11 +402,13 @@ def _read_profile(net, cfg, result):
         end = time.time() + wait
         nodes = []
         while True:
+            check_stopped()
             nodes = ui.dump(retries=1, tolerant=True)
+            check_stopped()
             node = _pick(nodes, step["find"], h, step.get("bottom"), step.get("exact"))
             if node is not None or time.time() > end:
                 return node, nodes
-            time.sleep(0.7)
+            abort.sleep(0.7)
 
     def reveal(step):
         """Facebook прячет нижнюю панель, пока лента прокручена: короткая
@@ -407,9 +417,11 @@ def _read_profile(net, cfg, result):
         (узел, дерево) или (None, дерево); «tapped» вместо узла — нажато по месту."""
         nodes = []
         for _ in range(2):
+            check_stopped()
             adb.swipe(w // 2, int(h * 0.40), w // 2, int(h * 0.62), 260)
             human.pause(0.6, 0.9)
             nodes = ui.dump(retries=1, tolerant=True)
+            check_stopped()
             node = _pick(nodes, step["find"], h, step.get("bottom"), step.get("exact"))
             if node is not None:
                 return node, nodes
@@ -429,6 +441,7 @@ def _read_profile(net, cfg, result):
                     continue
             tries = 0
             while node is None and tries < 3:
+                check_stopped()
                 tries += 1
                 if ui.dismiss_popup(nodes):
                     pass
@@ -441,7 +454,7 @@ def _read_profile(net, cfg, result):
                     device.back()
                     human.pause(1.2, 1.8)
                     if adb.current_app()[0] != cfg["package"]:
-                        device.open_app(cfg["package"])
+                        open_profile_app()
                         device.wait_for_app(cfg["package"], timeout=15)
                 human.pause(1.5, 2)
                 node, nodes = find(step, 5)
@@ -454,6 +467,7 @@ def _read_profile(net, cfg, result):
                 adb.tap(int(x * w), int(y * h))
             elif i == 0 and cfg.get("tab_of") and len(nodes or []) < 8 \
                     and (y := _tab_row(w, h, cfg["tab_of"][1])) is not None:
+                check_stopped()
                 adb.tap(int((cfg["tab_of"][0] + 0.5) * w / cfg["tab_of"][1]), y)
             else:
                 return False
@@ -461,18 +475,21 @@ def _read_profile(net, cfg, result):
         return True
 
     def restart():
+        check_stopped()
         device.stop_app(cfg["package"])
         human.pause(1, 1.5)
-        device.open_app(cfg["package"])
+        open_profile_app()
         device.wait_for_app(cfg["package"], timeout=25)
         human.pause(3, 4)
 
     def arrived():
         """Свой ли профиль на экране: (True/False/None, дерево)."""
+        check_stopped()
         nodes = ui.dump(retries=2, tolerant=True)
         own = _own_state(nodes, cfg, h)
         last = cfg["steps"][-1]
         for k in range(4):
+            check_stopped()
             if own is not None:
                 break
             if k == 2:
@@ -524,6 +541,7 @@ def _read_profile(net, cfg, result):
     if not result["why"] and cfg.get("grid_tab"):
         tab = _pick(nodes, cfg["grid_tab"], h, top_only=True)   # не нижняя панель
         for _ in range(2 if cfg.get("grid_scroll") else 0):
+            check_stopped()
             if tab is not None:
                 break
             # Вкладки профиля ниже края или под нижней панелью (Facebook) —
@@ -534,6 +552,7 @@ def _read_profile(net, cfg, result):
             tab = _pick(nodes, cfg["grid_tab"], h, top_only=True)
         chosen = tab is not None and any(
             n.selected and n.bounds == tab.bounds for n in nodes or [])
+        check_stopped()
         if tab is not None and not chosen:
             ui.tap_node(tab)
             human.pause(2.5, 3.5)
@@ -660,8 +679,7 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
     except (adb.AdbError, RuntimeError) as e:
         result["why"] = str(e)[:120]
     finally:
-        # Только на рабочий стол: приложение может догружать опубликованное
-        # видео, закрывать его нельзя.
+        device.finish_app(cfg["package"], log)
         try:
             device.go_home()
         except Exception:
@@ -2325,6 +2343,14 @@ def _shot_youtube(folder, w, h, days=None):
     if not _installed(STUDIO):
         _note(folder, "youtube", "YouTube Studio не установлен — снята страница канала")
         return _snap(folder, "youtube", "com.google.android.youtube")   # хотя бы страница канала
+    try:
+        return _shot_youtube_studio(folder, w, h, days)
+    finally:
+        # Публикации загружаются через YouTube, а не через Studio.
+        device.finish_app(STUDIO, check_upload=False)
+
+
+def _shot_youtube_studio(folder, w, h, days):
     # С чистого листа: иначе Studio открывается там, где его бросили
     # (живьём — внутри «Просмотров»), и вкладка «Аналитика» уже нажата.
     # Загрузки идут через приложение YouTube, Studio закрывать можно.
@@ -2338,7 +2364,6 @@ def _shot_youtube(folder, w, h, days=None):
         path = _snap(folder, "youtube")
         if path:
             _note(folder, "youtube", "вкладка «Аналитика» не открылась — снята главная Studio")
-        device.go_home()
         return path
     human.pause(2, 3)
     note, period = "последние 28 дней", "за 28 дней"         # period — для цифр текстом
@@ -2376,7 +2401,6 @@ def _shot_youtube(folder, w, h, days=None):
         _note(folder, "youtube", note)
         views, day = _yt_views(_yt_read(path))
         _views_note(folder, "youtube", views, f"{day:%d.%m}" if day else period.removeprefix("за "))
-    device.go_home()
     return path
 
 

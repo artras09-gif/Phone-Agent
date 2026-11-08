@@ -128,13 +128,15 @@ got = accstats.parse_profile(insta, 2400)
 say(got["followers"] == 1234 and [v["views"] for v in got["videos"]] == [5678, 1200],
     f"подписчики {got['followers']}, просмотры {[v['views'] for v in got['videos']]}")
 
-print("\n--- сбор: только вкладки, приложение не закрывается ---")
+print("\n--- сбор: только вкладки, закрытие после сбора ---")
 taps, actions = [], []
 screens = {"steps": [tiktok]}
 device.open_app = lambda pkg: actions.append(("open", pkg))
 device.wait_for_app = lambda pkg, timeout=25: True
 device.go_home = lambda: actions.append("home")
 device.stop_app = lambda pkg: actions.append(("STOP", pkg))
+device.upload_progress = lambda pkg: None
+device._remove_recent_tasks = lambda pkg: actions.append(("recents", pkg))
 device.unlock = lambda: True
 device.lock = lambda: actions.append("lock")
 human.pause = lambda a, b=None: None
@@ -147,12 +149,13 @@ ui.tap_node = lambda n: taps.append(n.text or n.desc)
 ui.dump = lambda retries=3, tolerant=False, timeout=30: tiktok
 ui.dismiss_popup = lambda nodes=None: False
 accstats.adb.screen_size = lambda: (1080, 2400)
+accstats.adb.current_app = lambda: (TT["package"], "")
 accstats.adb.tap = lambda x, y: taps.append((x, y))
 got = accstats.collect("tiktok")
 say(got["followers"] == 12500 and len(got["videos"]) == 4 and not got["why"], "TikTok снят")
 say(taps == ["Профиль"], f"нажата только вкладка профиля: {taps}")
-say("home" in actions and not any(a[0] == "STOP" for a in actions if isinstance(a, tuple)),
-    "в конце — на рабочий стол, приложение не убито (может догружать видео)")
+say(actions[-3:] == [("STOP", TT["package"]), ("recents", TT["package"]), "home"],
+    "в конце — закрыто приложение, убрана его карточка, открыт рабочий стол")
 
 print("\n--- открылся чужой профиль (кнопка автора «Профиль iramsfoodstory») ---")
 foreign = [N(desc="Профиль iramsfoodstory", b=(900, 1000, 1060, 1160), clickable=True),
@@ -163,7 +166,7 @@ taps.clear(), actions.clear()
 ui.dump = lambda retries=3, tolerant=False, timeout=30: foreign
 got = accstats.collect("tiktok")
 say(taps == ["Профиль", "Профиль"], f"нажата кнопка нижней панели, а не автора ролика: {taps}")
-say(sum(1 for a in actions if isinstance(a, tuple) and a[0] == "STOP") == 1,
+say(sum(1 for a in actions if isinstance(a, tuple) and a[0] == "STOP") == 2,
     "не свой профиль — приложение перезапущено один раз и путь пройден заново (живьём 30.10: "
     "TikTok остался на чужом ролике)")
 say(got["followers"] is None and "не мой профиль" in got["why"],
@@ -191,10 +194,12 @@ say(("STOP", accstats.NETS["tiktok"]["package"]) in actions and not got["why"] a
 state["restarted"] = False
 actions.clear()
 accstats._posted_recently = lambda net, minutes=30: True
+device.upload_progress = lambda pkg: (0, 0)
 got = accstats.collect("tiktok")
 say(not any(a[0] == "STOP" for a in actions if isinstance(a, tuple)) and "недавно публиковал" in got["why"],
     f"только что публиковал в эту сеть — приложение не закрываю: {got['why']}")
 accstats.device.stop_app = lambda pkg: actions.append(("STOP", pkg))
+device.upload_progress = lambda pkg: None
 
 print("\n--- в дереве цифр нет — спрашиваем модель по снимку ---")
 ui.dump = lambda retries=3, tolerant=False, timeout=30: [

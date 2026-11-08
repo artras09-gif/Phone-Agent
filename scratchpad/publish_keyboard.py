@@ -209,8 +209,8 @@ def failing_after_tap(st, ctx, lp, i):
 
 poster.run_step = failing_after_tap
 good, rep = poster.post(video, "x", "yt", recipes=recipe)
-say(not good and not stopped and homes and not removed and "не закрываю" in rep,
-    "после нажатой «Загрузить» — на рабочий стол, YouTube не убит, файл на месте (загрузка могла пойти)")
+say(not good and not stopped and not homes and not removed and "оставляю приложение открытым" in rep,
+    "после нажатой «Загрузить» — остались в YouTube, файл на месте (загрузка могла пойти)")
 
 
 def failing_before_tap(st, ctx, lp, i):

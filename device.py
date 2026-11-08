@@ -489,7 +489,39 @@ def open_app(package):
 
 
 def stop_app(package):
-    adb.shell(f"am force-stop {package}", check=False)
+    adb.shell(f"am force-stop --user current {adb.quote(package)}", timeout=10)
+
+
+def _remove_recent_tasks(package):
+    """Убрать карточки приложения по ID задач текущего пользователя."""
+    user = adb.shell("am get-current-user", timeout=5).strip()
+    if not user.isascii() or not user.isdecimal():
+        return
+    recents = adb.shell("dumpsys activity recents", timeout=8)
+    for block in re.split(r"(?m)^ *\* RecentTaskInfo #\d+: *\r?$", recents)[1:]:
+        task = re.search(r"(?m)^ +id=(\d+) userId=(\d+)\b", block)
+        owner = re.search(r"(?m)^ +realActivity=(?:ComponentInfo)?\{?([\w.]+)/", block)
+        if task and task[2] == user and owner and owner[1] == package:
+            adb.shell(f"am stack remove {task[1]}", timeout=5)
+
+
+def finish_app(package, log=None, *, check_upload=True):
+    """Закрыть только приложение завершённого действия, если оно не грузит видео."""
+    try:
+        if check_upload and upload_progress(package) is not None:
+            if log is not None:
+                log.append(f"  {package}: загрузка ещё идёт — оставляю в фоне")
+            return
+        stop_app(package)
+    except adb.AdbError as e:
+        if log is not None:
+            log.append(f"  {package}: закрыть приложение не удалось — {e}")
+        return
+    try:
+        _remove_recent_tasks(package)
+    except adb.AdbError as e:
+        if log is not None:
+            log.append(f"  {package}: закрыто, карточку убрать не удалось — {e}")
 
 
 def close_overlays(packages, keep=None):
