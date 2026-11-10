@@ -325,7 +325,7 @@ class Service:
         mine = self.alive()
         return {
             "serial": self.serial,
-            "name": self.name,
+            "name": devices.name_of(self.serial),
             "running": self.running(),
             "managed": mine,        # False = работает, но запущена не нами
             "ready": self.ready() is not None,

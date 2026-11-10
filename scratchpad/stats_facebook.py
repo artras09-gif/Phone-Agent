@@ -210,6 +210,25 @@ check("в шторке приветствия ничего не нажато", "
 check(f"за вчера — подпись точки графика: {said.get('facebook_views')} за {said.get('facebook_when')}",
       said.get("facebook_views") == "12" and said.get("facebook_when") == f"{yest:%d.%m}")
 check("сказано, что считает с включения режима", "профессионального режима" in said.get("facebook", ""))
+old_day = yest - dt.timedelta(days=3)
+ANALYTICS[-1] = node((600, 836, 701, 957), desc=f"{old_day:%b} {old_day.day}, 129")
+screens["now"] = PRO
+late_folder = os.path.join(tmp, "late")
+accstats._shot_facebook(late_folder, W, H, 1, vids)
+late = accstats._notes_in(late_folder)
+check("задержка Facebook: 129 за реальный день вместо прибавки между замерами",
+      late.get("facebook_views") == "129" and late.get("facebook_when") == f"{old_day:%d.%m}"
+      and late.get("facebook_end") == old_day.isoformat()
+      and "за вчера ещё не показаны" in accstats.numbers_text(late_folder))
+ANALYTICS[-1] = node((600, 836, 701, 957), desc=f"{mon}, 0")
+screens["now"] = PRO
+zero_folder = os.path.join(tmp, "zero")
+accstats._shot_facebook(zero_folder, W, H, 1, vids)
+check("нулевой день не подменяется прибавкой; пояснение задержки очищено",
+      accstats._notes_in(zero_folder).get("facebook_views") == "0"
+      and not accstats._notes_in(zero_folder).get("facebook_source"))
+check("резервный подсчёт явно подписан оценкой",
+      "оценка прироста по снимкам" in accstats.numbers_text(folder))
 screens["now"] = PRO
 taps.clear()
 f3 = os.path.join(tmp, "pro2")

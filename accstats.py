@@ -951,10 +951,11 @@ def numbers_text(folder, nets=None):
     whens = [when for _, _, when in rows if when]
     top = max(set(whens), key=whens.count) if whens else ""
     common = top if whens.count(top) > 1 or len(set(whens)) == 1 else ""
-    # Facebook — всегда с периодом: он посчитан по своим снимкам, и часы
-    # у него не те, что у календарей остальных сетей.
+    # Facebook — всегда с периодом и источником резервного расчёта.
     return "\n".join([f"{TITLES[net]} — {views}"
                       + (f" (за {when})" if when and (when != common or net == "facebook") else "")
+                      + (f" · {said['facebook_source']}" if net == "facebook"
+                         and said.get("facebook_source") else "")
                       for net, views, when in rows]
                      + [f"{TITLES[net]} — не снял: {why}" for net, why in failed]
                      + [f"{TITLES[net]} — числа нет, снимок в альбоме: {why}" for net, why in missed])
@@ -2876,10 +2877,14 @@ def _fb_dashboard(folder, w, h, days):
     yesterday = dt.date.today() - dt.timedelta(days=1)
     views, when = "", ""
     if days == 1:
-        # Вчера — подпись точки графика; не за вчера — число по снимкам.
-        if point and _day_of(point.group(1)) == yesterday:
-            views, when = _num(point.group(2)), f"{yesterday:%d.%m}"
-            _note(folder, "facebook_end", yesterday.isoformat())
+        # Facebook может показывать данные с задержкой. Сохраняем настоящий
+        # день точки, не заменяя его незаметно прибавкой по плиткам профиля.
+        day = _day_of(point.group(1)) if point else None
+        if day is not None and day <= yesterday:
+            views, when = _num(point.group(2)), f"{day:%d.%m}"
+            _note(folder, "facebook_end", day.isoformat())
+            _note(folder, "facebook_source", "данные за вчера ещё не показаны"
+                  if day < yesterday else "")
     elif days in ("week", "month", ALL_TIME) and value is not None and span:
         first, last = _day_of(span.group(1)), _day_of(span.group(2))
         # Месяц календарный, а у Facebook только «последние 28 дней» — такое
@@ -2890,6 +2895,8 @@ def _fb_dashboard(folder, w, h, days):
         views, when = _num(value.text), "последние 28 дней"
     if views:
         _views_note(folder, "facebook", views, when)
+        if days != 1:
+            _note(folder, "facebook_source", "")
     _note(folder, "facebook", "Creator Dashboard · Analytics"
           + (f", {picked.split(',')[0]}" if picked else "")
           + (f" — за {when}: {views}" if views else "")
@@ -2907,6 +2914,8 @@ def _shot_facebook(folder, w, h, days=None, videos=None):
     по своим снимкам."""
     views, when = _fb_period(videos, days)
     _views_note(folder, "facebook", views, when)
+    _note(folder, "facebook_source", ("оценка прироста по снимкам рилсов, не итог аналитики"
+          if "всё время" not in when else "сумма видимых рилсов профиля") if views else "")
     try:
         path = _fb_dashboard(folder, w, h, days)
     except (adb.AdbError, RuntimeError):

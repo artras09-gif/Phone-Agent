@@ -20,6 +20,7 @@
 import json
 import os
 import re
+import tempfile
 
 import adb
 import config
@@ -99,7 +100,34 @@ def remember(serial, name):
 
 
 def name_of(serial):
+    try:
+        with open(os.path.join(ROOT, slug(serial), "имя.json"), encoding="utf-8") as f:
+            custom = json.load(f)
+        if isinstance(custom, str) and custom.strip():
+            return custom
+    except (OSError, ValueError):
+        pass
     return _names().get(serial) or serial
+
+
+def rename(serial, name):
+    """Имя в пульте, отдельно от модели ADB; пустое имя возвращает модель."""
+    if not isinstance(name, str):
+        raise ValueError("имя должно быть текстом")
+    name = name.strip()
+    if len(name) > 80 or any(ord(c) < 32 or ord(c) == 127 for c in name):
+        raise ValueError("имя — до 80 символов, без переносов строк")
+    folder = space(serial)
+    path = os.path.join(folder, "имя.json")
+    fd, temp = tempfile.mkstemp(prefix=".имя-", suffix=".tmp", dir=folder)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(name, f, ensure_ascii=False)
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.remove(temp)
+    return name_of(serial)
 
 
 def known(live=None):

@@ -503,11 +503,11 @@ class Probe:
                                    timeout=10).strip()
                 except adb.AdbError:
                     name = ""
-            found.append({"serial": serial, "state": state,
-                          "name": name or serial,
-                          "link": "по сети" if ":" in serial else "кабель"})
             if name:
                 devices.remember(serial, name)
+            found.append({"serial": serial, "state": state,
+                          "name": devices.name_of(serial),
+                          "link": "по сети" if ":" in serial else "кабель"})
         self.data["devices"] = found
 
         live = [d["serial"] for d in found if d["state"] == "device"]
@@ -1070,6 +1070,22 @@ def _cmd_device(body):
     PROBE.refresh_soon()
     _switch_bot()
     return {"ok": True, "message": f"открыл телефон: {devices.name_of(serial)}"}
+
+
+@command("device-rename")
+def _cmd_device_rename(body):
+    serial = str(body.get("serial", "")).strip()
+    live = _hub_live() if ROLE["hub"] else PROBE.data.get("live", [])
+    if not serial or serial not in {d["serial"] for d in devices.known(live)}:
+        return {"ok": False, "error": "телефон не найден"}
+    try:
+        name = devices.rename(serial, body.get("name", ""))
+    except (ValueError, OSError) as e:
+        return {"ok": False, "error": f"не удалось сохранить имя: {e}"}
+    for d in HUB["devices"] if ROLE["hub"] else PROBE.data.get("devices", []):
+        if d["serial"] == serial:
+            d["name"] = name
+    return {"ok": True, "message": f"имя телефона: {name}"}
 
 
 @command("fleet-start")
@@ -1648,7 +1664,7 @@ HUB = {"selected": "", "devices": [], "names": {}, "brief": {}, "vision": None,
        "vision_at": 0.0}
 HUB_EVERY = 2.0
 # Команды самого пульта. Остальные — про телефон, их делает его служба.
-HUB_COMMANDS = {"device", "fleet-start", "fleet-stop", "fleet-stop-all", "settings"}
+HUB_COMMANDS = {"device", "device-rename", "fleet-start", "fleet-stop", "fleet-stop-all", "settings"}
 
 
 def _hub_live():
@@ -1670,7 +1686,7 @@ def _hub_refresh():
                 HUB["names"][serial] = name
                 devices.remember(serial, name)
         found.append({"serial": serial, "state": state,
-                      "name": name or devices.name_of(serial) or serial,
+                      "name": devices.name_of(serial),
                       "link": "по сети" if ":" in serial else "кабель"})
     HUB["devices"] = found
     live = _hub_live()
