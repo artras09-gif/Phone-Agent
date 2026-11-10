@@ -671,6 +671,8 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
             except (adb.AdbError, RuntimeError, OSError) as e:
                 result["shot"] = None
                 say(f"  {TITLES[net]}: снимок статистики не вышел — {str(e)[:80]}")
+            if days == 1:
+                _require_daily_date(folder, net, result)
             note = _notes_in(folder).get(SHOT_FILES[net])
             if note:
                 say(f"  {TITLES[net]}: {note}")
@@ -926,6 +928,37 @@ def _yt_views(seen):
     if NUMBER.match(total) and not total.startswith("-"):
         return _num(total), None
     return "", None
+
+
+def _require_daily_date(folder, net, result):
+    """Дневной отчёт: TikTok за позавчера, остальные строго за вчера."""
+    name = SHOT_FILES[net]
+    target = dt.date.today() - dt.timedelta(days=2 if net == "tiktok" else 1)
+    said = _notes_in(folder)
+    when = said.get(name + "_when", "")
+    expected = f"{target:%d.%m}"
+    if said.get(name + "_views") and when == expected:
+        _note(folder, name + "_end", target.isoformat())
+        _note(folder, name + "_why", "")
+        _note(folder, name + "_miss", "")
+        _note(folder, name, f"за {expected}")
+        if net == "facebook":
+            _note(folder, "facebook_source", "")
+        return
+    why = f"данные за {expected} не получены"
+    if when:
+        why += f"; приложение показало другой период: {when}"
+    _note(folder, name + "_views", "")
+    _note(folder, name + "_when", "")
+    _note(folder, name + "_end", "")
+    _note(folder, name + "_why", why)
+    _note(folder, name, why)
+    result["why"] = why
+    result["shot"] = None
+    # Чужой период не включаем в дневной альбом; плитки профиля остаются.
+    path = os.path.join(folder, name + ".png")
+    if os.path.isfile(path):
+        os.remove(path)
 
 
 def _views_note(folder, name, views, when):
@@ -1500,6 +1533,8 @@ def _tt_period(days, w, h, blind=False):
     """На «Аналитике» TikTok выбрать период. Подпись периода («19 окт»; "" —
     выбран, но подписи не прочитать) или None — не вышло. blind — «Аналитика»
     без подписей: всё по снимку, подпись потом читает модель."""
+    if days == 1:
+        return _tt_span(days, w, h, blind=blind)
     if blind:
         if days in ("week", "month"):
             return _tt_span(days, w, h, blind=True)
@@ -1547,7 +1582,8 @@ def _tt_span(days, w, h, blind=False):
     24 окт» (живьём 29.10; так же и с одним днём). Поэтому выбираем на день
     позже и сверяем подпись; сдвига нет — выбираем ещё раз, как есть.
     Выбрать можно самое позднее вчера."""
-    first, last = report_span(days)
+    first, last = ((dt.date.today() - dt.timedelta(days=2),) * 2
+                   if days == 1 else report_span(days))
     yesterday = dt.date.today() - dt.timedelta(days=1)
     text = None
     for shift in (1, 0):
@@ -1570,9 +1606,13 @@ def _tt_span(days, w, h, blind=False):
                 return text
             text = _tt_range_text(ui.dump(retries=2, tolerant=True), h)
         got = _range_of(text)
+        if days == 1:
+            if got == (first, last):
+                return text
+            continue
         if got is None or got[0] != pick[0]:
             return text                               # сдвиг есть (или подписи нет)
-    return text
+    return None if days == 1 else text
 
 
 def _tt_longest(w, h, blind=False):

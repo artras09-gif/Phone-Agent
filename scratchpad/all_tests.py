@@ -22,6 +22,7 @@ BASE = os.path.dirname(HERE)
 # Каждый прогон — отдельный процесс: тесты подменяют друг другу модули
 # (session.ui.dump, jobs.add_link), и в одном процессе они бы перемешались.
 TESTS = [
+    ("scratchpad/stats_exact_days.py", "TikTok строго за позавчера, остальные за вчера"),
     ("selftest.py", "логика без телефона: очередь, расписание, разбор"),
     ("scratchpad/links_digest.py", "подборка ссылок в Telegram"),
     ("scratchpad/link_save.py", "ссылки в TikTok: все ветки отказа"),
