@@ -62,6 +62,59 @@ adb.shell = lambda cmd, *a, **k: swipes.append(cmd) or ""
 adb.current_app = lambda: ("com.zhiliaoapp.musically", "")
 device.back = lambda: backs.append(1)
 W, H = 1280, 2772
+heading = N("TikTok Studio", b=(461, 181, 819, 253))
+studio_home = [heading, N("Posts", b=(85, 301, 619, 431)),
+               N("LIVE", b=(685, 301, 1195, 431))]
+x, y = accstats._tt_studio_card_point(studio_home, W, H, heading)
+say(1080 < x < 1210 and 500 < y < 620,
+    f"Studio: касание попадает в заголовок видимой карточки Analytics: {(x, y)}")
+old_dump, old_tap = ui.dump, ui.tap_node
+menu = N(desc="Options", b=(1124, 132, 1280, 314), clickable=True)
+settings = N("Settings and activity", b=(180, 150, 840, 250))
+frames = iter([[menu], [menu], [settings]])
+clicked = []
+ui.dump = lambda **kw: next(frames)
+ui.tap_node = clicked.append
+say(accstats._ig_open_settings(W, H) and clicked == [menu, menu],
+    "Instagram: повтор касания, когда первая попытка оставила профиль")
+ui.dump, ui.tap_node = old_dump, old_tap
+
+old_period, old_snap = accstats._ig_period, accstats._snap
+state = {"screen": "profile", "taps": 0}
+insights = N("Insights", b=(70, 530, 1140, 680), clickable=True)
+views_card = [N("Views", b=(70, 470, 280, 520)), N("812", b=(70, 530, 280, 600))]
+
+
+def ig_screen(**kw):
+    return {"profile": [menu], "settings": [settings, insights], "insights": views_card}[state["screen"]]
+
+
+def ig_tap(n):
+    if n is menu:
+        state["taps"] += 1
+        if state["taps"] == 2:
+            state["screen"] = "settings"
+    elif n is insights:
+        state["screen"] = "insights"
+
+
+def ig_period(days, w, h):
+    assert days == 1 and state["screen"] == "insights"
+    available = Today.today() - dt.timedelta(days=2)
+    accstats.IG_PICKED["span"] = (available, available)
+    return "выбран день"
+
+
+ui.dump, ui.tap_node = ig_screen, ig_tap
+accstats._ig_period, accstats._snap = ig_period, lambda folder, name: os.path.join(folder, name + ".png")
+ig_folder = os.path.join(tmp, "ig_settings_retry")
+path = accstats._shot_instagram(ig_folder, W, H, days=1)
+ig_notes = accstats._notes_in(ig_folder)
+say(path and state["taps"] == 2 and ig_notes.get("instagram_views") == "812"
+    and ig_notes.get("instagram_when") == "29.10",
+    "Instagram: после повтора открывает Insights и сохраняет число за доступный день")
+ui.dump, ui.tap_node = old_dump, old_tap
+accstats._ig_period, accstats._snap = old_period, old_snap
 HSV = "android.widget.HorizontalScrollView"
 
 # ------------------------------------------------------ устройство экрана

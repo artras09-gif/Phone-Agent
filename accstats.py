@@ -671,8 +671,6 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
             except (adb.AdbError, RuntimeError, OSError) as e:
                 result["shot"] = None
                 say(f"  {TITLES[net]}: снимок статистики не вышел — {str(e)[:80]}")
-            if days == 1:
-                _require_daily_date(folder, net, result)
             note = _notes_in(folder).get(SHOT_FILES[net])
             if note:
                 say(f"  {TITLES[net]}: {note}")
@@ -928,37 +926,6 @@ def _yt_views(seen):
     if NUMBER.match(total) and not total.startswith("-"):
         return _num(total), None
     return "", None
-
-
-def _require_daily_date(folder, net, result):
-    """Дневной отчёт: TikTok за позавчера, остальные строго за вчера."""
-    name = SHOT_FILES[net]
-    target = dt.date.today() - dt.timedelta(days=2 if net == "tiktok" else 1)
-    said = _notes_in(folder)
-    when = said.get(name + "_when", "")
-    expected = f"{target:%d.%m}"
-    if said.get(name + "_views") and when == expected:
-        _note(folder, name + "_end", target.isoformat())
-        _note(folder, name + "_why", "")
-        _note(folder, name + "_miss", "")
-        _note(folder, name, f"за {expected}")
-        if net == "facebook":
-            _note(folder, "facebook_source", "")
-        return
-    why = f"данные за {expected} не получены"
-    if when:
-        why += f"; приложение показало другой период: {when}"
-    _note(folder, name + "_views", "")
-    _note(folder, name + "_when", "")
-    _note(folder, name + "_end", "")
-    _note(folder, name + "_why", why)
-    _note(folder, name, why)
-    result["why"] = why
-    result["shot"] = None
-    # Чужой период не включаем в дневной альбом; плитки профиля остаются.
-    path = os.path.join(folder, name + ".png")
-    if os.path.isfile(path):
-        os.remove(path)
 
 
 def _views_note(folder, name, views, when):
@@ -1533,8 +1500,6 @@ def _tt_period(days, w, h, blind=False):
     """На «Аналитике» TikTok выбрать период. Подпись периода («19 окт»; "" —
     выбран, но подписи не прочитать) или None — не вышло. blind — «Аналитика»
     без подписей: всё по снимку, подпись потом читает модель."""
-    if days == 1:
-        return _tt_span(days, w, h, blind=blind)
     if blind:
         if days in ("week", "month"):
             return _tt_span(days, w, h, blind=True)
@@ -1582,8 +1547,7 @@ def _tt_span(days, w, h, blind=False):
     24 окт» (живьём 29.10; так же и с одним днём). Поэтому выбираем на день
     позже и сверяем подпись; сдвига нет — выбираем ещё раз, как есть.
     Выбрать можно самое позднее вчера."""
-    first, last = ((dt.date.today() - dt.timedelta(days=2),) * 2
-                   if days == 1 else report_span(days))
+    first, last = report_span(days)
     yesterday = dt.date.today() - dt.timedelta(days=1)
     text = None
     for shift in (1, 0):
@@ -1606,13 +1570,9 @@ def _tt_span(days, w, h, blind=False):
                 return text
             text = _tt_range_text(ui.dump(retries=2, tolerant=True), h)
         got = _range_of(text)
-        if days == 1:
-            if got == (first, last):
-                return text
-            continue
         if got is None or got[0] != pick[0]:
             return text                               # сдвиг есть (или подписи нет)
-    return None if days == 1 else text
+    return text
 
 
 def _tt_longest(w, h, blind=False):
@@ -2062,6 +2022,18 @@ def _menu_icon(nodes, w, h):
                key=lambda n: (not n.clickable, n.bounds[2] - n.bounds[0]))
 
 
+def _tt_studio_card_point(nodes, w, h, title):
+    # В новом Studio карточка рисуется без узлов, ниже вкладок Posts/LIVE.
+    # Отсчёт от заголовка попадал в полоску вкладок, не открывая аналитику.
+    tabs = {str(_label(n)).casefold(): n for n in nodes or []
+            if _sized(n) and _label(n).casefold() in ("posts", "live")
+            and h * 0.08 < n.bounds[1] < h * 0.19}
+    if title is not None and len(tabs) == 2:
+        return int(w * 0.90), max(n.bounds[3] for n in tabs.values()) + int(h * 0.043)
+    below = (title.bounds[3] if title else int(h * 0.081)) + int(h * 0.062)
+    return w // 2, below
+
+
 def _shot_tiktok(folder, w, h, days=None):
     """С своего профиля: ☰ → TikTok Studio → «Статистика» → снимок."""
     menu = _menu_icon(ui.dump(retries=2, tolerant=True), w, h)
@@ -2096,16 +2068,15 @@ def _shot_tiktok(folder, w, h, days=None):
         home = ui.dump(retries=2, tolerant=True)
     title = studio_title()
 
-    def open_card():
-        card = next((n for n in home or [] if _label(n) in TT_ANALYTICS
-                     and n.bounds[1] < h * 0.45), None)
+    def open_card(screen, heading):
+        card = next((n for n in screen or [] if _label(n) in TT_ANALYTICS
+                     and _sized(n) and n.bounds[1] < h * 0.45), None)
         if card is not None:
-            ui.tap_node(_clickable_at(home, card))
+            ui.tap_node(_clickable_at(screen, card))
         else:
-            below = (title.bounds[3] if title else int(h * 0.081)) + int(h * 0.062)
-            adb.tap(int(w * 0.5), below)
+            adb.tap(*_tt_studio_card_point(screen, w, h, heading))
 
-    open_card()
+    open_card(home, title)
     # Ждём, а не смотрим один раз: на медленном телефоне или в плохой сети
     # «Аналитика» грузится дольше, и программа принимала её за «не открылась».
     nodes, start = [], time.time()
@@ -2115,9 +2086,9 @@ def _shot_tiktok(folder, w, h, days=None):
         nodes = ui.dump(retries=2, tolerant=True)
         if _tt_analytics_open(nodes, h) or _tt_blind_row(nodes, w, h):
             break
-        if again and time.time() - start > 6 and studio_title() is not None:
+        if again and time.time() - start > 6 and (title := studio_title()) is not None:
             again = False                  # всё ещё главная — касание не дошло
-            open_card()
+            open_card(nodes, title)
     blind = not _tt_analytics_open(nodes, h) and _tt_blind_row(nodes, w, h) is not None
     if blind:
         human.pause(2, 3)              # рамки есть сразу, числа приходят позже
@@ -2457,6 +2428,10 @@ IG_ENTRY = ["Ваша панель", "Your dashboard", "Tu panel", "Профес
 IG_VIEWS = ["Просмотры", "Views", "Visualizaciones"]
 IG_INSIGHTS_TITLE = ["Статистика", "Insights", "Estadísticas"]
 IG_SHEET_OK = ["Продолжить", "Continue", "Continuar"]
+IG_SETTINGS = {"Settings", "Настройки", "Configuración", "Settings and activity",
+               "Settings and privacy", "Настройки и действия",
+               "Настройки и конфиденциальность", "Configuración y actividad",
+               "Configuración y privacidad"}
 
 
 def _row(nodes, label):
@@ -2694,15 +2669,29 @@ def _ig_shown(w, h):
     return f"{m.group()} дней" if m else label
 
 
+def _ig_open_settings(w, h):
+    """Дождаться настроек: обновление профиля иногда перехватывает касание ☰."""
+    for attempt in range(4):
+        if abort.requested():
+            return False
+        nodes = ui.dump(retries=2, tolerant=True)
+        if any(_sized(n) and _label(n) in IG_SETTINGS and n.bounds[1] < h * 0.18 for n in nodes):
+            return True
+        if attempt == 3:
+            break
+        menu = [n for n in nodes if n.clickable and _sized(n)
+                and 0 < n.bounds[1] < h * 0.12 and n.bounds[0] > w * 0.82]
+        if menu:
+            ui.tap_node(max(menu, key=lambda n: n.bounds[0]))
+        human.pause(2, 2.5)
+    return False
+
+
 def _shot_instagram(folder, w, h, days=None):
     """«Статистика · Обзор» Instagram (как «Estadísticas · Resumen» у человека)."""
-    nodes = ui.dump(retries=2, tolerant=True)
-    menu = [n for n in nodes if n.clickable and n.bounds[1] < h * 0.12 and n.bounds[0] > w * 0.82]
-    if not menu:
-        _note(folder, "instagram", "не нашёл меню ☰ — снят профиль")
+    if not _ig_open_settings(w, h):
+        _note(folder, "instagram", "меню ☰ не открылось — снят профиль")
         return _snap(folder, "instagram")
-    ui.tap_node(max(menu, key=lambda n: n.bounds[0]))       # ☰ — «Параметры»
-    human.pause(2, 2.5)
     entry, nodes = _find_scrolling(IG_ENTRY, w, h)
     if entry is None:
         device.back()
