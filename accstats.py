@@ -658,6 +658,10 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
         # нажалось бы на любом экране, где агент застрял.
         if shots and not result["why"] and net in SHOTS:
             folder = folder or shots_dir()
+            # Имя аккаунта — до снимков: по нему YouTube Studio выбирает канал
+            # в окне «Accounts» (см. `_yt_enter`).
+            if result.get("account"):
+                _note(folder, SHOT_FILES[net] + "_account", result["account"])
             try:
                 w, h = adb.screen_size()
                 if tiles:
@@ -674,8 +678,6 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
             note = _notes_in(folder).get(SHOT_FILES[net])
             if note:
                 say(f"  {TITLES[net]}: {note}")
-            if result.get("account"):
-                _note(folder, SHOT_FILES[net] + "_account", result["account"])
     except (adb.AdbError, RuntimeError) as e:
         result["why"] = str(e)[:120]
     finally:
@@ -1622,20 +1624,45 @@ TT_ASK = ("Это скриншот TikTok Studio, раздел «Аналити�
           '{"период": "...", "просмотры": "..."}')
 
 
-def _tt_blind_rows(nodes, w, h):
-    """Ряды «Аналитики» без подписей: (рамка вкладок, рамка периодов) или
-    None. В ряду вкладок — не меньше четырёх вкладок."""
+def _tt_rows(nodes, w, h):
+    """Горизонтальные ряды вверху «Аналитики» без подписей, сверху вниз:
+    [рамка вкладок, рамка периодов]. В ряду вкладок — не меньше четырёх
+    вкладок; [] — это не «Аналитика».
+
+    Ряда периодов может и не быть: у аккаунта, чью статистику TikTok ещё
+    считает, под вкладками сразу плашка «Data is processing. Check back in
+    1-2 days», а вместо чисел прочерки (живьём 12.11, первый телефон). Тогда
+    рамка одна — и это всё равно «Аналитика», а не «не открылась»."""
     rows = sorted((n for n in nodes or [] if n.cls.endswith("HorizontalScrollView") and _sized(n)
                    and n.bounds[2] - n.bounds[0] > 0.8 * w and n.bounds[1] < h * 0.3
                    and 0.025 * h < n.bounds[3] - n.bounds[1] < 0.08 * h),
                   key=lambda n: n.bounds[1])
-    if len(rows) < 2:
-        return None
+    if not rows:
+        return []
     x1, y1, x2, y2 = rows[0].bounds
     tabs = [n for n in nodes if _sized(n) and n.bounds[1] >= y1 and n.bounds[3] <= y2
             and 0.1 * w < n.bounds[2] - n.bounds[0] < 0.5 * w
             and n.bounds[3] - n.bounds[1] > 0.5 * (y2 - y1)]
-    return (rows[0].bounds, rows[1].bounds) if len(tabs) >= 4 else None
+    return [n.bounds for n in rows] if len(tabs) >= 4 else []
+
+
+def _tt_blind_rows(nodes, w, h):
+    """Ряды «Аналитики» без подписей: (рамка вкладок, рамка периодов) или
+    None."""
+    rows = _tt_rows(nodes, w, h)
+    return (rows[0], rows[1]) if len(rows) >= 2 else None
+
+
+def _tt_bare(nodes, w, h):
+    """«Аналитика» без подписей и без ряда периодов (см. `_tt_rows`).
+
+    Один ряд вкладок бывает и у главной TikTok Studio — «Posts · LIVE» на
+    втором телефоне (живьём 12.11 она так и была принята за «Аналитику»).
+    Главную выдаёт заголовок «TikTok Studio»: он в дереве есть, а у
+    «Аналитики» без подписей нет ни одной подписи."""
+    if _tt_analytics_open(nodes, h) or len(_tt_rows(nodes, w, h)) != 1:
+        return False
+    return not any(_label(n) == TT_TITLE and n.bounds[1] < h * 0.15 for n in nodes or [])
 
 
 def _tt_blind_row(nodes, w, h):
@@ -2034,6 +2061,33 @@ def _tt_studio_card_point(nodes, w, h, title):
     return w // 2, below
 
 
+def _tt_shot_bare(folder, days):
+    """Снимок «Аналитики», на которой нет выбора периода (см. `_tt_rows`).
+
+    До 12.11 такой экран считался «Аналитика не открылась»: программа шла
+    назад и снимала главную TikTok Studio за 7 дней. Период выбрать нечем,
+    поэтому число, если оно есть, подписываем тем периодом, что на экране,
+    а прочерки — так и называем: статистики ещё нет."""
+    path = _snap(folder, "tiktok")
+    if path:
+        seen = _tt_read(path)
+        shown = _range_of(seen.get("период", ""))
+        when = _span(*shown) if shown else ""
+        views = seen.get("просмотры", "")
+        if views:
+            _note(folder, "tiktok", "в «Аналитике» TikTok Studio нет выбора периода"
+                  + (f" — показано {when}" if when else ""))
+            _views_note(folder, "tiktok", views, (when or "обычный период")
+                        + (f", а не {PERIOD_WORDS[days]}: выбора периода нет" if days else ""))
+        else:
+            _note(folder, "tiktok", "TikTok Studio ещё не посчитал статистику аккаунта: в «Аналитике» "
+                  "нет выбора периода, вместо чисел прочерки" + (f" (период {when})" if when else ""))
+    for _ in range(3):                                      # обратно к профилю
+        device.back()
+        human.pause(0.8, 1.2)
+    return path
+
+
 def _shot_tiktok(folder, w, h, days=None):
     """С своего профиля: ☰ → TikTok Studio → «Статистика» → снимок."""
     menu = _menu_icon(ui.dump(retries=2, tolerant=True), w, h)
@@ -2084,11 +2138,20 @@ def _shot_tiktok(folder, w, h, days=None):
     while time.time() < end:
         human.pause(2, 2.5)
         nodes = ui.dump(retries=2, tolerant=True)
-        if _tt_analytics_open(nodes, h) or _tt_blind_row(nodes, w, h):
+        if _tt_analytics_open(nodes, h) or _tt_blind_row(nodes, w, h) or _tt_bare(nodes, w, h):
             break
         if again and time.time() - start > 6 and (title := studio_title()) is not None:
             again = False                  # всё ещё главная — касание не дошло
             open_card(nodes, title)
+    # Вкладки есть, а ряда периодов нет: либо он ещё едет, либо его не будет
+    # вовсе (статистику аккаунта TikTok ещё считает). Даём ему время.
+    for _ in range(3):
+        if not _tt_bare(nodes, w, h):
+            break
+        human.pause(2, 2.5)
+        nodes = ui.dump(retries=2, tolerant=True)
+    if _tt_bare(nodes, w, h):
+        return _tt_shot_bare(folder, days)
     blind = not _tt_analytics_open(nodes, h) and _tt_blind_row(nodes, w, h) is not None
     if blind:
         human.pause(2, 3)              # рамки есть сразу, числа приходят позже
@@ -2362,6 +2425,45 @@ def _shot_youtube(folder, w, h, days=None):
         device.finish_app(STUDIO, check_upload=False)
 
 
+YT_ACCOUNTS = ("Accounts", "Аккаунты", "Cuentas")
+YT_START = ("Get started", "Начать", "Приступить", "Empezar", "Comenzar")
+
+
+def _yt_enter(account=""):
+    """Первый запуск YouTube Studio: окно «Accounts» и приветствие. "" —
+    вошли (или входить не пришлось), иначе — что сказать человеку.
+
+    Живьём 12.11 на первом телефоне: Studio ни разу не открывали, и вместо
+    вкладок он показал окно «Accounts» (почта, под ней канал «Tras el velo»),
+    а после выбора канала — карусель с кнопкой «Get started». Программа
+    жала по месту вкладки «Аналитика», ничего не открывалось, и в альбом
+    уходил снимок окна с почтой. Канал выбираем тот, что открыт в самом
+    YouTube (account); он единственный — его. Каналов несколько, а нашего
+    среди них нет — не гадаем."""
+    for _ in range(4):
+        nodes = ui.dump(retries=2, tolerant=True)
+        names = [n for n in nodes or [] if (n.rid or "").endswith("/name") and _sized(n) and _label(n)]
+        picker = bool(names) and any((n.rid or "").endswith("/add_account") or _label(n) in YT_ACCOUNTS
+                                     for n in nodes)
+        start = next((n for n in nodes or [] if n.clickable and _label(n) in YT_START), None)
+        if picker:
+            mine = [n for n in names if account and _label(n).casefold() == account.casefold()]
+            if not mine and len(names) == 1:
+                mine = names
+            if not mine:
+                device.back()
+                return ("YouTube Studio спрашивает аккаунт, а канала"
+                        + (f" «{account}»" if account else "") + " в списке нет — открой Studio "
+                        "на телефоне и выбери канал один раз сам")
+            ui.tap_node(_row(nodes, mine[0]))
+        elif start is not None:
+            ui.tap_node(start)
+        else:
+            return ""
+        human.pause(4, 5)
+    return ""
+
+
 def _shot_youtube_studio(folder, w, h, days):
     # С чистого листа: иначе Studio открывается там, где его бросили
     # (живьём — внутри «Просмотров»), и вкладка «Аналитика» уже нажата.
@@ -2372,6 +2474,10 @@ def _shot_youtube_studio(folder, w, h, days):
         _note(folder, "youtube", "YouTube Studio не открылся")
         return None
     human.pause(5, 6)
+    trouble = _yt_enter(_notes_in(folder).get("youtube_account") or "")
+    if trouble:
+        _note(folder, "youtube", trouble)                # снимок окна с почтой не шлём
+        return None
     if not _yt_analytics(w, h):
         path = _snap(folder, "youtube")
         if path:
@@ -2592,6 +2698,43 @@ def _ig_pick_dates(first, last, w):
     return tuple(got)
 
 
+def _ig_period_list(nodes):
+    """Открытый список периодов Instagram: его пункты («7 days» … «Custom»)
+    или []. Пока список открыт, в дереве только он — без страницы под ним."""
+    items = [n for n in nodes or [] if _sized(n) and IG_DROP.search(_label(n))]
+    return items if len(items) >= 3 else []
+
+
+def _ig_calendar_open(nodes, w):
+    """Открыт ли календарь своего периода: «Применить» или сетка чисел."""
+    return (any(_label(n) in IG_APPLY for n in nodes or [])
+            or len(_ig_days(nodes, w)) >= 14)
+
+
+def _ig_open_calendar(w):
+    """После касания «Свой период» дождаться календаря. True — открыт.
+
+    Касание по пункту списка иногда теряется: список остаётся на экране, а
+    программа искала числа календаря в нём и писала «чисел в календаре не
+    видно» (живьём 12.11, первый телефон: с первого захода не вышло, со
+    второго — тот же экран открылся сразу). Список ещё открыт — жмём пункт
+    ещё раз."""
+    for _ in range(3):
+        end = time.time() + 5
+        nodes = []
+        while time.time() < end:
+            nodes = ui.dump(retries=2, tolerant=True)
+            if _ig_calendar_open(nodes, w):
+                return True
+            human.pause(0.8, 1.2)
+        again = next((n for n in _ig_period_list(nodes) if IG_CUSTOM.search(_label(n))), None)
+        if again is None:
+            return False                               # ни списка, ни календаря
+        ui.tap_node(_clickable_at(nodes, again))
+        human.pause(1.5, 2)
+    return _ig_calendar_open(ui.dump(retries=2, tolerant=True), w)
+
+
 def _ig_period(days, w, h):
     """На «Статистике» Instagram выбрать период. Пояснение к снимку или None —
     не вышло. Без days — вернуть обычные 30 дней (выбор Instagram помнит)."""
@@ -2603,9 +2746,16 @@ def _ig_period(days, w, h):
         return None
     if not days and IG_MONTH.search(_label(drop)):
         return "последние 30 дней"
-    ui.tap_node(_clickable_at(nodes, drop))
-    human.pause(1.5, 2)
-    nodes = ui.dump(retries=2, tolerant=True)
+    for _ in range(3):                                 # и это касание теряется так же
+        ui.tap_node(_clickable_at(nodes, drop))
+        human.pause(1.5, 2)
+        nodes = ui.dump(retries=2, tolerant=True)
+        # Повторяем, только если страница осталась как была: сам выбор
+        # периода на прежнем месте, а списка нет. По открытому списку второе
+        # касание в то же место выбрало бы случайный пункт.
+        still = any(n.bounds == drop.bounds and _label(n) == _label(drop) for n in nodes or [])
+        if not still or _ig_period_list(nodes):
+            break
     if days == ALL_TIME:
         # Готовые периоды («7 дней», «30», «90») — берём самый длинный.
         presets = [(int(re.search(r"\d+", _label(n)).group()), n) for n in nodes or []
@@ -2633,6 +2783,12 @@ def _ig_period(days, w, h):
     if not days:
         human.pause(2, 3)
         return "последние 30 дней"
+    if not _ig_open_calendar(w):
+        IG_PICKED["why"] = "календарь своего периода не открылся"
+        if _ig_period_list(ui.dump(retries=2, tolerant=True)):
+            device.back()                              # список закрыть, ничего не выбрав
+            human.pause(1, 1.5)
+        return None
     span = _ig_pick_dates(*report_span(days), w) if days in ("week", "month") \
         else _ig_pick_range(days, w, h)
     apply = next((n for n in ui.dump(retries=2, tolerant=True) or []
@@ -2685,6 +2841,21 @@ def _ig_open_settings(w, h):
             ui.tap_node(max(menu, key=lambda n: n.bounds[0]))
         human.pause(2, 2.5)
     return False
+
+
+def _ig_wait_views(h, wait=25.0):
+    """Дождаться числа под «Просмотры» на «Обзоре» статистики: оно или "".
+
+    После смены периода страница перерисовывается: сперва серые заглушки, и
+    держатся они дольше прежней паузы в 5–6 секунд. Живьём 12.11 (первый
+    телефон, неделя): в альбом ушёл снимок одних заглушек, а в чат — «числа
+    нет». Снимать можно, когда число уже на экране."""
+    end = time.time() + wait
+    while True:
+        views = _ig_views(ui.dump(retries=2, tolerant=True), h)
+        if views or time.time() > end or abort.requested():
+            return views
+        human.pause(1.5, 2)
 
 
 def _shot_instagram(folder, w, h, days=None):
@@ -2741,6 +2912,7 @@ def _shot_instagram(folder, w, h, days=None):
         _note(folder, "instagram", note)
     else:
         _note(folder, "instagram", "статистика не открылась — снята панель")
+    views = _ig_wait_views(h) if insights else ""
     path = _snap(folder, "instagram")
     if path and insights:
         span = IG_PICKED.get("span")
@@ -2749,7 +2921,11 @@ def _shot_instagram(folder, w, h, days=None):
             why = IG_PICKED.get("why", "")
             when = (f"{IG_PICKED.get('shown') or 'обычный период'}, а не {PERIOD_WORDS[days]}"
                     + (f": {why}" if why else ""))
-        _views_note(folder, "instagram", _ig_views(ui.dump(retries=2, tolerant=True), h), when)
+        views = _ig_views(ui.dump(retries=2, tolerant=True), h) or views
+        _views_note(folder, "instagram", views, when)
+        if not views:
+            _note(folder, "instagram", (_notes_in(folder).get("instagram") or "статистика")
+                  + " — Instagram не догрузил числа, на снимке заглушки")
     for _ in range(backs):
         device.back()
         human.pause(0.8, 1.2)
@@ -2850,6 +3026,74 @@ FB_RANGES = {7: r"^(last 7 days|последние 7 дней|últimos 7 días),
              90: r"^(last 90 days|последние 90 дней|últimos 90 días),"}
 FB_POINT = re.compile(r"^([A-Za-zА-Яа-яéñ.]+\s+\d{1,2}|\d{1,2}\s+[A-Za-zА-Яа-яéñ.]+),\s*([\d.,]+\s*[KMКМ]?)$")
 FB_SPAN = re.compile(r",\s*(.+?\d{1,2})\s*[-–]\s*(.+?\d{1,2})$")
+# У Страницы (первый телефон, 12.11) кнопки «Dashboard» в профиле нет — панель
+# стоит вкладкой нижней панели: «Creator Dashboard, tab 2 of 5».
+FB_DASH_TAB = re.compile(r"^((creator|professional) )?dashboard, tab \d|"
+                         r"^(панель|профессиональная панель|panel)[^,]*, (вкладка|pestaña) \d", re.I)
+# График «Total views» — один узел с описанием «Total views, November 5 to
+# November 11. Ranges from 7 to 132…». Под ним — подписи дней оси.
+FB_CHART = re.compile(r"^(total views|всего просмотров|visualizaciones totales|total de visualizaciones),", re.I)
+FB_AXIS_DAY = re.compile(r"^([^\W\d_]{3,}\.?\s+\d{1,2}|\d{1,2}\s+[^\W\d_]{3,}\.?)$")
+
+
+def _fb_chart(nodes, w, h):
+    """Рамка графика просмотров (x1, y1, x2, y2) или None — график не
+    дорисован. По описанию узла; нет его — по ряду подписей дней под ним
+    (не меньше двух: одна — это подсказка устаревшего графика из одной
+    точки, см. `_fb_refresh`)."""
+    box = next((n.bounds for n in nodes or [] if _sized(n) and FB_CHART.match(_label(n))
+                and n.bounds[2] - n.bounds[0] > w * 0.6 and n.bounds[3] - n.bounds[1] > h * 0.08), None)
+    if box is not None:
+        return tuple(box)
+    days = [n for n in nodes or [] if _sized(n) and FB_AXIS_DAY.match(_label(n))
+            and _day_of(_label(n)) and h * 0.25 < n.bounds[1] < h * 0.7]
+    for row in days:
+        same = {n.bounds[0] for n in days if abs(n.bounds[1] - row.bounds[1]) < 8}
+        if len(same) >= 2:
+            top = row.bounds[1]
+            return int(w * 0.05), top - int(h * 0.17), w - int(w * 0.03), top
+    return None
+
+
+def _fb_refresh(w, h, wait=10.0):
+    """Протянуть «Analytics» вниз и дождаться графика. Дерево после.
+
+    Панель открывается с тем, что запомнила: живьём 12.11 на втором телефоне
+    она показывала график из одной точки «Nov 5, 129» и за 38 секунд сама не
+    обновилась. Протяжка вниз — и через 2 секунды график до вчерашнего дня."""
+    adb.shell(f"input swipe {w // 2} {int(h * 0.35)} {w // 2} {int(h * 0.8)} 400", check=False)
+    end = time.time() + wait
+    nodes = []
+    while time.time() < end:
+        human.pause(1.5, 2)
+        nodes = ui.dump(retries=2, tolerant=True)
+        if _fb_chart(nodes, w, h) is not None:
+            break
+    return nodes
+
+
+def _fb_last_day(w, h):
+    """Последний день графика: касание у правого края вызывает подсказку
+    «Nov 11, 7». (день, число, дерево) — день None, если подсказки нет.
+
+    Последняя точка — вчера. Если нет — панель ещё показывает старое:
+    обновить и посмотреть ещё раз."""
+    yesterday = dt.date.today() - dt.timedelta(days=1)
+    day, value, nodes = None, "", []
+    for attempt in range(2):
+        nodes = ui.dump(retries=2, tolerant=True)
+        box = _fb_chart(nodes, w, h)
+        if box is not None:
+            adb.tap(box[2] - 4, (box[1] + box[3]) // 2)
+            human.pause(1, 1.4)
+            nodes = ui.dump(retries=2, tolerant=True)
+        point = next((m for m in (FB_POINT.match((n.desc or "").strip()) for n in nodes or []) if m), None)
+        if point is not None:
+            day, value = _day_of(point.group(1)), _num(point.group(2))
+        if (day is not None and day >= yesterday) or attempt:
+            break
+        _fb_refresh(w, h)
+    return day, value, nodes
 
 
 def _fb_dashboard(folder, w, h, days):
@@ -2859,7 +3103,8 @@ def _fb_dashboard(folder, w, h, days):
     for k in range(3):
         nodes = ui.dump(retries=2, tolerant=True)
         button = next((n for n in nodes or [] if n.clickable and _label(n) in FB_DASHBOARD
-                       and _center(n)[1] < h * 0.9), None)
+                       and _center(n)[1] < h * 0.9), None) \
+            or next((n for n in nodes or [] if n.clickable and FB_DASH_TAB.match((n.desc or "").strip())), None)
         if button is not None or k == 2:
             break
         # Профиль прокручен (после плиток) — кнопка выше края. Вниз, к шапке.
@@ -2881,36 +3126,43 @@ def _fb_dashboard(folder, w, h, days):
     ui.tap_node(tab)
     backs = 2
     nodes, rng = _fb_wait(lambda n: n.clickable and _label(n) in FB_RANGE_BTN, 12)
-    want = {1: 7, 2: 7, "week": 7, "month": 28, ALL_TIME: 90}.get(days)
-    picked = ""
+    _fb_refresh(w, h)                                    # панель открывается со старым
+    yesterday = dt.date.today() - dt.timedelta(days=1)
+    # За вчера период не выбираем: последний день есть на графике при любом
+    # периоде, а список периодов бывает устаревшим — живьём 12.11 в нём
+    # стояло «Today, Nov 6» и «Last 7 days, Oct 30 - Nov 5», и выбранные из
+    # него «7 дней» показывали график из одной точки за 5 ноября. Её
+    # программа и выдавала «за вчера» с пометкой «данные ещё не показаны».
+    want = {2: 7, "week": 7, "month": 28, ALL_TIME: 90}.get(days)
+    picked, stale = "", ""
     if rng is not None and want:
         ui.tap_node(rng)
         human.pause(1.5, 2)
         opt = next((n for n in ui.dump(retries=2, tolerant=True) or []
                     if n.clickable and re.match(FB_RANGES[want], (n.desc or "").strip(), re.I)), None)
-        if opt is not None:
+        ends = FB_SPAN.search(opt.desc.strip()) if opt is not None else None
+        last = _day_of(ends.group(2)) if ends else None
+        if opt is not None and (last is None or last >= yesterday):
             picked = opt.desc.strip()
             ui.tap_node(opt)
             human.pause(4, 5)
         else:
+            if last is not None:
+                stale = f"список периодов Facebook устарел: кончается {last:%d.%m}"
             device.back()                                  # список закрыть, ничего не выбрав
             human.pause(1, 1.5)
-    nodes = ui.dump(retries=2, tolerant=True)
+    day, shown, nodes = _fb_last_day(w, h) if days == 1 else (None, "", ui.dump(retries=2, tolerant=True))
     path = _snap(folder, "facebook")
     total = next((n for n in nodes or [] if _sized(n) and _label(n) == "Views"
                   and n.selected), None)
     value = _value_below(nodes, total, dy=60) if total is not None else None
-    point = next((FB_POINT.match((n.desc or "").strip()) for n in nodes or []
-                  if FB_POINT.match((n.desc or "").strip())), None)
     span = FB_SPAN.search(picked)
-    yesterday = dt.date.today() - dt.timedelta(days=1)
     views, when = "", ""
     if days == 1:
         # Facebook может показывать данные с задержкой. Сохраняем настоящий
         # день точки, не заменяя его незаметно прибавкой по плиткам профиля.
-        day = _day_of(point.group(1)) if point else None
-        if day is not None and day <= yesterday:
-            views, when = _num(point.group(2)), f"{day:%d.%m}"
+        if day is not None and day <= yesterday and shown:
+            views, when = shown, f"{day:%d.%m}"
             _note(folder, "facebook_end", day.isoformat())
             _note(folder, "facebook_source", "данные за вчера ещё не показаны"
                   if day < yesterday else "")
@@ -2929,6 +3181,7 @@ def _fb_dashboard(folder, w, h, days):
     _note(folder, "facebook", "Creator Dashboard · Analytics"
           + (f", {picked.split(',')[0]}" if picked else "")
           + (f" — за {when}: {views}" if views else "")
+          + (f"; {stale}" if stale else "")
           + "; Facebook считает с включения профессионального режима")
     for _ in range(backs):
         device.back()

@@ -203,9 +203,9 @@ screens["now"] = PRO
 f2 = os.path.join(tmp, "pro")
 path = accstats._shot_facebook(f2, W, H, 1, vids)
 said = accstats._notes_in(f2)
-check(f"панель → (шторка «назад») → Analytics → 7 дней: {taps}",
-      path and taps[:3] == ["Dashboard", "Analytics, 1 of 4", "Select date range"]
-      and taps[3].startswith("Last 7 days"))
+check(f"панель → (шторка «назад») → Analytics, период за вчера не выбирается: {taps}",
+      path and taps == ["Dashboard", "Analytics, 1 of 4"])
+check("панель обновлена протяжкой вниз", any(c.startswith("input swipe") for c in swipes))
 check("в шторке приветствия ничего не нажато", "Explore on your own" not in taps)
 check(f"за вчера — подпись точки графика: {said.get('facebook_views')} за {said.get('facebook_when')}",
       said.get("facebook_views") == "12" and said.get("facebook_when") == f"{yest:%d.%m}")
@@ -240,6 +240,96 @@ f4 = os.path.join(tmp, "pro3")
 accstats._shot_facebook(f4, W, H, "month", vids)
 check("месяц: у Facebook только «последние 28 дней» — число не подменяется",
       accstats._notes_in(f4).get("facebook_views") != "57")
+
+# Живьём 2026-11-12, второй телефон: панель открылась со старым — график из
+# одной точки «Nov 5, 129», а список периодов кончался 5 ноября. Протяжка вниз
+# дала график до вчера; касание у правого края — подсказку «Nov 11, 7».
+print("\nустаревшая панель: обновить и взять последний день графика")
+old_day = yest - dt.timedelta(days=6)
+old = f"{old_day:%b} {old_day.day}"
+HEAD = [node((1144, 145, 1261, 262), desc="Select date range", cls="android.widget.Button", clickable=True),
+        node((78, 441, 507, 502), desc="Views", text="Views", selected=True),
+        node((78, 528, 150, 584), desc="294", text="294", selected=True)]
+STALE = HEAD + [node((622, 836, 723, 957), desc=f"{old}, 129"), node((623, 1298, 724, 1339), desc=old)]
+CHART = node((61, 810, 1244, 1298), desc=f"Total views, {old_day:%B} {old_day.day} to {yest:%B} {yest.day}. "
+                                         "Ranges from 7 to 132.")
+FRESH = HEAD + [CHART]
+TIPPED = FRESH + [node((1082, 836, 1205, 957), desc=f"{mon}, 7")]
+OLD_RANGES = [node((0, 1955, 1280, 2130), clickable=True, cls="android.widget.RadioButton",
+                   desc=f"Last 7 days, Oct 30 - {old}")]
+flow.update({"Analytics, 1 of 4": STALE, "Select date range": OLD_RANGES})
+touched = []
+
+
+def phone(cmd, **k):
+    touched.append(cmd)
+    if cmd.startswith("input swipe") and screens["now"] is STALE:
+        screens["now"] = FRESH
+    elif cmd.startswith("input tap") and screens["now"] is FRESH:
+        x, y = map(int, cmd.split()[2:4])
+        if x > 1200 and 810 < y < 1298:
+            screens["now"] = TIPPED
+    return ""
+
+
+def back_stale():
+    backs.append(1)
+    if screens["now"] is WELCOME:
+        screens["now"] = DASH
+    elif screens["now"] is OLD_RANGES:
+        screens["now"] = FRESH
+
+
+accstats.adb.shell = phone
+accstats.device.back = back_stale
+screens["now"] = PRO[:1] + REELS
+taps.clear()
+f5 = os.path.join(tmp, "stale")
+path = accstats._shot_facebook(f5, W, H, 1, vids)
+said = accstats._notes_in(f5)
+check(f"старая точка не выдана за вчера: {said.get('facebook_views')} за {said.get('facebook_when')}",
+      path and said.get("facebook_views") == "7" and said.get("facebook_when") == f"{yest:%d.%m}"
+      and not said.get("facebook_source"))
+check("касание — у правого края графика", any(c.startswith("input tap 124") for c in touched))
+check("период из списка за вчера не выбирался", "Select date range" not in taps)
+screens["now"] = PRO[:1] + REELS
+taps.clear()
+f6 = os.path.join(tmp, "stale_week")
+accstats._shot_facebook(f6, W, H, "week", vids)
+said = accstats._notes_in(f6)
+check(f"неделя: устаревший пункт списка не выбран, так и сказано: {said.get('facebook')!r}",
+      "Select date range" in taps and not any(t.startswith("Last 7 days") for t in taps)
+      and "устарел" in said.get("facebook", ""))
+
+# Живьём 2026-11-12, первый телефон: Страница «Tras el velo» без рилсов. Кнопки
+# «Dashboard» в профиле нет — панель стоит вкладкой нижней панели.
+print("\nСтраница: панель — вкладка нижней панели")
+PAGE = [node((466, 2309, 814, 2385), desc="No reels yet"),
+        node((256, 2538, 512, 2720), desc="Creator Dashboard, tab 2 of 5", cls="android.app.ActionBar$Tab",
+             clickable=True),
+        node((1024, 2538, 1280, 2720), desc="Profile, tab 5 of 5", cls="android.app.ActionBar$Tab",
+             clickable=True, selected=True)]
+ZERO = HEAD[:1] + [node((61, 810, 1244, 1298), desc="Total views, October 15 to November 11. Stayed at 0 throughout.")]
+ZERO_TIP = ZERO + [node((1083, 836, 1206, 957), desc=f"{mon}, 0")]
+flow.update({"Creator Dashboard, tab 2 of 5": DASH, "Analytics, 1 of 4": ZERO})
+
+
+def phone_page(cmd, **k):
+    if cmd.startswith("input tap") and screens["now"] is ZERO:
+        screens["now"] = ZERO_TIP
+    return ""
+
+
+accstats.adb.shell = phone_page
+screens["now"] = PAGE
+taps.clear()
+f7 = os.path.join(tmp, "page")
+path = accstats._shot_facebook(f7, W, H, 1, [])
+said = accstats._notes_in(f7)
+check(f"без рилсов и без кнопки «Dashboard» — через вкладку: {taps}",
+      path and taps[:2] == ["Creator Dashboard, tab 2 of 5", "Analytics, 1 of 4"])
+check(f"ноль за вчера — это число, а не «не снял»: {accstats.numbers_text(f7)!r}",
+      said.get("facebook_views") == "0" and said.get("facebook_when") == f"{yest:%d.%m}")
 
 print("\nтелефон без Facebook")
 answers = {}

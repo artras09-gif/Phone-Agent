@@ -241,6 +241,48 @@ def _http_error(kind, code, body):
     return VisionError(f"{who} ответил {code}: {short}")
 
 
+# Ключи, для которых сервис уже искали запросом (отпечатки, не сами ключи):
+# второй раз за запуск не ищем, иначе каждый кадр с неверным ключом обходил
+# бы все сервисы списка.
+_REROUTED = set()
+
+
+def _reroute():
+    """Сервис из списка не принял ключ — спросить остальные, чей он. True —
+    нашёлся другой, адрес и модель переключены и записаны в настройки.
+
+    По виду ключа сервис не узнать: `sk-` и 32 знака выдают и DashScope, и
+    DeepSeek, а `config.preset_for_key` отвечает на такой «Qwen». Окно
+    настроек после отказа само спрашивает сервисы (`detect_service`), но
+    ключ попадает в настройки и мимо окна — правкой settings.json или
+    переменной `PA_API_KEY`. Живьём 12.11: ключ DeepSeek, вписанный в файл,
+    уходил в DashScope и получал 401 на каждом кадре, а в журнале это
+    выглядело как «ключ недействителен». Поэтому доказательством, чей ключ,
+    и здесь служит запрос, а не формат.
+
+    Адрес, набранный руками (не из списка), не трогаем: подменять его
+    угадкой нельзя.
+    """
+    key = (config.API_KEY or "").strip()
+    was = config.preset_for_url(config.API_URL)
+    mark = hashlib.sha256(key.encode("utf-8", "replace")).hexdigest()[:16]
+    if not key or not was or mark in _REROUTED:
+        return False
+    _REROUTED.add(mark)
+    try:
+        pid, url, _, model = detect_service(key, timeout=15, tries=3)
+    except Exception:
+        return False
+    if not pid or not model or pid == was:
+        return False
+    import prefs
+
+    prefs.save(api_url=url, api_model=model)
+    print(f"  зрение: {config.API_PRESETS[was][0]} ключ не принял, его принял "
+          f"{config.API_PRESETS[pid][0]} — переключил адрес, модель {model}", flush=True)
+    return True
+
+
 def _post(path, payload, timeout, kind=None):
     """Запрос к тому, кто сейчас за модель. Повторяет то, что стоит повторять.
 
@@ -254,6 +296,17 @@ def _post(path, payload, timeout, kind=None):
     url = base + path
     data = json.dumps(payload).encode("utf-8")
     attempts = (config.API_RETRIES + 1) if kind == API else 1
+    asked = (config.API_MODEL or "").strip()
+
+    def moved(code):
+        """Ключ отвергнут — может, он от другого сервиса списка (`_reroute`).
+        Тогда тот же запрос уходит туда, с моделью того сервиса."""
+        if kind != API or code not in (401, 403) or not _reroute():
+            return None
+        again = payload
+        if isinstance(payload, dict) and payload.get("model") == asked:
+            again = dict(payload, model=config.API_MODEL)
+        return _post(path, again, timeout, kind)
 
     last = None
     for attempt in range(attempts):
@@ -268,6 +321,9 @@ def _post(path, payload, timeout, kind=None):
             code, body = _send(base, path, data, headers, timeout)
             if code >= 400:
                 last = _http_error(kind, code, body)
+                answer = moved(code)
+                if answer is not None:
+                    return answer
                 # Ключ не тот и модели такой нет — от повтора не изменится.
                 if code not in (429, 500, 502, 503, 504):
                     raise last
@@ -276,6 +332,9 @@ def _post(path, payload, timeout, kind=None):
         except urllib.error.HTTPError as e:      # только путь через прокси
             body = e.read().decode("utf-8", "replace")
             last = _http_error(kind, e.code, body)
+            answer = moved(e.code)
+            if answer is not None:
+                return answer
             if e.code not in (429, 500, 502, 503, 504):
                 raise last from e
         except json.JSONDecodeError as e:

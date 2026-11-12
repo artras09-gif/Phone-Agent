@@ -81,6 +81,8 @@ TESTS = [
     ("scratchpad/stats_hidden.py", "невидимые копии кнопок TikTok, обрезанная «Custom», календарь Instagram ниже края"),
     ("scratchpad/stats_blind.py", "«Аналитика» TikTok без подписей — по снимку; Instagram без дерева; окно доступа TikTok"),
     ("scratchpad/stats_facebook.py", "статистика Facebook: плитки «plays», «Post details», прибавка по снимкам"),
+    ("scratchpad/stats_first_run.py", "статистика на свежем телефоне: TikTok без периодов, окно аккаунтов YouTube Studio, потерянное касание Instagram"),
+    ("scratchpad/key_reroute.py", "ключ от другого сервиса находится запросом, а не по виду"),
     ("scratchpad/caption_hashtag.py", "подпись кончается хэштегом — TikTok не прячет «Опубликовать»"),
     ("scratchpad/overlays_upload.py", "перед публикацией не убивать идущую загрузку"),
     ("scratchpad/yt_tags_test.py", "YouTube: описание и теги от DeepSeek вбиваются при загрузке"),
