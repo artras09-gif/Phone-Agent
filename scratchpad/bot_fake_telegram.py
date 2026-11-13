@@ -375,8 +375,12 @@ def draft_of(chat, since):
 
 
 def job_by_caption(part):
-    rows = jobs.connect().execute("SELECT * FROM jobs ORDER BY id DESC").fetchall()
-    return next((r for r in rows if part in (r["caption"] or "")), None)
+    """Задача с такой подписью. Ждём её: черновик в Telegram уходит раньше,
+    чем подпись дописана в базу, и сразу после него задачи бывало не видно."""
+    def find():
+        rows = jobs.connect().execute("SELECT * FROM jobs ORDER BY id DESC").fetchall()
+        return next((r for r in rows if part in (r["caption"] or "")), None)
+    return wait(find, timeout=5.0)
 
 
 def idle(timeout=10.0):

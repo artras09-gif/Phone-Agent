@@ -143,6 +143,27 @@ def _awake_if_dark(ctx):
     return False
 
 
+def _wake_full():
+    """Разбудить и разблокировать по-настоящему, с проверкой снимком.
+
+    13.11 живьём (телефон T): экран погас по таймауту посреди серии постов —
+    MIUI не считает касания через adb действием человека, и 10 минут прошли.
+    `unlock()` в начале Facebook решил, что телефон уже разблокирован, и все
+    три попытки прошли на погасшем экране блокировки («не дождался главной»).
+    Так же, как сбор статистики: опрос состояния, затем снимок, затем снова
+    разблокировка (после пробуждения снимком экран бывает на блокировке)."""
+    return device.unlock() and device.ensure_awake() and device.unlock()
+
+
+KEYGUARD_IDS = ("keyguard_root_view", "aod_root_view", "keyguard_message_area_container")
+
+
+def _locked_tree(nodes):
+    """На экране — блокировка MIUI (дерево системной оболочки), а не приложение."""
+    return any(n.pkg == "com.android.systemui" and n.rid.rsplit("/", 1)[-1] in KEYGUARD_IDS
+               for n in nodes or [])
+
+
 HASHTAG_END = re.compile(r"[#@][^\s#@]+$")
 
 
@@ -848,13 +869,22 @@ def _to_home(step, ctx, log_path, index):
         raise StepFailed(f"{package} не открылся")
     human.pause(2.5, 4.0)
     paused = tab_tapped = False
-    reveals = 0
+    reveals = wakes = 0
     end = time.time() + step.get("timeout", 40)
     nodes = []
     while time.time() < end:
         if abort.requested():
             raise StepFailed("остановлено")
         nodes = ui.dump(retries=1, tolerant=True)
+        if _locked_tree(nodes) and wakes < 2:
+            # Экран погас и заблокировался — в темноте главной не дождаться.
+            wakes += 1
+            _wake_full()
+            human.pause(1.0, 1.6)
+            device.open_app(package)
+            device.wait_for_app(package, timeout=15)
+            human.pause(2.0, 3.0)
+            continue
         # Строго — только при настоящем системном окне: на главной в подписях
         # чужих роликов бывает что угодно, и «доступ к камере и микрофону» из
         # подписи принялся бы за экран разрешений.
@@ -1664,7 +1694,7 @@ def post(video_path, caption, target, recipes=None, extra=None):
     opened = False
     FINAL["tapped"] = False
     try:
-        if not device.unlock():
+        if not _wake_full():
             report.append("не смог разблокировать телефон")
             return False, report.text()
         device.keep_awake(True)
@@ -1700,6 +1730,9 @@ def post(video_path, caption, target, recipes=None, extra=None):
         for attempt in range(1, attempts + 1):
             ctx.pop("at_home", None)
             try:
+                # Экран мог погаснуть за прошлую сеть или прошлую попытку.
+                if not _wake_full():
+                    raise StepFailed("телефон не разблокировался: экран не горит")
                 opened = True
                 if not from_home:
                     _open_for_post(recipe, package, remote, caption)
