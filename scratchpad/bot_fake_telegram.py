@@ -489,7 +489,8 @@ same = mp4(seed=b"same-video")
 m = FAKE.mark()
 say_to(OWNER, OWNER, "двойник", media=video(same))
 say_to(OWNER, OWNER, "двойник", media=video(same))
-say(last_text(OWNER, m, "Второй раз не ставлю"), "второе такое же — не ставим")
+say(last_text(OWNER, m, "убрал"),
+    "второе такое же, пока первое — черновик: старый черновик убран, новый вместо него")
 twins = jobs.connect().execute("SELECT COUNT(*) FROM jobs WHERE caption='двойник' "
                                "AND status!='cancelled'").fetchone()[0]
 say(twins == 1, f"в базе одна задача: {twins}")

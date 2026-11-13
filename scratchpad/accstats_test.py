@@ -185,7 +185,7 @@ state = {"restarted": False}
 accstats.device.stop_app = lambda pkg: (actions.append(("STOP", pkg)), state.update(restarted=True))
 ui.dump = lambda retries=3, tolerant=False, timeout=30: own_screen if state["restarted"] else stuck
 accstats.device.back = lambda: None
-accstats._posted_recently = lambda net, minutes=30: False
+accstats._posted_recently = lambda net, minutes=30, package=None: False
 actions.clear()
 taps.clear()
 got = accstats.collect("tiktok")
@@ -193,7 +193,7 @@ say(("STOP", accstats.NETS["tiktok"]["package"]) in actions and not got["why"] a
     f"перезапустил приложение и снял профиль: {got['why'] or got['followers']}")
 state["restarted"] = False
 actions.clear()
-accstats._posted_recently = lambda net, minutes=30: True
+accstats._posted_recently = lambda net, minutes=30, package=None: True
 device.upload_progress = lambda pkg: (0, 0)
 got = accstats.collect("tiktok")
 say(not any(a[0] == "STOP" for a in actions if isinstance(a, tuple)) and "недавно публиковал" in got["why"],
@@ -271,6 +271,22 @@ with jobs.connect() as con:
 jobs.log_event("account_stats", "попытка")
 jobs.log_event("account_stats", "попытка")
 say(not accstats.due(late), "две неудачные попытки — до завтра не дёргаем телефон")
+
+print("\n--- недавно публиковал: перезапуск приложения — только если загрузка ещё идёт ---")
+# Живьём 13.11: YouTube на втором телефоне не снялся дважды — пост вышел и
+# догрузился, а программа полчаса не решалась перезапустить приложение.
+import importlib  # noqa: E402
+real = importlib.reload(accstats)._posted_recently
+recent_job = jobs.add(os.devnull, targets="shorts", status="pending")
+jobs.mark(recent_job, "done")
+uploading = {"now": None}
+accstats.device.upload_progress = lambda package: uploading["now"]
+say(real("shorts", package="com.google.android.youtube") is False,
+    "пост вышел, уведомления о загрузке нет — приложение можно перезапустить")
+uploading["now"] = (40, 100)
+say(real("shorts", package="com.google.android.youtube") is True,
+    "загрузка ещё идёт — приложение не трогаем")
+say(real("reels", package="com.instagram.android") is False, "в эту сеть не публиковали — как раньше")
 
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)

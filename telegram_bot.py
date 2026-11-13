@@ -2221,6 +2221,26 @@ def _stats_button(cq, data, chat_id, message_id, group, thread):
     _snap_stats(days, say=lambda text: _edit(chat_id, message_id, text))
 
 
+def _drop_draft(job):
+    """Убрать черновик, который заменяет новый с тем же видео.
+
+    Черновик из темы, которая теперь запасы, — это видео В запасах: его
+    сообщение запоминаем как запас, чтобы после публикации удалить и его."""
+    src = jobs.tg_source(job)
+    stock = shelf_home("stock")
+    if stock and src.get("file") and src.get("msg") and not src.get("fwd") \
+            and str(src.get("chat")) == str(stock[0]):
+        topic = "" if stock[1] == GENERAL else str(stock[1])
+        address = f"{stock[0]}:{topic}" if topic else str(stock[0])
+        if str(job["chat"] or "") == address:
+            jobs.stock_add(src["file"], stock[0], topic, src["msg"], at=job["created_at"])
+    if jobs.cancel(job["id"]) is not None:
+        try:
+            os.remove(job["video_path"])
+        except OSError:
+            pass
+
+
 def _take_video(video, text, spec, size_mb=0, where=None, src=None):
     """Скачать видео и сделать черновик (или задачу по шаблону).
     `src` — откуда видео в Telegram, для архива и запасов (`shelve`)."""
@@ -2236,6 +2256,20 @@ def _take_video(video, text, spec, size_mb=0, where=None, src=None):
     # То же видео, что уже ждёт или публикуется, — не ставим второй раз.
     fp = jobs.video_fingerprint(path)
     twin = jobs.duplicate_of(fp)
+    replaced = []
+    while twin is not None and twin["status"] == "draft":
+        # Черновик ничего не публиковал — это просто забытые кнопки. 13.11 на
+        # телефоне «T» видео попало в «Запасы» раньше, чем тема стала
+        # запасами, и бот сделал из него черновик. Его так и не тронули, а
+        # пересланное потом то же видео бот отбивал «ждёт выбора времени —
+        # второй раз не ставлю», и пост не выходил вовсе. Теперь старый
+        # черновик уступает новому.
+        _drop_draft(twin)
+        replaced.append(twin["id"])
+        twin = jobs.duplicate_of(fp)
+    if replaced:
+        send(f"Прошлый черновик с этим видео (#{', #'.join(map(str, replaced))}) убрал — "
+             "вот новый.")
     if twin is not None and twin["status"] != "done":
         try:
             os.remove(path)

@@ -267,7 +267,9 @@ def phone(cmd, **k):
         screens["now"] = FRESH
     elif cmd.startswith("input tap") and screens["now"] is FRESH:
         x, y = map(int, cmd.split()[2:4])
-        if x > 1200 and 810 < y < 1298:
+        # Как живьём 13.11: подсказку даёт касание по последней точке, а у
+        # самого края графика (x2 - 4) — ничего.
+        if 1180 < x < 1230 and 810 < y < 1298:
             screens["now"] = TIPPED
     return ""
 
@@ -290,7 +292,9 @@ said = accstats._notes_in(f5)
 check(f"старая точка не выдана за вчера: {said.get('facebook_views')} за {said.get('facebook_when')}",
       path and said.get("facebook_views") == "7" and said.get("facebook_when") == f"{yest:%d.%m}"
       and not said.get("facebook_source"))
-check("касание — у правого края графика", any(c.startswith("input tap 124") for c in touched))
+tap_x = [int(c.split()[2]) for c in touched if c.startswith("input tap")]
+check(f"касание — по последней точке графика, а не у самого края: {tap_x}",
+      tap_x and all(1180 < x < 1230 for x in tap_x))
 check("период из списка за вчера не выбирался", "Select date range" not in taps)
 screens["now"] = PRO[:1] + REELS
 taps.clear()

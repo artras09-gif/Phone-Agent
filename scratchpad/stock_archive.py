@@ -459,5 +459,33 @@ rows = jobs.stock_find("EARLY")
 say(rows and rows[0]["msg"] == early["message_id"] and "тоже запомнил" in said(),
     "назначили запасами — уже взятое отсюда видео запомнено как запас")
 
+print("\n--- живой случай 13.11, телефон «T»: забытый черновик из запасов не держит пост ---")
+# Как на телефоне: запасы назначили старой версией, и это видео в них не
+# запомнено, а черновик из темы запасов так и висит без времени.
+handle(message(POSTS, OWNER, "/here видео"))
+old_draft = last_job()
+with jobs.connect() as con:
+    con.execute("DELETE FROM stock WHERE file='EARLY'")
+handle(message(ARCHIVE, OWNER, "/here архив"))
+same = old_draft["video_path"]
+bot._download = lambda file_id, dest, *more: (                 # тот же ролик — тот же отпечаток
+    __import__("shutil").copyfile(same, os.path.join(dest, "again.mp4")) or os.path.join(dest, "again.mp4"))
+calls.clear()
+handle(message(POSTS, file="EARLY", text="положил заранее", forwarded=True))
+bot._download = fake_download
+new = last_job()
+say(new["id"] != old_draft["id"] and new["status"] == "draft"
+    and jobs.by_id(old_draft["id"])["status"] == "cancelled",
+    f"пересланное видео стало новым черновиком #{new['id']}, старый #{old_draft['id']} убран")
+say("убрал" in said() and "Второй раз не ставлю" not in said(), "и бот сказал об этом, а не «ждёт выбора времени»")
+rows = jobs.stock_find("EARLY")
+say(rows and rows[0]["msg"] == early["message_id"],
+    "сообщение в запасах, из которого был старый черновик, запомнено как запас")
+calls.clear()
+report = post(new["id"])
+say(api("deleteMessage") and int(api("deleteMessage")[0]["message_id"]) == early["message_id"]
+    and "удалил" in report,
+    "пост вышел — видео ушло в архив и удалено из запасов")
+
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)

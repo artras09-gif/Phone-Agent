@@ -375,17 +375,29 @@ def _ask_vision(png_path, net):
 
 # --------------------------------------------------------------- сбор
 
-def _posted_recently(net, minutes=30):
-    """Публиковал ли агент в эту сеть за последние полчаса — тогда её
-    приложение может ещё догружать ролик, и закрывать его нельзя."""
+def _posted_recently(net, minutes=30, package=None):
+    """Может ли приложение сети ещё догружать ролик — тогда закрывать его нельзя.
+
+    Раньше хватало «публиковал за последние полчаса», и 13.11 YouTube на втором
+    телефоне так и не снялся дважды подряд: пост вышел, загрузка давно
+    закончилась, а программа всё не решалась перезапустить YouTube и не могла
+    дойти до профиля. Теперь недавняя публикация — только повод проверить
+    уведомление о загрузке: его нет — ролик ушёл, перезапускать можно."""
     try:
         with jobs.connect() as con:
             row = con.execute("SELECT COUNT(*) c FROM jobs WHERE done_at>? "
                               "AND (',' || targets || ',') LIKE ?" + jobs._mine()[0],
                               (time.time() - minutes * 60, f"%,{net},%") + jobs._mine()[1]).fetchone()
-        return bool(row and row["c"])
+        if not (row and row["c"]):
+            return False
     except Exception:
         return True                  # не знаем — бережём загрузку
+    if not package:
+        return True
+    try:
+        return device.upload_progress(package) is not None
+    except (adb.AdbError, OSError):
+        return True
 
 
 def _read_profile(net, cfg, result):
@@ -519,7 +531,7 @@ def _read_profile(net, cfg, result):
     # профиля показал «Профиль Dumpling maker». Перезапускаем приложение, оно
     # встаёт на главную, и ещё раз. Но не сразу после публикации в эту сеть:
     # закрыть приложение значит оборвать догрузку ролика.
-    recent = _posted_recently(net)
+    recent = _posted_recently(net, package=cfg["package"])
     restarted = False
     if not walk():
         if recent:
@@ -3092,14 +3104,31 @@ def _fb_last_day(w, h):
     обновить и посмотреть ещё раз."""
     yesterday = dt.date.today() - dt.timedelta(days=1)
     day, value, nodes = None, "", []
+
+    def point_of(tree):
+        return next((m for m in (FB_POINT.match((n.desc or "").strip()) for n in tree or []) if m), None)
+
     for attempt in range(2):
         nodes = ui.dump(retries=2, tolerant=True)
         box = _fb_chart(nodes, w, h)
+        point = None
         if box is not None:
-            adb.tap(box[2] - 4, (box[1] + box[3]) // 2)
-            human.pause(1, 1.4)
-            nodes = ui.dump(retries=2, tolerant=True)
-        point = next((m for m in (FB_POINT.match((n.desc or "").strip()) for n in nodes or []) if m), None)
+            # Живьём 13.11: касание у самого края (x2 - 4) подсказку не
+            # вызывало — последняя точка нарисована на шаг левее, — и
+            # читалась ОСТАВШАЯСЯ подсказка от прошлого касания («Nov 10, 0»
+            # вместо «Nov 12, 9»). Касаемся на шаг дня внутрь. Подсказка ещё и
+            # переключается: второе касание по той же точке её прячет, —
+            # поэтому не появилась — касаемся ещё раз.
+            x = box[2] - max(30, (box[2] - box[0]) // 30)
+            for _ in range(2):
+                adb.tap(x, (box[1] + box[3]) // 2)
+                human.pause(1, 1.4)
+                nodes = ui.dump(retries=2, tolerant=True)
+                point = point_of(nodes)
+                if point is not None:
+                    break
+        else:
+            point = point_of(nodes)
         if point is not None:
             day, value = _day_of(point.group(1)), _num(point.group(2))
         if (day is not None and day >= yesterday) or attempt:
