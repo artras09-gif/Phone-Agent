@@ -116,6 +116,13 @@ say(accstats._own_state(suggested, TT, 2400) is True,
 other = [N("someone", b=(373, 134, 685, 195)), N("Follow", b=(195, 846, 619, 967), clickable=True),
          N("Message", b=(619, 846, 752, 967), clickable=True), N("Following", b=(159, 769, 412, 813))]
 say(accstats._own_state(other, TT, 2400) is False, "чужой (Follow, Message в шапке): не мой")
+# 13.11 живьём на втором телефоне: слепое касание «Profile» открыло чат Tako,
+# и его «Edit» (новый чат) сошёл за свой профиль.
+tako = [N("TikTok Tako", b=(338, 181, 648, 253)), N(desc="Edit", b=(949, 145, 1092, 288), clickable=True),
+        N(desc="Menu", b=(1112, 178, 1190, 256)), N("Ask anything", b=(205, 2499, 1095, 2577), clickable=True)]
+say(accstats._own_state(tako, TT, 2772) is False, "чат ИИ-помощника Tako с «Edit»: не профиль")
+tap_y = TT["tap_xy"][0][1] * 2772
+say(2561 < tap_y < 2720, f"слепое касание «Profile» внутри вкладки (2561…2720), а не над ней: {tap_y:.0f}")
 say(accstats._own_state([N("Profile", b=(864, 2135, 1080, 2177))], TT, 2400) is None,
     "ни своих, ни чужих признаков — не понять (ждём, экран грузится)")
 say(accstats._seen_buttons(other, 2400) == ["Follow", "Message"],
