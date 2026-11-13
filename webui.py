@@ -1676,7 +1676,11 @@ def _hub_live():
 def _hub_refresh():
     """Кто подключён, у всех ли подключённых есть служба, как у служб дела."""
     found = []
-    for serial, state in adb.devices():
+    seen = adb.devices()
+    if not seen and adb.heal_if_blind():
+        print("[adb] телефонов не видно — перезапустил сервер adb", flush=True)
+        seen = adb.devices()
+    for serial, state in seen:
         name = HUB["names"].get(serial, "")
         if state == "device" and not name:
             try:

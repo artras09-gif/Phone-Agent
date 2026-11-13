@@ -115,6 +115,38 @@ def _stop_old_adb(tools):
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except (OSError, subprocess.SubprocessError):
             pass
+        # Дождаться, пока старый сервер правда уйдёт и отпустит USB. Живьём
+        # 13.11: сервер, поднятый сразу после kill-server, оставался «слепым»
+        # — телефоны подключены, а `adb devices` пуст, и сам он не оживал.
+        # После каждого обновления программа не видела ни одного телефона.
+        wait_adb_gone(settle=3.0)
+
+
+def _adb_running():
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq adb.exe", "/NH"],
+                             capture_output=True, text=True, timeout=10,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return "adb.exe" in out.lower()
+
+
+def wait_adb_gone(limit=10.0, settle=1.0):
+    """Ждать, пока не останется ни одного процесса adb (до `limit` секунд),
+    и ещё `settle` секунд — Windows отпускает USB не сразу. True — adb ушёл
+    и за эти секунды его никто не поднял снова."""
+    end = time.time() + limit
+    while time.time() < end:
+        running = _adb_running()
+        if running is None:
+            time.sleep(settle)
+            return True                     # не узнать — просто подождали
+        if not running:
+            time.sleep(settle)
+            return not _adb_running()
+        time.sleep(0.5)
+    return False
 
 
 MARK = "install.json"     # что было на машине до первого запуска

@@ -110,6 +110,76 @@ def devices():
     return res
 
 
+_HEALED = {"at": 0.0}
+
+
+def heal_if_blind(cooldown=60.0):
+    """Сервер adb не видит ни одного устройства — перезапустить его. True — перезапустили.
+
+    Живьём 13.11: сервер, поднятый сразу после того, как прежний погасили,
+    оставался «слепым» — телефоны воткнуты, Windows их видит, а список пуст, и
+    сам он не оживал. Ни одна служба телефона не поднималась, пока сервер не
+    перезапустили руками. Не чаще раза в `cooldown` секунд: если телефонов и
+    правда нет, незачем дёргать сервер каждый опрос окна."""
+    if time.time() - _HEALED["at"] < cooldown:
+        return False
+    _HEALED["at"] = time.time()
+    # Слепым сервер становится, если его подняли раньше, чем прежний отпустил
+    # USB. А поднимает его любой вызов adb — соседние потоки окна, службы, —
+    # через долю секунды после kill-server. Поэтому на время, пока USB
+    # отпускается, порт сервера занимаем сами: клиенты получают ошибку и
+    # сервер не запускают (проверено 13.11 — без этого лечение проигрывало
+    # соседнему опросу раз за разом).
+    for _ in range(4):
+        raw("kill-server", check=False, timeout=30)
+        if _hold_port(SERVER_PORT, settle=5.0):
+            break
+    raw("start-server", check=False, timeout=30)
+    time.sleep(3)
+    return True
+
+
+SERVER_PORT = 5037
+
+
+def _hold_port(port, settle, grab=5.0):
+    """Занять порт сервера adb, как только прежний сервер его отпустит, и
+    держать `settle` секунд, сбрасывая всех, кто постучится. True — удалось."""
+    import socket
+    import threading
+
+    sock = None
+    end = time.time() + grab
+    while time.time() < end:
+        candidate = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            candidate.bind(("127.0.0.1", port))
+            candidate.listen(16)
+            sock = candidate
+            break
+        except OSError:
+            candidate.close()
+            time.sleep(0.05)
+    if sock is None:
+        return False                 # порт снова занят: сервер уже подняли
+    sock.settimeout(0.2)
+    stop = time.time() + settle
+
+    def bounce():
+        while time.time() < stop:
+            try:
+                conn, _ = sock.accept()
+                conn.close()
+            except OSError:
+                pass
+
+    worker = threading.Thread(target=bounce, daemon=True)
+    worker.start()
+    worker.join(settle + 1)
+    sock.close()
+    return True
+
+
 def connected():
     return any(state == "device" for _, state in devices())
 

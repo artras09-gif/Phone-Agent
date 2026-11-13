@@ -29,6 +29,7 @@ TESTS = [
     ("scratchpad/links_all_nets.py", "ссылки во всех трёх сетях: селекторы"),
     ("scratchpad/fb_feed.py", "лента Facebook Reels: рецепт против живого дерева"),
     ("scratchpad/fb_post.py", "публикация в Facebook Reels: сеть, пропуск без приложения, «Next» по месту"),
+    ("scratchpad/adb_heal.py", "слепой сервер adb: перезапуск с занятым портом, не чаще раза в минуту"),
     ("scratchpad/tiktok_gallery.py", "галерея TikTok: наш ролик по подписи длины, даже когда id сменились"),
     ("scratchpad/threads_net.py", "Threads: пост и статистика без прогрева, свежий ролик, чужой черновик"),
     ("scratchpad/quote_paths.py", "путь к видео уходит на телефон в кавычках"),
