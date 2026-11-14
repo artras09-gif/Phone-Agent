@@ -925,7 +925,9 @@ def state(since=0):
         "devices": PROBE.data.get("devices", []),
         "chosen": _chosen(),
         "post_times": list(config.POST_TIMES),
-        "targets": [a["id"] for a in _apps()],
+        # Куда можно постить — это не «какие ленты листаем»: в Threads агент
+        # публикует, но ленту в нём не смотрит.
+        "targets": list(scheduler.postspec.TITLES),
     }
 
 

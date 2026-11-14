@@ -27,7 +27,8 @@ import human
 import jobs
 import ui
 
-TITLES = {"tiktok": "TikTok", "reels": "Instagram", "shorts": "YouTube", "facebook": "Facebook"}
+TITLES = {"tiktok": "TikTok", "reels": "Instagram", "shorts": "YouTube", "facebook": "Facebook",
+          "threads": "Threads"}
 
 # Как дойти до своего профиля. Шаг — {"find": [варианты подписи], "bottom":
 # только нижняя панель, "exact": подпись целиком}. ТОЧНО и ВНИЗУ — не каприз:
@@ -107,6 +108,12 @@ NETS = {
         "grid_tab": ["Reels, 3 of", "Reels, 3 из", "Reels"],
         "grid_scroll": True,
         "tile_re": r"(?:reel number|рилс(?: номер)?|reel n\.?º?)\s*\d+,\s*(.+?)\s*(?:plays?|воспроизведени\w*|просмотр\w*|reproducciones?)",
+    },
+    # Threads (2026-11-13): свой профиль читает `_read_threads`, статистику —
+    # `_shot_threads`; общий путь «дойти до профиля и снять плитки» не для него.
+    "threads": {
+        "package": "com.instagram.barcelona",
+        "optional": True,
     },
 }
 
@@ -648,7 +655,7 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
     say = log.append if log is not None else (lambda s: None)
     result = {"followers": None, "videos": [], "why": ""}
     try:
-        _read_profile(net, cfg, result)
+        (_read_threads if net == "threads" else _read_profile)(net, cfg, result)
         if abort.requested():
             # После «Остановить» паузы обрываются, и дальше шаги шли бы
             # вслепую, без ожиданий — не начинаем, а сразу на рабочий стол.
@@ -664,7 +671,7 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
                 _note(folder, SHOT_FILES[net] + "_account", result["account"])
             try:
                 w, h = adb.screen_size()
-                if tiles:
+                if tiles and net in TILE_FILES:
                     try:
                         result["tiles"] = _shot_tiles(net, folder, w, h, result["videos"])
                     except (adb.AdbError, RuntimeError, OSError) as e:
@@ -752,6 +759,8 @@ def _snap_app(name):
         return SNAP_APPS["youtube_tiles"] if "tiles" in name else STUDIO
     if name.startswith("facebook"):
         return NETS["facebook"]["package"]
+    if name.startswith("threads"):
+        return NETS["threads"]["package"]
     return SNAP_APPS.get(name.split("_")[0])
 
 
@@ -943,7 +952,8 @@ def numbers_text(folder, nets=None):
     (за вчера TikTok даёт позавчера); нет общего — у всех. Или ""."""
     said = _notes_in(folder)
     rows = [(net, said.get(SHOT_FILES[net] + "_views"), said.get(SHOT_FILES[net] + "_when") or "")
-            for net in ("reels", "tiktok", "shorts", "facebook") if nets is None or net in nets]
+            for net in ("reels", "tiktok", "shorts", "facebook", "threads")
+            if nets is None or net in nets]
     failed = [(net, said.get(SHOT_FILES[net] + "_why")) for net, views, _ in rows
               if not views and said.get(SHOT_FILES[net] + "_why")]
     missed = [(net, said.get(SHOT_FILES[net] + "_miss")) for net, views, _ in rows
@@ -953,9 +963,11 @@ def numbers_text(folder, nets=None):
     whens = [when for _, _, when in rows if when]
     top = max(set(whens), key=whens.count) if whens else ""
     common = top if whens.count(top) > 1 or len(set(whens)) == 1 else ""
-    # Facebook — всегда с периодом и источником резервного расчёта.
+    # Facebook — всегда с периодом и источником резервного расчёта; Threads —
+    # всегда с периодом: дня у него нет, и «0» без «за 7 дней» читалось бы как вчера.
     return "\n".join([f"{TITLES[net]} — {views}"
-                      + (f" (за {when})" if when and (when != common or net == "facebook") else "")
+                      + (f" (за {when})" if when and (when != common or net in ("facebook", "threads"))
+                         else "")
                       + (f" · {said['facebook_source']}" if net == "facebook"
                          and said.get("facebook_source") else "")
                       for net, views, when in rows]
@@ -3237,11 +3249,164 @@ def _shot_facebook(folder, w, h, days=None, videos=None):
     return path
 
 
+# ------------------------------------------------------------- Threads
+#
+# Просьба 2026-11-13: «добавь возможность постить в тредс ещё и собирать
+# стату с тредс, прогревать тредс не нужно». Поэтому в лентах (FEED_APPS) его
+# нет — только в сетях статистики (config.STATS_APPS).
+#
+# Снято живьём 13.11 на обоих телефонах (Threads 455 по-английски). Устроен он
+# иначе, чем остальные сети: плиток с просмотрами в профиле нет, зато вся
+# статистика — текстом в дереве экрана. Профиль → «View insights» → «Views»,
+# «Viewers», «Net followers» за 7, 14, 30 или 90 дней. Отдельного дня и
+# календаря у Threads нет вовсе: самое короткое, что он показывает, — 7 дней.
+# У вкладок и кнопок профиля постоянные resource-id — от языка не зависят.
+
+TH_INSIGHTS = ["View insights", "Посмотреть статистику", "Статистика", "Ver estadísticas",
+               "Ver insights", "Insights"]
+TH_GOT_IT = ["Got it", "Понятно", "Entendido", "OK", "ОК"]
+TH_VIEWS = ["Views", "Просмотры", "Visualizaciones"]
+TH_PERIOD = re.compile(r"^\s*(7|14|30|90)\s*(days|дн\w*|d[ií]as)\s*$", re.I)
+# Какой период Threads выбирать под просьбу: дня у него нет — берём 7 дней.
+TH_DAYS = {1: 7, 2: 7, "week": 7, "month": 30, ALL_TIME: 90}
+TH_FOLLOWERS = re.compile(r"\s*\d[\d\s.,]*\s*[KMКМkм]?\s*(followers?|подписчик|seguidor)", re.I)
+
+
+def _rid(n):
+    return (n.rid or "").split("/")[-1]
+
+
+def _read_threads(net, cfg, result):
+    """Свой профиль Threads: имя аккаунта и подписчики в `result`."""
+    if abort.requested():
+        raise RuntimeError("остановлено")
+    device.open_app(cfg["package"])
+    if not device.wait_for_app(cfg["package"], timeout=25):
+        result["why"] = "приложение не открылось"
+        return result
+    human.pause(3, 4)
+    _, h = adb.screen_size()
+    nodes, tab = _fb_wait(lambda n: _rid(n) == "barcelona_tab_profile", 12)
+    if tab is None and nodes and ui.dismiss_popup(nodes):
+        nodes, tab = _fb_wait(lambda n: _rid(n) == "barcelona_tab_profile", 8)
+    if tab is None:
+        # Нижней панели нет: окно входа или приложение открылось не на главной.
+        seen = _seen_buttons(nodes, h)
+        result["why"] = ("не нашёл вкладку профиля Threads — вошли ли в аккаунт?"
+                         + (f" На экране: {', '.join(seen)}" if seen else ""))
+        return result
+    ui.tap_node(tab)
+    nodes, own = _fb_wait(lambda n: _rid(n) == "profile_screen_edit_profile_button", 12)
+    if own is None:
+        result["why"] = "профиль Threads не открылся"
+        return result
+    box = next((n for n in nodes if _rid(n) == "Username"), None)
+    name = next((n.text for n in nodes if box is not None and n.text
+                 and abs(n.bounds[0] - box.bounds[0]) <= 6
+                 and abs(n.bounds[1] - box.bounds[1]) <= 6), "")
+    if name:
+        result["account"] = name.strip()
+    # «1 follower» — в единственном числе, общий FOLLOWERS его не знает.
+    count = next((n.text for n in nodes if TH_FOLLOWERS.match(n.text or "")), None)
+    result["followers"] = parse_count(count) if count else None
+    return result
+
+
+def _th_periods(nodes):
+    """Подписи периодов на экране: [(дней, узел)] сверху вниз."""
+    out = []
+    for n in nodes or []:
+        m = TH_PERIOD.match(n.text or "") if _sized(n) else None
+        if m:
+            out.append((int(m.group(1)), n))
+    return sorted(out, key=lambda item: item[1].bounds[1])
+
+
+def _th_shown(nodes):
+    """Сколько дней выбрано у блока «Profile» (его подпись — верхняя) или None."""
+    chips = _th_periods(nodes)
+    return chips[0][0] if chips else None
+
+
+def _th_pick(want):
+    """Выбрать период блока «Profile». Сколько дней стоит после этого (или None)."""
+    nodes = ui.dump(retries=2, tolerant=True)
+    chips = _th_periods(nodes)
+    if not chips or chips[0][0] == want:
+        return chips[0][0] if chips else None
+    was = {n.bounds for _, n in chips}
+    ui.tap_node(chips[0][1])
+    # Список открыт — когда на экране все четыре периода сразу. На самом экране
+    # их два («Profile» и «Posts»): «90 days» блока «Posts» — не пункт списка.
+    item, end = None, time.time() + 6
+    while item is None and time.time() < end:
+        time.sleep(0.7)
+        found = _th_periods(ui.dump(retries=1, tolerant=True))
+        if len({days for days, _ in found}) >= 4:
+            item = next((n for days, n in found if days == want and n.bounds not in was), None)
+    if item is None:
+        device.back()                               # список не открылся — закрыть, что открылось
+        human.pause(0.8, 1.2)
+    else:
+        ui.tap_node(item)
+        human.pause(2.5, 3.5)                       # числа перечитываются с сервера
+    nodes, _ = _fb_wait(lambda n: _label(n) in TH_VIEWS, 8)
+    return _th_shown(nodes)
+
+
+def _shot_threads(folder, w, h, days=None):
+    """Снимок «Insights» Threads и просмотры за период. Начало — свой профиль
+    (`_read_threads`). Период — ближайший из тех, что Threads умеет."""
+    nodes = ui.dump(retries=2, tolerant=True)
+    button = next((n for n in nodes if _sized(n) and _label(n) in TH_INSIGHTS), None)
+    if button is None:
+        _note(folder, "threads", "в профиле нет «View insights» — статистику не открыл")
+        return None
+    ui.tap_node(button)
+    # Разовое окно «Insights just got an upgrade» → «Got it».
+    nodes, hit = _fb_wait(lambda n: _label(n) in TH_GOT_IT or _label(n) in TH_VIEWS, 15)
+    if hit is not None and _label(hit) in TH_GOT_IT:
+        ui.tap_node(hit)
+        nodes, hit = _fb_wait(lambda n: _label(n) in TH_VIEWS, 12)
+    if hit is None:
+        _note(folder, "threads", "статистика Threads не открылась")
+        device.back()
+        return None
+    want = TH_DAYS.get(days)
+    shown = _th_pick(want) if want else _th_shown(nodes)
+    nodes, label = _fb_wait(lambda n: _label(n) in TH_VIEWS, 8)
+    value = _value_below(nodes, label) if label is not None else None
+    views = _num(value.text) if value is not None else ""
+    path = _snap(folder, "threads")
+    _views_note(folder, "threads", views, f"{shown} дней" if shown else "")
+    # Какими датами Threads ограничивает «7 days», он не пишет — дат не выдумываем.
+    if not shown:
+        note = "период на экране не прочёл"
+    elif want and shown != want:
+        note = f"за последние {shown} дней — выбрать {want} дней не вышло"
+    elif days == 1:
+        note = (f"за последние {shown} дней — отдельного дня Threads не показывает, "
+                "самый короткий период у него 7 дней")
+    elif days in ("week", "month"):
+        note = (f"за последние {shown} дней — выбрать "
+                + ("прошлую неделю" if days == "week" else "прошлый месяц") + " Threads не даёт")
+    elif days == ALL_TIME:
+        note = f"за последние {shown} дней — дольше Threads не показывает"
+    else:
+        note = f"за последние {shown} дней"
+    _note(folder, "threads", note)
+    device.back()                                   # к профилю
+    human.pause(0.8, 1.2)
+    return path
+
+
 SHOTS = {"tiktok": _shot_tiktok, "shorts": _shot_youtube, "reels": _shot_instagram,
-         "facebook": _shot_facebook}
-SHOT_FILES = {"tiktok": "tiktok", "shorts": "youtube", "reels": "instagram", "facebook": "facebook"}
+         "facebook": _shot_facebook, "threads": _shot_threads}
+SHOT_FILES = {"tiktok": "tiktok", "shorts": "youtube", "reels": "instagram", "facebook": "facebook",
+              "threads": "threads"}
 SHOT_TITLES = {"tiktok": "TikTok Studio — аналитика", "shorts": "YouTube Studio — аналитика",
-               "reels": "Instagram — статистика", "facebook": "Facebook — статистика"}
+               "reels": "Instagram — статистика", "facebook": "Facebook — статистика",
+               "threads": "Threads — статистика"}
 
 
 def latest_shots():
@@ -3262,7 +3427,7 @@ def shots_in(folder, nets=None):
     nets — только этих сетей."""
     said = _notes_in(folder)
     items = []
-    for net in ("shorts", "reels", "facebook", "tiktok"):
+    for net in ("shorts", "reels", "facebook", "threads", "tiktok"):
         if nets is not None and net not in nets:
             continue
         who = said.get(SHOT_FILES[net] + "_account")
@@ -3390,7 +3555,7 @@ def _collect_all(nets=None, log=None, days=None, folder=None, fresh=True, full=T
     out = {}
     device.keep_awake(True)          # экран гаснет за ~30 с, а сетка грузится дольше
     try:
-        for net in nets or config.FEED_APPS:
+        for net in nets or config.STATS_APPS:
             if net not in NETS:
                 continue
             if abort.requested():                 # «Остановить» — следующую сеть не начинаем
@@ -3483,7 +3648,7 @@ def report_text(now=None):
     blocks, total_views, total_subs, known = [], 0, 0, False
     with jobs.connect() as con:
         _table(con)
-        for net in config.FEED_APPS:
+        for net in config.STATS_APPS:
             last = _snapshot(con, net)
             if not last:
                 continue
@@ -3717,7 +3882,7 @@ def report_run(kind, part="main", log=None):
     events = _report_events(kind, first)
     fresh = not any(what == part + " try" for _, what in events)
     _report_log(kind, first, part + " try")
-    nets = [n for n in config.FEED_APPS if n in SHOTS and _has_app(n)]
+    nets = [n for n in config.STATS_APPS if n in SHOTS and _has_app(n)]
     # Неделя и месяц сразу после конца — TikTok ещё не досчитал: он назавтра.
     later_tt = (kind != "day" and part == "main" and "tiktok" in nets
                 and (now.date() - last).days < TT_LAG_DAYS)

@@ -32,9 +32,9 @@ def check(what, cond):
 
 
 print("Facebook как сеть постинга")
-check("«все сети» включают Facebook", postspec.parse("описание: текст")["targets"][-1] == "facebook")
+check("«все сети» включают Facebook", "facebook" in postspec.parse("описание: текст")["targets"])
 check("«без фб» убирает только Facebook",
-      postspec.parse("куда: все кроме фб\nописание: текст")["targets"] == ["tiktok", "shorts", "reels"])
+      postspec.parse("куда: все кроме фб\nописание: текст")["targets"] == ["tiktok", "shorts", "reels", "threads"])
 check("«в фейсбук» — только Facebook", postspec.parse("куда: фейсбук\nописание: x")["targets"] == ["facebook"])
 check("окно знает сеть", scheduler.normalize_targets("facebook,tiktok") == "tiktok,facebook")
 check("кнопка черновика бота — «Facebook», а не вторая «Reels»",

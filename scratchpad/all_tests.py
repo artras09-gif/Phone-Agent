@@ -29,6 +29,7 @@ TESTS = [
     ("scratchpad/links_all_nets.py", "ссылки во всех трёх сетях: селекторы"),
     ("scratchpad/fb_feed.py", "лента Facebook Reels: рецепт против живого дерева"),
     ("scratchpad/fb_post.py", "публикация в Facebook Reels: сеть, пропуск без приложения, «Next» по месту"),
+    ("scratchpad/threads_net.py", "Threads: пост и статистика без прогрева, свежий ролик, чужой черновик"),
     ("scratchpad/quote_paths.py", "путь к видео уходит на телефон в кавычках"),
     ("scratchpad/never_publish.py", "НИЧЕГО не отправляет и не публикует само"),
     ("scratchpad/keys_ui.py", "ключи и адреса вписываются мышкой в окне"),

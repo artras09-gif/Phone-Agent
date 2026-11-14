@@ -343,10 +343,12 @@ def _post_job(job, notify):
 
     captions = jobs.captions_of(job)
     results, ok_all = [], True
-    for target in job["targets"].split(","):
-        target = target.strip()
-        if not target:
-            continue
+    # Что стало с каждой сетью — в базу по ходу дела (`jobs.went`): по этому
+    # «Повторить» берёт только несостоявшиеся сети, а запасы и архив узнают,
+    # что видео наконец вышло везде. went — вышло; unsure — кнопку нажали, а
+    # загрузка не подтверждена (повторять вслепую нельзя: вышло бы дважды).
+    went, unsure, skipped = [], [], []
+    for target in [t.strip() for t in job["targets"].split(",") if t.strip()]:
         text = captions.get(target) or job["caption"]
         if target == "shorts" and target not in captions:
             text = postspec.shorts_title(text)
@@ -359,6 +361,8 @@ def _post_job(job, notify):
             results.append(missing)
             if notify:
                 notify(missing)
+            skipped.append(target)
+            jobs.set_went(job["id"], went, unsure, skipped=skipped)
             continue
         try:
             ok, report = (poster.post(job["video_path"], text, target, extra=extra) if extra
@@ -372,9 +376,15 @@ def _post_job(job, notify):
         results.append(report)
         if notify:
             notify(report)
+        if ok:
+            went.append(target)
+        stuck = not ok and bool(poster.LAST_FAIL.get("upload_unconfirmed"))
+        if stuck:
+            unsure.append(target)
+        jobs.set_went(job["id"], went, unsure, skipped=skipped)
         if not ok:
             _tell_failure(target, report)
-            if poster.LAST_FAIL.get("upload_unconfirmed"):
+            if stuck:
                 break                       # приложение остаётся на экране
 
     jobs.mark(job["id"], "done" if ok_all else "failed", "\n\n".join(results))
@@ -383,6 +393,8 @@ def _post_job(job, notify):
         results.append(shelf)
         if notify:
             notify(shelf)
+    if not ok_all:
+        _offer_retry(job["id"])
     return "\n\n".join(results)
 
 
@@ -408,6 +420,17 @@ def _missing_app(target):
         return ""
     title = recipe.get("title", target)
     return f"{title}: приложения нет на этом телефоне — пропускаю"
+
+
+def _offer_retry(job_id):
+    """Пост вышел не везде — кнопка «Повторить» в чат задачи (`telegram_bot`).
+    Сбой здесь ничего не портит: повторить можно и прислав видео заново."""
+    try:
+        import telegram_bot
+
+        telegram_bot.offer_retry(jobs.by_id(job_id))
+    except Exception:                            # noqa: BLE001
+        pass
 
 
 def _shelve(job, ok_all):

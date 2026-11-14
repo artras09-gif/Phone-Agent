@@ -1232,6 +1232,170 @@
     ],
     "rev": 2
   },
+  "threads": {
+    "package": "com.instagram.barcelona",
+    "title": "Threads",
+    "optional_app": true,
+    "needs_storage": true,
+    "abandon": [
+      [
+        {"rid": "navigation_bar_back_button"}
+      ],
+      [
+        {"rid": "igds_alert_dialog_secondary_button"}
+      ]
+    ],
+    "_note": [
+      "rev 1 (живьём 2026-11-13, оба телефона, Threads 455, английский интерфейс).",
+      "Системное «Поделиться» сюда НЕ годится: BarcelonaShareHandlerActivity на видео из",
+      "adb отвечает «Unsupported file type: null» и закрывается. Поэтому как человек:",
+      "главная → «Create» → галерея в окне поста → наш ролик → «Done» → текст → «Post».",
+      "У Threads почти всё с постоянными resource-id (barcelona_tab_create,",
+      "new_thread_screen_*), от языка интерфейса зависят только «Done» и признак",
+      "прикреплённого ролика «Remove attachment» — русские и испанские подписи тут",
+      "догадки, живьём не проверялись.",
+      "Клетка галереи не называет ни имени файла, ни длины — только «Video thumbnail,",
+      "Added on 21 seconds ago». Поэтому наш ролик узнаётся по свежести (pick_video +",
+      "fresh): первое ВИДЕО галереи должно быть добавлено только что. Старше пяти минут —",
+      "чужое, не выбираем.",
+      "needs_storage: Threads нужен доступ ко ВСЕМ видео. С доступом «только выбранные»",
+      "(Android 14+) залитого ролика в галерее нет вовсе — программа скажет об этом до",
+      "начала маршрута.",
+      "Клавиатуру перед «Post» НЕ убираем (keep_keyboard): кнопка стоит над ней, а «назад»",
+      "при спрятанной клавиатуре открывает окно «Save to drafts?».",
+      "Без шага «ролик прикреплён» жать «Post» нельзя: ушёл бы пост из одного текста.",
+      "Threads ПОМНИТ недописанный пост и после закрытия приложения: следующий «Create»",
+      "открывает его же, с прошлым роликом. Поэтому свой недописанный пост маршрут убирает",
+      "сам (abandon: «Cancel» → «Don't save» — вторая кнопка окна «Save to drafts?»), а",
+      "чужой, оставшийся от человека, сохраняет в черновики (discard_if: «Cancel» → «Save»)",
+      "и открывает чистое окно.",
+      "Хэштег в тексте Threads превращает в «тему» (строка подсказок над полем) — посту",
+      "это не мешает.",
+      "optional_app: на телефоне без Threads публикация туда пропускается (scheduler)."
+    ],
+    "steps": [
+      {
+        "op": "home",
+        "desc": "главная Threads",
+        "home": [
+          {"rid": "barcelona_tab_create"}
+        ],
+        "tab": [
+          {"rid": "barcelona_tab_main_feed"}
+        ]
+      },
+      {
+        "op": "tap",
+        "timeout": 15,
+        "any": [
+          {"rid": "barcelona_tab_create"}
+        ],
+        "desc": "«Create» в нижней панели"
+      },
+      {
+        "op": "wait",
+        "timeout": 20,
+        "any": [
+          {"rid": "new_thread_screen_composer"}
+        ],
+        "desc": "окно нового поста"
+      },
+      {
+        "op": "discard_if",
+        "desc": "в окне поста остался чужой недописанный пост",
+        "timeout": 10,
+        "if": [
+          {"desc": "Remove attachment"},
+          {"desc": "Удалить вложение"},
+          {"desc": "Eliminar archivo adjunto"}
+        ],
+        "filled": [
+          {"rid": "new_thread_screen_composer"}
+        ],
+        "taps": [
+          [
+            {"rid": "navigation_bar_back_button"}
+          ],
+          [
+            {"rid": "igds_alert_dialog_primary_button"}
+          ],
+          [
+            {"rid": "barcelona_tab_create"}
+          ],
+          [
+            {"rid": "new_thread_screen_composer"}
+          ]
+        ]
+      },
+      {
+        "op": "tap",
+        "timeout": 15,
+        "any": [
+          {"rid": "new_thread_screen_gallery_button"},
+          {"desc": "Add photos and videos"}
+        ],
+        "desc": "галерея в окне поста"
+      },
+      {"op": "permissions", "timeout": 3, "access_screen": false, "desc": "окно доступа к фото и видео"},
+      {
+        "op": "pick_video",
+        "desc": "наш ролик — первое видео, добавленное только что",
+        "timeout": 30,
+        "fresh": 5,
+        "items": [
+          {"rid": "gallery_picker_grid_item_container", "desc": "Video thumbnail"},
+          {"rid": "gallery_picker_grid_item_container", "desc": "видео"},
+          {"rid": "gallery_picker_grid_item_container", "desc": "vídeo"},
+          {"rid": "gallery_picker_grid_item_container", "desc": "video"}
+        ]
+      },
+      {
+        "op": "tap",
+        "timeout": 15,
+        "any": [
+          {"text": "Done"},
+          {"text": "Готово"},
+          {"text": "Listo"},
+          {"text": "Hecho"}
+        ],
+        "desc": "«Done» в галерее"
+      },
+      {
+        "op": "wait",
+        "timeout": 40,
+        "any": [
+          {"desc": "Remove attachment"},
+          {"desc": "Удалить вложение"},
+          {"desc": "Удалить прикреплённый"},
+          {"desc": "Eliminar archivo adjunto"},
+          {"desc": "Quitar archivo adjunto"}
+        ],
+        "desc": "ролик прикреплён к посту"
+      },
+      {
+        "op": "tap",
+        "timeout": 15,
+        "any": [
+          {"rid": "new_thread_screen_composer"}
+        ],
+        "desc": "фокус в поле текста"
+      },
+      {"op": "type", "value": "$caption"},
+      {"op": "sleep", "min": 1, "max": 2},
+      {
+        "op": "publish",
+        "timeout": 25,
+        "any": [
+          {"rid": "new_thread_screen_post_button"}
+        ],
+        "verify_gone": true,
+        "keep_keyboard": true,
+        "gone_timeout": 30,
+        "desc": "ФИНАЛЬНАЯ КНОПКА"
+      }
+    ],
+    "rev": 1
+  },
   "_feed_apps": {
     "_readme": [
       "Ленты для живых сессий. Открытое приложение — ещё не лента:",

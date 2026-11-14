@@ -189,7 +189,7 @@ def _publish_went(step, selectors, node, label, log_path, index):
     selectors = _own_button(selectors)
     if _button_gone(selectors, wait):
         return f"тап «{label}» -> {node}; экран ушёл"
-    if _keyboard_really_shown():
+    if not step.get("keep_keyboard") and _keyboard_really_shown():
         device.hide_keyboard()
         human.pause(0.8, 1.2)
     again, nodes = ui.wait_any(selectors, timeout=5)
@@ -292,6 +292,29 @@ def run_step(step, ctx, log_path, index):
     if op == "home":
         return _to_home(step, ctx, log_path, index)
 
+    if op == "discard_if":
+        # Threads помнит недописанный пост: закрыли приложение на экране поста
+        # — и в следующий раз «Create» открывает его же, с ПРОШЛЫМ роликом и
+        # прошлым текстом (живьём 2026-11-13). Свой недописанный пост маршрут
+        # убирает сам (`abandon`), значит этот — чужой, человека: не выбрасываем,
+        # а сохраняем в черновики и начинаем чистый.
+        nodes = ui.dump(retries=2, tolerant=True)
+        stale = ui.find_any(nodes, step.get("if", [])) is not None or any(
+            n.text.strip() for sel in step.get("filled", []) for n in ui.find(nodes, **sel))
+        if not stale:
+            return f"пусто — убирать нечего ({label})"
+        for selectors in step["taps"]:
+            node, nodes = ui.wait_any(selectors, timeout=step.get("timeout", 10))
+            if node is None:
+                _snap(log_path, index, "STUCK")
+                with open(os.path.join(log_path, f"{index:02d}_screen.txt"),
+                          "w", encoding="utf-8") as f:
+                    f.write(ui.describe(nodes, limit=80))
+                raise StepFailed(f"не смог убрать старый недописанный пост ({label})")
+            ui.tap_node(node)
+            human.pause(1.0, 1.8)
+        return f"старый недописанный пост сохранён в черновики ({label})"
+
     if op == "pick_video":
         return _pick_video(step, ctx, log_path, index)
 
@@ -364,7 +387,8 @@ def run_step(step, ctx, log_path, index):
                          + _vision_note(log_path, index, label))
 
     if op in ("tap", "optional_tap", "wait", "publish"):
-        if op == "publish" and step.get("verify_gone") and _keyboard_really_shown():
+        if op == "publish" and step.get("verify_gone") and not step.get("keep_keyboard") \
+                and _keyboard_really_shown():
             # Финальная кнопка — внизу, а клавиатура закрывает низ экрана.
             # Живьём 2026-10-23 на телефоне пользователя: после сведений
             # YouTube курсор встал в название, клавиатура выехала поверх
@@ -895,6 +919,23 @@ def _label_for(target, labels):
     return best[1] if best else None
 
 
+AGO_NOW = re.compile(r"just now|moments? ago|только что|ahora mismo|hace un momento", re.I)
+AGO = re.compile(r"(\d+)?\s*\b(seconds?|секунд|segundos?|minutes?|минут|minutos?)", re.I)
+
+
+def _added_ago(text):
+    """«Added on 21 seconds ago» -> 21, «2 minutes ago» -> 120, «только что» -> 0.
+    Часы, дни и даты («7 days ago», «November 5») — None: это не свежее."""
+    text = text or ""
+    if AGO_NOW.search(text):
+        return 0
+    m = AGO.search(text)
+    if not m:
+        return None
+    count = int(m.group(1)) if m.group(1) else 1          # «a minute ago»
+    return count * (60 if m.group(2).lower().startswith(("min", "мин")) else 1)
+
+
 def _pick_video(step, ctx, log_path, index):
     """Выбрать в галерее приложения НАШ ролик — тот, что программа только что залила.
 
@@ -932,6 +973,19 @@ def _pick_video(step, ctx, log_path, index):
                 human.pause(1.2, 2.0)
                 return f"выбран наш ролик по имени «{mine[0].desc or mine[0].text}»"
         first = targets[0]
+        if step.get("fresh"):
+            # Threads: клетка галереи не называет ни имени файла, ни длины —
+            # только «Video thumbnail, Added on 21 seconds ago». Наш ролик
+            # залит только что; первое видео старше `fresh` минут — чужое.
+            said = first.desc or first.text
+            age = _added_ago(said)
+            if age is not None and age <= float(step["fresh"]) * 60:
+                ui.tap_node(first)
+                human.pause(1.2, 2.0)
+                return f"выбран первый ролик: «{said[:60]}»"
+            seen = f"первое видео — «{said[:60]}», а наш залит только что"
+            time.sleep(1.0)       # медиатека могла ещё не обновиться
+            continue
         lab = _label_for(first, labels)
         secs = _seconds_of(lab.text or lab.desc) if lab is not None else None
         if want is None and not step.get("by_name"):
@@ -1433,7 +1487,7 @@ def _upload_on_screen(package):
 # YouTube грузит исходник, Instagram и TikTok пережимают (меньше), а Instagram
 # ещё и начинает грузить заранее, пока набирается подпись. Поэтому счёт — с
 # открытия приложения, а не с нажатия кнопки.
-UPLOAD_SHARE = {"shorts": 0.5, "reels": 0.04, "tiktok": 0.04, "facebook": 0.04}
+UPLOAD_SHARE = {"shorts": 0.5, "reels": 0.04, "tiktok": 0.04, "facebook": 0.04, "threads": 0.04}
 
 
 def wait_upload(package, video_path, log, since=None, target=""):
@@ -1500,6 +1554,31 @@ def wait_upload(package, video_path, log, since=None, target=""):
             else:
                 log.append(f"  [!] загрузка не кончилась за {elapsed / 60:.0f} мин — "
                            "продолжаю ждать в приложении")
+
+
+def _abandon(recipe, package, report):
+    """Убрать за собой недописанный пост, пока приложение ещё открыто.
+
+    Нужно там, где приложение помнит его и после закрытия (Threads): иначе
+    следующая публикация начиналась бы с прошлым роликом в окне поста.
+    `abandon` в маршруте — список касаний по порядку («Cancel», «Don't save»);
+    кнопки нет — дальше не идём. Сбой здесь ничего не портит."""
+    taps = recipe.get("abandon") or []
+    try:
+        if not taps or adb.current_app()[0] != package:
+            return
+        done = 0
+        for selectors in taps:
+            node, _ = ui.wait_any(selectors, timeout=4)
+            if node is None:
+                break
+            ui.tap_node(node)
+            human.pause(0.8, 1.4)
+            done += 1
+        if done:
+            report.append("  недописанный пост убран из приложения")
+    except (adb.AdbError, RuntimeError, OSError):
+        pass
 
 
 def _open_for_post(recipe, package, remote, caption):
@@ -1603,6 +1682,7 @@ def post(video_path, caption, target, recipes=None, extra=None):
                 report.append(f"  -> закрываю приложение и начинаю заново с главной "
                               f"(попытка {attempt + 1} из {attempts})")
                 _snap(log_path, 90 + attempt, f"RETRY{attempt}")
+                _abandon(recipe, package, report)
                 try:
                     device.stop_app(package)
                 except adb.AdbError:
@@ -1646,6 +1726,8 @@ def post(video_path, caption, target, recipes=None, extra=None):
         # Instagram идёт окно «Сохранить черновик / Удалить»), а
         # недоделанный ролик при этом не сохраняется.
         if opened and (uploaded or (not published and not FINAL["tapped"]) or config.DRY_RUN):
+            if not FINAL["tapped"]:
+                _abandon(recipe, package, report)
             device.finish_app(package, report, check_upload=False)
         device.keep_awake(False)
         # Файл удаляем, только когда приложение его больше не читает: не

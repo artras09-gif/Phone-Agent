@@ -67,7 +67,7 @@ def send_video(caption):
 
 print("--- подпись пользователя без указаний — во все четыре ---")
 job = send_video(POST)
-say(job["targets"] == "tiktok,reels,shorts,facebook", f"сети: {job['targets']}")
+say(job["targets"] == "tiktok,reels,shorts,facebook,threads", f"сети: {job['targets']}")
 say(job["caption"] == POST, "описание сохранено как есть, с эмодзи и испанскими знаками")
 draft = [c for c in calls if c[0] == "sendMessage"][-1][1]["text"]
 say(f"Название на YouTube: {TITLE}" in draft, "в черновике видно, какое будет название на YouTube")
@@ -80,14 +80,15 @@ say(posted.get("tiktok") == POST and posted.get("reels") == POST,
 print("\n--- «без ютуба» — всё, кроме YouTube, строка в пост не попадает ---")
 posted.clear()
 job = send_video(POST + "\nбез ютуба")
-say(job["targets"] == "tiktok,reels,facebook", f"сети: {job['targets']}")
+say(job["targets"] == "tiktok,reels,facebook,threads", f"сети: {job['targets']}")
 say(job["caption"] == POST, "строка «без ютуба» вырезана из описания")
 draft = [c for c in calls if c[0] == "sendMessage"][-1][1]["text"]
 say("Не публикую в: YouTube Shorts" in draft, "в черновике сказано, куда не публикую")
 
-for line, want in (("кроме инсты и тиктока", "shorts,facebook"), ("- yt", "tiktok,reels,facebook"),
-                   ("не в рилс", "tiktok,shorts,facebook"), ("❌ тикток", "reels,shorts,facebook"),
-                   ("минус инстаграм", "tiktok,shorts,facebook"), ("без фб", "tiktok,reels,shorts")):
+for line, want in (("кроме инсты и тиктока", "shorts,facebook,threads"), ("- yt", "tiktok,reels,facebook,threads"),
+                   ("не в рилс", "tiktok,shorts,facebook,threads"), ("❌ тикток", "reels,shorts,facebook,threads"),
+                   ("минус инстаграм", "tiktok,shorts,facebook,threads"), ("без фб", "tiktok,reels,shorts,threads"),
+                   ("без тредс", "tiktok,reels,shorts,facebook")):
     job = send_video(POST + "\n" + line)
     say(job["targets"] == want and job["caption"] == POST, f"«{line}» -> {job['targets']}")
 
@@ -95,23 +96,23 @@ print("\n--- обычный текст со словами «без» и «не�
 for line in ("без слов", "Не знаю, что сказать", "без комментариев #trump",
              "не пропусти новый выпуск в тикток"):
     job = send_video(POST + "\n" + line)
-    say(job["targets"] == "tiktok,reels,shorts,facebook" and job["caption"].endswith(line),
+    say(job["targets"] == "tiktok,reels,shorts,facebook,threads" and job["caption"].endswith(line),
         f"«{line}» — остался в описании, сети все")
 
 sent.clear()
 before = jobs.connect().execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
 bot._handle({"chat": {"id": 1}, "video": {"file_id": "f", "file_size": 1000},
-             "caption": POST + "\nбез тиктока, инсты, ютуба и фейсбука"})
+             "caption": POST + "\nбез тиктока, инсты, ютуба, фейсбука и тредс"})
 after = jobs.connect().execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
 say(after == before and sent and "некуда" in sent[-1], "исключены все — пост не создан, сказано почему")
 
 print("\n--- шаблон и папка watch понимают то же ---")
 spec = postspec.parse("куда: все кроме ютуба\nописание:\n" + POST)
-say(spec["targets"] == ["tiktok", "reels", "facebook"] and spec["caption"] == POST, "«куда: все кроме ютуба»")
+say(spec["targets"] == ["tiktok", "reels", "facebook", "threads"] and spec["caption"] == POST, "«куда: все кроме ютуба»")
 spec = postspec.parse("куда: без инсты\nописание: текст")
-say(spec["targets"] == ["tiktok", "shorts", "facebook"], "«куда: без инсты»")
+say(spec["targets"] == ["tiktok", "shorts", "facebook", "threads"], "«куда: без инсты»")
 spec = postspec.parse(POST + "\nбез ютуба")
-say(spec["targets"] == ["tiktok", "reels", "facebook"] and "без ютуба" not in spec["caption"],
+say(spec["targets"] == ["tiktok", "reels", "facebook", "threads"] and "без ютуба" not in spec["caption"],
     ".txt в watch: «без ютуба» тоже работает")
 say(postspec.shorts_title(POST) == TITLE, "название YouTube — первая непустая строка")
 

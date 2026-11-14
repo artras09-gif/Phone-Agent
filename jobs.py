@@ -104,7 +104,14 @@ MIGRATIONS = {
              # Сообщение Telegram, из которого взято видео (JSON: chat, msg,
              # file — file_unique_id, fwd — переслано ли): по нему
              # опубликованное уходит в архив и удаляется из запасов.
-             ("tg", "TEXT DEFAULT ''")],
+             ("tg", "TEXT DEFAULT ''"),
+             # Что с сетями задачи стало (через запятую): «reels» — вышла,
+             # «?tiktok» — финальная кнопка нажата, а загрузка не подтверждена,
+             # «-facebook» — приложения нет на телефоне, сеть пропущена,
+             # «>7» — несостоявшиеся сети повторяет задача #7. Пишется по ходу
+             # публикации: по этому «Повторить» берёт только то, что не вышло,
+             # и видео уходит из запасов в архив, когда вышло наконец везде.
+             ("went", "TEXT DEFAULT ''")],
     "events": [("device", "TEXT DEFAULT ''")],
     "links": [("sent", "REAL DEFAULT 0")],
 }
@@ -347,6 +354,91 @@ def stock_count(chat=None):
             return con.execute("SELECT COUNT(*) c FROM stock").fetchone()["c"]
         return con.execute("SELECT COUNT(*) c FROM stock WHERE chat=?",
                            (str(chat),)).fetchone()["c"]
+
+
+def stock_from_jobs(chat, thread, days=7):
+    """Видео, которые бот УЖЕ взял из этой темы задачами (её назначили запасами
+    позже, чем туда прислали видео) — дописать в запасы. Сколько дописано."""
+    address = f"{chat}:{thread}" if thread else str(chat)
+    with connect() as con:
+        rows = con.execute("SELECT * FROM jobs WHERE chat=? AND tg<>'' AND created_at>?",
+                           (address, time.time() - days * 86400)).fetchall()
+    added = 0
+    for row in rows:
+        src = tg_source(row)
+        if src.get("file") and src.get("msg") and str(src.get("chat")) == str(chat) \
+                and not src.get("fwd"):
+            before = stock_count(chat)
+            stock_add(src["file"], chat, thread or "", src["msg"], at=row["created_at"])
+            added += stock_count(chat) - before
+    return added
+
+
+def _went_marks(job):
+    try:
+        raw = job["went"]
+    except (IndexError, KeyError):
+        raw = ""
+    return [m for m in str(raw or "").split(",") if m]
+
+
+def went_of(job):
+    """Сети, в которые задача точно вышла."""
+    return [m for m in _went_marks(job) if m[0] not in "?>-"]
+
+
+def unsure_of(job):
+    """Сети, где финальная кнопка нажата, а загрузка не подтверждена."""
+    return [m[1:] for m in _went_marks(job) if m.startswith("?")]
+
+
+def retried_as(job):
+    """Номер задачи, которая повторяет несостоявшиеся сети этой, или None."""
+    return next((int(m[1:]) for m in _went_marks(job) if m.startswith(">") and m[1:].isdigit()), None)
+
+
+def left_of(job):
+    """Сети задачи, в которые она не вышла и про которые это известно точно."""
+    done = set(went_of(job)) | set(unsure_of(job)) \
+        | {m[1:] for m in _went_marks(job) if m.startswith("-")}
+    return [t for t in str(job["targets"] or "").split(",") if t and t not in done]
+
+
+def set_went(job_id, went=(), unsure=(), retry=None, skipped=()):
+    marks = list(went) + ["?" + t for t in unsure] + ["-" + t for t in skipped] \
+        + ([f">{retry}"] if retry else [])
+    with connect() as con:
+        con.execute("UPDATE jobs SET went=? WHERE id=?", (",".join(marks), job_id))
+
+
+def add_went_mark(job_id, mark):
+    """Дописать отметку к `went`, не трогая остальных."""
+    with connect() as con:
+        row = con.execute("SELECT went FROM jobs WHERE id=?", (job_id,)).fetchone()
+        marks = [m for m in str((row["went"] if row else "") or "").split(",") if m]
+        con.execute("UPDATE jobs SET went=? WHERE id=?", (",".join(marks + [mark]), job_id))
+
+
+def went_before(fp, days=3, skip=None, now=None):
+    """Куда это видео уже вышло — если прошлая задача с ним сорвалась ПОСРЕДИ
+    (в часть сетей вышла, в часть нет). Иначе [].
+
+    Нужно для видео, которое после такого сбоя прислали заново: сети, где оно
+    уже есть, отмечать не надо — вышел бы второй такой же пост. Полностью
+    вышедшее видео сюда не попадает: прислали ещё раз — значит так и задумано."""
+    if not fp:
+        return []
+    since = (now or time.time()) - days * 86400
+    with connect() as con:
+        rows = con.execute("SELECT * FROM jobs WHERE fingerprint=? AND status IN ('failed', 'done')"
+                           " AND done_at>? ORDER BY id", (fp, since)).fetchall()
+    rows = [r for r in rows if r["id"] != skip]
+    if not any(r["status"] == "failed" and went_of(r) for r in rows):
+        return []
+    seen = []
+    for row in rows:
+        seen += [t for t in went_of(row) if t not in seen]
+    return seen
 
 
 def set_targets(job_id, targets):

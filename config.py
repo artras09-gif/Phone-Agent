@@ -691,6 +691,11 @@ FEED_APPS = ["tiktok", "shorts", "reels", "facebook"]
 # Сессии в Facebook ставятся правилом расписания явно.
 DEFAULT_SESSION_APPS = ["tiktok", "shorts", "reels"]
 
+# С каких сетей снимать статистику. Threads (2026-11-13) — только пост и
+# статистика: ленту в нём агент не листает («прогревать тредс не нужно»),
+# поэтому в FEED_APPS его нет, а сюда он входит.
+STATS_APPS = FEED_APPS + ["threads"]
+
 for d in (WATCH_DIR, QUEUE_DIR, LOG_DIR, FRAMES_DIR):
     os.makedirs(d, exist_ok=True)
 

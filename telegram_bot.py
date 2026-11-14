@@ -46,6 +46,7 @@ ALIASES = {
     "shorts": ("shorts", "шорт", "youtube", "ютуб", "yt"),
     "reels": ("reels", "рилс", "рилз", "instagram", "инст", "ig"),
     "facebook": ("facebook", "фейсбук", "фэйсбук", "fb", "фб"),
+    "threads": ("threads", "тредс", "тредз", "трэдс"),
 }
 
 # Сколько ссылок берём из одного сообщения. Предел не от жадности:
@@ -777,28 +778,63 @@ def _why(res):
     return str(res.get("description") or res.get("error") or "нет ответа")
 
 
+# Чем помечаем в запасах видео, которое вышло, а удалить его нельзя.
+REACTION_DONE = "👌"
+# Telegram не даёт ботам удалять сообщения старше 48 часов — даже администратору
+# с правом удаления (правило из описания deleteMessage). А запасы на то и
+# запасы, что видео лежат в них днями.
+STOCK_OLD_SEC = 48 * 3600
+
+
+def _shelf_hint(src):
+    """Полок нет вовсе, а видео переслано — один раз подсказать, что так можно.
+
+    2026-11-12: «боты не удаляли видео с запасов и не отправляли в архивы» —
+    у бота просто не были назначены ни запасы, ни архив, и он молчал."""
+    if not src.get("fwd") or _saved().get("shelf_hint"):
+        return ""
+    _remember(shelf_hint=1)
+    return ("📦 Если пересылаешь сюда видео из темы с запасами: назови темы «Запасы» и "
+            "«Архив» (или напиши в них /here запасы и /here архив) — и всё, что вышло, я "
+            "сам перешлю в архив и удалю из запасов.")
+
+
+def _mark_done(row):
+    """Удалить нельзя — пометить реакцией: в запасах видно, что видео вышло."""
+    res = _call("setMessageReaction", {
+        "chat_id": row["chat"], "message_id": row["msg"],
+        "reaction": json.dumps([{"type": "emoji", "emoji": REACTION_DONE}])}, timeout=20)
+    return bool(res.get("ok"))
+
+
 def shelve(job, ok_all):
     """После публикации: переслать видео в архив и удалить из запасов.
 
-    Строка для отчёта о публикации или "" — если полки не назначены или видео
-    пришло не из Telegram. Порядок — как просили: сначала архив, потом
-    удаление; не удалось переслать — из запасов НЕ удаляем, видео не теряется.
+    Строка для отчёта о публикации или "" — если видео пришло не из Telegram.
+    Порядок — как просили: сначала архив, потом удаление; не удалось переслать
+    — из запасов НЕ удаляем, видео не теряется. Вышло не во все сети — остаётся
+    в запасах, пока не выйдет в остальные (кнопка «Повторить», `offer_retry`:
+    у повторной задачи то же исходное сообщение, и она доведёт дело до архива).
     """
     src = jobs.tg_source(job)
     if not src or not load_settings()["token"]:
         return ""
     stock, archive = shelf_home("stock"), shelf_home("archive")
     if not stock and not archive:
-        return ""
-    found = jobs.stock_find(src.get("file")) if stock else []
+        return _shelf_hint(src) if ok_all else ""
+    # База одна на все телефоны, а запасы у каждого бота свои: строки чужого
+    # чата этому боту не удалить, да и не его это видео.
+    found = [r for r in jobs.stock_find(src.get("file")) if r["chat"] == stock[0]] if stock else []
     if not ok_all:
         if found:
-            return "📦 Вышло не во все сети — в запасах видео оставил."
+            return ("📦 Вышло не во все сети — в запасах видео оставил. Выйдет в остальные "
+                    "(кнопка «Повторить») — перешлю в архив и удалю из запасов.")
         return ""
     if not archive:
         if found:
-            return ("📦 Архив не назначен, поэтому из запасов видео не удаляю. "
-                    "Напиши /here архив в теме, куда складывать опубликованное.")
+            return ("📦 Архив не назначен, поэтому из запасов видео не удаляю. Назови тему "
+                    "«Архив» и напиши в ней что-нибудь — или /here архив в теме, куда "
+                    "складывать опубликованное.")
         return ""
 
     # В архив — из сообщения в теме постинга (пересылка пересылки сохраняет
@@ -815,26 +851,83 @@ def shelve(job, ok_all):
         if stock and src.get("fwd"):
             return (line + f". В «{stock[2]}» это видео не нашёл — если оно там, удали "
                     "вручную: видео, которые лежали в запасах до того, как я начал их "
-                    "запоминать, я не знаю.")
+                    "запоминать, я не знаю. Чтобы убирал и такие — в запасах ответь на "
+                    "видео командой /post: возьму его на постинг прямо оттуда.")
         return line + "."
 
-    gone, failed = 0, []
+    gone, old, failed = 0, [], []
+    rights = None                 # спросим один раз — и только если удалить не вышло
     for row in found:
         res = _call("deleteMessage", {"chat_id": row["chat"], "message_id": row["msg"]},
                     timeout=30)
-        if res.get("ok") or "message to delete not found" in _why(res).lower():
+        why = _why(res)
+        if res.get("ok") or "message to delete not found" in why.lower():
             jobs.stock_drop(row["chat"], row["msg"])        # удалили или уже нет
             gone += 1
         else:
-            failed.append(_why(res))
-    if not failed:
-        copies = f" ({gone} копии)" if gone > 1 else ""
-        return line + f", из «{stock[2]}» удалил{copies}."
-    hint = (" Дай мне в группе права администратора с «Удалением сообщений»."
-            if any("right" in f.lower() or "can't be deleted" in f.lower() for f in failed)
-            else "")
-    return (line + f", а из «{stock[2]}» удалить не смог (Telegram: {failed[0]}).{hint} "
-            "Удали его вручную.")
+            # «message can't be deleted» Telegram отвечает и когда у бота нет
+            # права удалять, и когда сообщение старше 48 часов. Различаем по
+            # правам: право есть, а сообщение старое — дело в возрасте.
+            rights = _bot_rights(stock[0]) if rights is None else rights
+            aged = time.time() - float(row["at"] or 0) > STOCK_OLD_SEC
+            if "can't be deleted" in why.lower() and aged and (rights is None or rights[1]):
+                old.append(row)
+            else:
+                failed.append(why)
+    parts = []
+    if gone:
+        parts.append(f"из «{stock[2]}» удалил" + (f" ({gone} копии)" if gone > 1 else ""))
+    if old:
+        marked = [row for row in old if _mark_done(row)]
+        for row in old:
+            jobs.stock_drop(row["chat"], row["msg"])        # вышло — больше его не ищем
+        parts.append(f"из «{stock[2]}» удалить не могу: видео лежит там больше 48 часов, а "
+                     "такие сообщения Telegram ботам удалять не даёт. "
+                     + (f"Пометил его {REACTION_DONE} — удали вручную" if marked
+                        else "Удали его вручную"))
+    if failed:
+        hint = (" Дай мне в группе права администратора с «Удалением сообщений»."
+                if rights is not None and not rights[1] else "")
+        parts.append(f"из «{stock[2]}» удалить не смог (Telegram: {failed[0]}).{hint} "
+                     "Удали его вручную")
+    return line + ", " + "; ".join(parts).rstrip(".") + "."
+
+
+def offer_retry(job):
+    """Пост вышел не во все сети — сказать, куда не вышел, и дать кнопку
+    «Повторить» (туда, откуда пост заказали).
+
+    Раньше после такого сбоя видео надо было присылать заново и самому снимать
+    галочки с сетей, где оно уже есть: забыл — вышло дважды. Заодно это и есть
+    путь видео из запасов в архив после сбоя: повтор вышел — оно уходит."""
+    import postspec
+
+    if job is None or not load_settings()["token"]:
+        return
+    left, unsure, went = jobs.left_of(job), jobs.unsure_of(job), jobs.went_of(job)
+    if not left and not unsure:
+        return
+
+    def names(targets):
+        return ", ".join(postspec.TITLES.get(t, t) for t in targets)
+
+    lines = [f"⚠️ Пост #{job['id']} вышел не везде."]
+    if went:
+        lines.append("Вышел: " + names(went))
+    if left:
+        lines.append("Не вышел: " + names(left))
+    if unsure:
+        lines.append(f"Не знаю, вышел ли: {names(unsure)} — кнопку публикации нажал, а "
+                     "загрузки не дождался. Проверь в приложении; сам туда повторять не "
+                     "буду, чтобы не вышло дважды.")
+    if not left:
+        send("\n".join(lines))
+        return
+    lines.append("Нажми — повторю только туда, куда не вышел.")
+    markup = json.dumps({"inline_keyboard": [[{
+        "text": "🔁 Повторить: " + ", ".join(BUTTON_TITLES.get(t, t) for t in left),
+        "callback_data": f"r:{job['id']}"}]]}, ensure_ascii=False)
+    _send_buttons("\n".join(lines), markup)
 
 
 def day_stats(slot=""):
@@ -925,8 +1018,9 @@ GROUP_HELLO = ("Работаю в этом чате — как в личке:\n"
                "• /queue, /cancel 5, /status, /stop, /links\n"
                "• Темы: /here — всё в этой теме; /here видео, /here ссылки, "
                "/here статистика — одно дело сюда; /everywhere — во всех темах\n"
-               "• /here запасы и /here архив — опубликованное пересылаю из запасов "
-               "в архив и удаляю из запасов\n"
+               "• Темы «Запасы» и «Архив» (по названию, или /here запасы и /here архив) — "
+               "опубликованное пересылаю из запасов в архив и удаляю из запасов; /post "
+               "ответом на видео в запасах — взять его на постинг прямо оттуда\n"
                "• /stats — статистика снимками экранов (/stats 1 — за вчера, /stats 2 — за два дня, "
                "/stats неделя, /stats месяц — за прошлые, /stats все — за всё время + плитки "
                "профилей с просмотрами); сама присылаю за вчера каждый день, за неделю — по "
@@ -1525,9 +1619,11 @@ def _handle(msg):
         # Запасы и архив — не для разговоров и не для постинга: в запасах
         # только запоминаем видео (опубликованное удалится отсюда), в архиве
         # молчим вовсе. Видео из запасов не должно стать черновиком само.
+        _auto_shelf(msg, chat_id, thread)
         shelf = _shelf_at(chat_id, thread or GENERAL)
         if shelf == "stock":
             _remember_stock(msg, chat_id, thread)
+            _post_from_stock(msg, text, chat_id, thread)
         if shelf:
             return
 
@@ -1583,6 +1679,17 @@ def _handle(msg):
     if group and msg.get("animation") and not addressed:
         return                    # гифка-реакция в чате — не пост
 
+    # Откуда видео: после публикации по этому оно уйдёт в архив и удалится
+    # из запасов (`shelve`). file_unique_id у пересылки тот же, что у оригинала.
+    _accept_video(video, text, {
+        "chat": chat_id, "msg": msg.get("message_id"),
+        "file": video.get("file_unique_id", ""),
+        "fwd": bool(msg.get("forward_origin") or msg.get("forward_date"))})
+
+
+def _accept_video(video, text, src):
+    """Видео принято: проверить размер, разобрать подпись и поставить на
+    скачивание. `src` — сообщение Telegram, из которого оно взято."""
     size_mb = (video.get("file_size") or 0) / 1024 / 1024
     if size_mb > max_download_mb():
         if max_download_mb() >= 2000:
@@ -1613,11 +1720,6 @@ def _handle(msg):
     # Куда класть — запоминаем СЕЙЧАС: пока видео качается, телефон в окне
     # могут переключить, и оно уехало бы в очередь другого телефона.
     where = (config.QUEUE_DIR, getattr(jobs, "DEVICE", ""))
-    # Откуда видео: после публикации по этому оно уйдёт в архив и удалится
-    # из запасов (`shelve`). file_unique_id у пересылки тот же, что у оригинала.
-    src = {"chat": chat_id, "msg": msg.get("message_id"),
-           "file": video.get("file_unique_id", ""),
-           "fwd": bool(msg.get("forward_origin") or msg.get("forward_date"))}
     _later(lambda: _take_video(video, text, spec, size_mb, where, src))
 
 
@@ -1706,6 +1808,126 @@ def _cmd_topic(text, chat, msg, sender, cfg):
          + ("\nОстальное: " + ", ".join(others) if others else ""))
 
 
+def _shelf_by_name(name):
+    """«Запасы», «📦 Архив видео», «Запощено» -> "stock" / "archive"; иначе None.
+    По ПЕРВОМУ слову названия: «Вопросы про архив» — не архив."""
+    word = re.sub(r"^[\W_]+", "", str(name or "").strip().lower())
+    return next((k for k in SHELVES if any(word.startswith(w) for w in SHELF_WORDS[k])), None)
+
+
+def _auto_off(kind, off):
+    """Запомнить, что полку сняли руками (off) — по названию темы её больше не
+    назначаем; назначили руками — запрет снимается."""
+    groups = _groups()
+    for g in groups:
+        marks = [k for k in g.get("no_auto") or [] if k != kind]
+        if off:
+            marks.append(kind)
+        g["no_auto"] = marks
+        if not marks:
+            g.pop("no_auto")
+    _write_groups(groups)
+
+
+def _assign_shelf(kind, chat_id, here, name, place, auto=False):
+    """Сделать тему полкой. Возвращает текст для человека."""
+    other = "archive" if kind == "stock" else "stock"
+    for g in _groups():                       # полка одна на бота — переезжает сюда
+        if g["id"] != str(chat_id) and _shelves(g["id"]).get(kind):
+            set_shelf(g["id"], kind, None)
+    set_shelf(chat_id, kind, here, name)
+    pair = shelf_home(other)
+    head = f"{place} называется как {SHELF_TITLES[kind]} — так и считаю" if auto \
+        else f"Готово: {place} — {SHELF_TITLES[kind]}"
+    if kind == "stock":
+        lines = [head + ". Запоминаю каждое видео, которое сюда попадает (сам здесь молчу). "
+                 "Перешлёшь его на постинг — после выхода во все сети перешлю в архив и "
+                 "удалю отсюда. Вышло не везде — останется, пока не выйдет в остальные."]
+        taken = jobs.stock_from_jobs(chat_id, "" if here == GENERAL else here)
+        if taken:
+            lines.append(f"Видео, которые я уже взял отсюда на постинг ({taken}), тоже запомнил.")
+        lines.append("Видео, которые лежат здесь уже сейчас, я не видел: Telegram не "
+                     "показывает ботам старые сообщения. Чтобы убирал и их — ответь на такое "
+                     "видео здесь командой /post: возьму его на постинг прямо отсюда.")
+        lines.append("Сообщения старше 48 часов Telegram ботам удалять не даёт: такое видео "
+                     f"после выхода перешлю в архив, а здесь помечу {REACTION_DONE} — удалить "
+                     "его придётся вручную.")
+        if not pair:
+            lines.append("Архив пока не назначен — без него из запасов ничего не удаляю. "
+                         "Назови тему «Архив» и напиши в ней что-нибудь — или /here архив "
+                         "в теме, куда складывать опубликованное.")
+        rights = _bot_rights(chat_id)
+        if rights is not None and not rights[1]:
+            lines.append("⚠ У меня нет права удалять сообщения в этом чате. Сделай меня "
+                         "администратором с «Удалением сообщений», иначе удалять "
+                         "отсюда не смогу.")
+    else:
+        lines = [head + ". Каждое опубликованное видео пересылаю сюда"
+                 + (f" и удаляю из «{pair[2]}»." if pair else ".")]
+        if not pair:
+            lines.append("Запасы не назначены: назови тему «Запасы» и положи в неё видео — "
+                         "или /here запасы в теме, откуда удалять опубликованное.")
+    if auto:
+        lines.append(f"Это не {SHELF_TITLES[kind]}? Напиши здесь /everywhere {SHELF_TITLES[kind]}.")
+    return "\n\n".join(lines)
+
+
+def _auto_shelf(msg, chat_id, thread):
+    """Тема называется «Запасы» или «Архив» — она и есть полка, без команды.
+
+    2026-11-12, живой случай: человек положил видео в тему «Запасы», а бот
+    принял его как обычное видео на постинг и прислал туда черновик — полку
+    назначили только следом. Теперь тема с говорящим названием становится
+    полкой при первом же сообщении в ней (или когда её создают при боте).
+    Только если такой полки у бота ещё нет и её не снимали руками."""
+    if not thread:
+        return
+    made = msg.get("forum_topic_created") or msg.get("forum_topic_edited") \
+        or (msg.get("reply_to_message") or {}).get("forum_topic_created") or {}
+    name = str(made.get("name") or "").strip()
+    kind = _shelf_by_name(name)
+    if not kind or shelf_home(kind) or _shelf_at(chat_id, thread):
+        return
+    if any(kind in (g.get("no_auto") or []) for g in _groups()):
+        return
+    if any(v["topic"] == thread for v in _roles(chat_id).values()):
+        return                                # тема уже занята делом: постинг, ссылки
+    send(_assign_shelf(kind, chat_id, thread, name, f"Тема «{name}»", auto=True))
+
+
+# В запасах ответили на видео так — взять его на постинг прямо оттуда.
+STOCK_POST = re.compile(r"^(/(post|пост)(\s|$)|(пост|постим|запость|в пост|на пост(инг)?)$)", re.I)
+
+
+def _post_from_stock(msg, text, chat_id, thread):
+    """Ответ «/post» на видео в запасах: на постинг уходит ИМЕННО это сообщение.
+
+    Пересылка не говорит боту, какое сообщение переслали, — поэтому видео,
+    лежавшие в запасах до бота, он после публикации найти не может. А у ответа
+    исходное сообщение приходит целиком, с номером: его и запомним, его потом
+    и удалим. Черновик и отчёты — в тему постинга: в запасах бот молчит."""
+    if not STOCK_POST.match((text or "").strip()):
+        return False
+    origin = msg.get("reply_to_message") or {}
+    video = origin.get("video") or origin.get("document") or origin.get("animation")
+    home = role_home("posts")
+    if home:
+        set_reply(home[0], thread=None if home[1] == GENERAL else home[1], group=True)
+    else:
+        set_reply(chat_id, group=True)
+    _REPLY.role = "posts"
+    if not video or origin.get("forum_topic_created") or not _is_video(origin, video):
+        send("Чтобы взять видео из запасов, ответь командой /post на само видео.")
+        return True
+    jobs.stock_add(video.get("file_unique_id", ""), chat_id, thread or "",
+                   origin.get("message_id"), (origin.get("from") or {}).get("id", ""),
+                   origin.get("date"))
+    _accept_video(video, (origin.get("caption") or "").strip(),
+                  {"chat": chat_id, "msg": origin.get("message_id"),
+                   "file": video.get("file_unique_id", ""), "fwd": False})
+    return True
+
+
 def _cmd_shelf(kind, text, chat, msg, thread):
     """/here запасы, /here архив — назначить тему; /everywhere запасы — снять."""
     chat_id = str(chat.get("id"))
@@ -1714,6 +1936,7 @@ def _cmd_shelf(kind, text, chat, msg, thread):
     if text.startswith("/everywhere"):
         for g in _groups():
             set_shelf(g["id"], kind, None)
+        _auto_off(kind, True)                 # сняли руками — по названию не возвращаем
         send({"stock": "Запасы сняты: из них больше ничего не удаляю.",
               "archive": "Архив снят: опубликованное больше никуда не пересылаю и из "
                          "запасов не удаляю."}[kind])
@@ -1727,34 +1950,10 @@ def _cmd_shelf(kind, text, chat, msg, thread):
     if _shelf_at(chat_id, here) == other:
         send(f"Эта тема уже {SHELF_TITLES[other]}. Запасы и архив — разные темы.")
         return
-    for g in _groups():                       # полка одна на бота — переезжает сюда
-        if g["id"] != chat_id and _shelves(g["id"]).get(kind):
-            set_shelf(g["id"], kind, None)
+    _auto_off(kind, False)
     name = _topic_name(msg) if (thread or chat.get("is_forum")) else (chat.get("title") or "этот чат")
-    set_shelf(chat_id, kind, here, name)
     place = f"Тема «{name}»" if (thread or chat.get("is_forum")) else "Этот чат"
-    pair = shelf_home(other)
-    if kind == "stock":
-        lines = [f"Готово: {place} — запасы. Запоминаю каждое видео, которое сюда "
-                 "попадает (сам здесь молчу). Перешлёшь его на постинг — после выхода "
-                 "во все сети перешлю в архив и удалю отсюда. Вышло не везде — останется.",
-                 "Видео, которые лежат здесь уже сейчас, я не видел: Telegram не "
-                 "показывает ботам старые сообщения. Их после публикации удаляй вручную."]
-        if not pair:
-            lines.append("Архив пока не назначен — без него из запасов ничего не удаляю. "
-                         "Напиши /here архив в теме, куда складывать опубликованное.")
-        rights = _bot_rights(chat_id)
-        if rights is not None and not rights[1]:
-            lines.append("⚠ У меня нет права удалять сообщения в этом чате. Сделай меня "
-                         "администратором с «Удалением сообщений», иначе удалять "
-                         "отсюда не смогу.")
-    else:
-        lines = [f"Готово: {place} — архив. Каждое опубликованное видео пересылаю сюда"
-                 + (f" и удаляю из «{pair[2]}»." if pair else ".")]
-        if not pair:
-            lines.append("Запасы не назначены: напиши /here запасы в теме, откуда "
-                         "удалять опубликованное.")
-    send("\n\n".join(lines))
+    send(_assign_shelf(kind, chat_id, here, name, place))
 
 
 def _is_video(msg, video):
@@ -2066,6 +2265,11 @@ def _take_video(video, text, spec, size_mb=0, where=None, src=None):
         # инсты»; сама эта строка в пост не уходит.
         excluded, caption = postspec.exclusions(text)
         targets = [t for t in _default_targets() if t not in excluded]
+        # Прошлая задача с этим видео сорвалась посреди — туда, где оно уже
+        # вышло, второй раз не отмечаем (вернуть можно галочкой).
+        already = jobs.went_before(fp)
+        if any(t not in already for t in targets):
+            targets = [t for t in targets if t not in already]
         if not targets:
             send("Все сети исключены — публиковать некуда. Убери строку «без …».")
             try:
@@ -2144,11 +2348,11 @@ def _later(fn):
 # кнопками под одним сообщением. Состояние черновика живёт в базе (сети — в
 # `jobs.targets`, статус 'draft'), поэтому кнопки работают и после перезапуска.
 
-TARGET_ORDER = ("tiktok", "reels", "shorts", "facebook")
+TARGET_ORDER = ("tiktok", "reels", "shorts", "facebook", "threads")
 # Подпись сети на кнопке черновика. Раньше бралось последнее слово названия
 # («Instagram Reels» -> «Reels»), и у Facebook Reels вышла бы вторая «Reels».
 BUTTON_TITLES = {"tiktok": "TikTok", "reels": "Reels", "shorts": "Shorts",
-                 "facebook": "Facebook"}
+                 "facebook": "Facebook", "threads": "Threads"}
 _ASK_TIME = {}          # «чат:человек» -> задача, для которой ждём «своё время» текстом
 ASK_TIME_SEC = 15 * 60  # дольше не ждём: человек передумал и пишет уже о другом
 
@@ -2210,8 +2414,11 @@ def _draft_markup(job):
              "callback_data": f"t:{jid}:{t}"} for t in TARGET_ORDER]
     times = [{"text": label, "callback_data": f"w:{jid}:{code}"}
              for label, code in _time_choices()]
-    rows = [nets, times[:2], times[2:4], [times[4],
+    # Сети — по три в ряд: пять кнопок в одном ряду на телефоне обрезаются
+    # до «✅ Fa…» (сетей стало пять с Threads, 2026-11-13).
+    rows = [nets[:3], nets[3:], times[:2], times[2:4], [times[4],
             {"text": "✖️ Отмена", "callback_data": f"x:{jid}"}]]
+    rows = [row for row in rows if row]
     return json.dumps({"inline_keyboard": rows}, ensure_ascii=False)
 
 
@@ -2237,6 +2444,14 @@ def _draft_text(job):
     skipped = [postspec.TITLES[t] for t in TARGET_ORDER if t not in picked]
     if skipped:
         text += "Не публикую в: " + ", ".join(skipped) + "\n\n"
+    try:
+        already = jobs.went_before(job["fingerprint"], skip=job["id"])
+    except (IndexError, KeyError):
+        already = []
+    if already:
+        text += ("Это видео уже вышло в: " + ", ".join(postspec.TITLES.get(t, t) for t in already)
+                 + " — в прошлый раз публикация сорвалась посреди. Туда второй раз не "
+                 "отмечаю; нужно — верни галочкой.\n\n")
     return text + "Проверь сети и нажми, когда публиковать 👇"
 
 
@@ -2361,6 +2576,38 @@ def _publish_now(job_id):
     _run(f"публикация #{job_id}", work)
 
 
+def _retry(job, chat_id, message_id):
+    """«Повторить»: новая задача — только в сети, куда пост не вышел. Текст
+    всплывашки, если повторять нечего, иначе ""."""
+    import postspec
+
+    if job["status"] != "failed":
+        return {"done": "этот пост уже вышел везде", "running": "этот пост сейчас публикуется",
+                "cancelled": "этот пост отменён"}.get(job["status"], "повторять нечего")
+    again = jobs.retried_as(job)
+    if again:
+        return f"уже повторял — задача #{again}"
+    left = jobs.left_of(job)
+    if not left:
+        return "не вышедших сетей не осталось"
+    if not os.path.isfile(job["video_path"]):
+        return "файла этого видео уже нет — пришли его заново"
+    twin = jobs.duplicate_of(job["fingerprint"])
+    if twin is not None and twin["status"] != "done":
+        return f"это видео уже в очереди — задача #{twin['id']}"
+    # Задача-повтор: то же видео, те же подписи и ТО ЖЕ исходное сообщение —
+    # выйдет, и видео уйдёт из запасов в архив, как после обычного поста.
+    new_id = jobs.add(job["video_path"], caption=job["caption"], targets=",".join(left),
+                      captions=jobs.captions_of(job) or None, exact=True,
+                      fingerprint=job["fingerprint"], chat=job["chat"], device=job["device"],
+                      tg=jobs.tg_source(job) or None)
+    jobs.add_went_mark(job["id"], f">{new_id}")
+    names = ", ".join(postspec.TITLES.get(t, t) for t in left)
+    _edit(chat_id, message_id, f"🔁 Пост #{job['id']}: повторяю в {names} — задача #{new_id}.")
+    _publish_now(new_id)
+    return ""
+
+
 def _handle_callback(cq):
     """Нажатие кнопки под сообщением бота."""
     data = str(cq.get("data") or "")
@@ -2408,6 +2655,8 @@ def _handle_callback(cq):
             _edit(chat_id, message_id, f"✖️ Пост #{job['id']} отменён, видео удалено.")
         else:
             note = "уже опубликован или отменён"
+    elif kind == "r":
+        note = _retry(job, chat_id, message_id)
     elif job["status"] in ("cancelled", "done", "failed"):
         note = {"cancelled": "этот пост отменён", "done": "этот пост уже опубликован",
                 "failed": "этот пост не удалось опубликовать"}[job["status"]]

@@ -12,6 +12,7 @@ import itertools
 import os
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -42,8 +43,8 @@ def say(good, text):
 
 OWNER, MEMBER = "100", "300"
 GROUP = "-1005"
-POSTS, STOCK, ARCHIVE = 10, 20, 30
-NAMES = {POSTS: "Постинг для бота", STOCK: "Запасы", ARCHIVE: "запощено"}
+POSTS, STOCK, ARCHIVE, PLAIN = 10, 20, 30, 40
+NAMES = {POSTS: "Постинг для бота", STOCK: "Запасы", ARCHIVE: "запощено", PLAIN: "Готовое"}
 
 calls = []
 state = {"admin": True, "can_delete": True, "forward_fail": set(), "delete_fail": ""}
@@ -94,10 +95,12 @@ scheduler._tell_failure = lambda target, report: None
 msg_ids = itertools.count(100)
 
 
-def message(thread, sender=MEMBER, text="", file=None, forwarded=False):
+def message(thread, sender=MEMBER, text="", file=None, forwarded=False, date=None, reply=None):
     msg = {"chat": {"id": int(GROUP), "type": "supergroup", "title": "11111", "is_forum": True},
            "from": {"id": int(sender)}, "message_id": next(msg_ids),
-           "message_thread_id": thread, "is_topic_message": True, "date": 1761650000,
+           "message_thread_id": thread, "is_topic_message": True,
+           # По умолчанию — только что: удалять старше 48 часов Telegram не даёт.
+           "date": date or int(time.time()) - 60,
            "reply_to_message": {"message_id": thread,
                                 "forum_topic_created": {"name": NAMES[thread]}}}
     if file:
@@ -108,7 +111,31 @@ def message(thread, sender=MEMBER, text="", file=None, forwarded=False):
     if forwarded:
         msg["forward_origin"] = {"type": "user", "sender_user": {"id": int(MEMBER)},
                                  "date": 1761640000}
+    if reply:
+        msg["reply_to_message"] = reply
     return msg
+
+
+def press(data, thread=POSTS, sender=OWNER):
+    """Нажатие кнопки под сообщением бота в теме."""
+    try:
+        bot._handle_callback({"id": "cb", "data": data, "from": {"id": int(sender)},
+                              "message": {"chat": {"id": int(GROUP), "type": "supergroup"},
+                                          "message_id": 4000, "message_thread_id": thread,
+                                          "is_topic_message": True}})
+    finally:
+        bot.set_reply(None)
+
+
+def buttons():
+    """Данные кнопок всех сообщений, отправленных с последней очистки."""
+    import json as _json
+    out = []
+    for m, p in calls:
+        if m == "sendMessage" and p.get("reply_markup"):
+            for row in _json.loads(p["reply_markup"]).get("inline_keyboard", []):
+                out += [b.get("callback_data", "") for b in row]
+    return out
 
 
 def handle(msg):
@@ -143,8 +170,35 @@ def from_stock(file, caption="UN VOTO CONTRA 14"):
     return original, last_job()
 
 
-print("--- темы назначаются командами ---")
+print("--- тема называется «Запасы» — она и есть запасы, без команды ---")
 handle(message(POSTS, OWNER, "/here видео"))
+calls.clear()
+first = handle(message(STOCK, file="AUTO", text="положил в запасы"))
+say(bot.shelf_home("stock") == (GROUP, STOCK, "Запасы"), f"запасы назначены сами: {bot.shelf_home('stock')}")
+say("называется как запасы" in said() and "/everywhere запасы" in said(),
+    "бот сказал об этом и как отменить")
+say(last_job() is None and jobs.stock_find("AUTO"),
+    "видео НЕ стало черновиком на постинг, а запомнено как запас (живой случай 12.11)")
+calls.clear()
+handle(message(ARCHIVE, MEMBER, "сюда складываем"))
+say(bot.shelf_home("archive") == (GROUP, ARCHIVE, "запощено") and "называется как архив" in said(),
+    "тема «запощено» стала архивом при первом сообщении в ней")
+calls.clear()
+handle(message(PLAIN, MEMBER, "просто болтаем"))
+say("называется" not in said(), "тема с обычным названием полкой не становится")
+handle(message(STOCK, OWNER, "/everywhere запасы"))
+handle(message(ARCHIVE, OWNER, "/everywhere архив"))
+calls.clear()
+handle(message(STOCK, file="AUTO2", text="ещё одно"))
+say(bot.shelf_home("stock") is None and "называется" not in said(),
+    "сняли руками — по названию обратно не назначается")
+for stale in jobs.connect().execute("SELECT id FROM jobs").fetchall():
+    jobs.cancel(stale["id"])                       # черновик от AUTO2 — убрать
+with jobs.connect() as con:
+    con.execute("DELETE FROM jobs")
+    con.execute("DELETE FROM stock")
+
+print("\n--- темы назначаются командами ---")
 state["admin"] = False
 calls.clear()
 handle(message(STOCK, OWNER, "/here запасы"))
@@ -208,13 +262,56 @@ say(not jobs.stock_find("AAA"), "запись о запасе снята")
 
 print("\n--- вышло не во все сети ---")
 failing.add("shorts")
-_, job = from_stock("BBB")
+original, job = from_stock("BBB")
 jobs.set_targets(job["id"], "tiktok,shorts")
 calls.clear()
 report = post(job["id"])
 say(not api("forwardMessage") and not api("deleteMessage"), "ни пересылки, ни удаления")
 say("в запасах видео оставил" in report and jobs.stock_find("BBB"), "сказано, что осталось в запасах")
+job = jobs.by_id(job["id"])
+say(jobs.went_of(job) == ["tiktok"] and jobs.left_of(job) == ["shorts"],
+    f"запомнено, куда вышло и куда нет: {job['went']!r}")
+say(f"r:{job['id']}" in buttons() and "Не вышел: YouTube Shorts" in said(),
+    "кнопка «Повторить» и список сетей, куда не вышло")
+
+print("\n--- «Повторить»: только туда, куда не вышло, и после этого — в архив ---")
 failing.clear()
+calls.clear()
+press(f"r:{job['id']}")
+again = last_job()
+say(again["id"] != job["id"] and again["targets"] == "shorts"
+    and jobs.tg_source(again) == jobs.tg_source(job),
+    f"новая задача — только YouTube, с тем же исходным сообщением: {again['targets']}")
+calls.clear()
+report = post(again["id"])
+say(api("forwardMessage") and api("deleteMessage")
+    and int(api("deleteMessage")[0]["message_id"]) == original["message_id"]
+    and not jobs.stock_find("BBB"),
+    "повтор вышел — видео ушло в архив и удалено из запасов")
+calls.clear()
+press(f"r:{job['id']}")
+say(last_job()["id"] == again["id"]
+    and any("уже повторял" in p.get("text", "") for p in api("answerCallbackQuery")),
+    "вторая «Повторить» под тем же сообщением ничего не ставит")
+
+print("\n--- после сбоя видео прислали заново — сети, где оно уже есть, не отмечены ---")
+failing.add("reels")
+handle(message(POSTS, file="RE1", text="упадёт в инсте"))
+job = last_job()
+jobs.set_targets(job["id"], "tiktok,reels,shorts")
+post(job["id"])
+failing.clear()
+same = job["video_path"]
+bot._download = lambda file_id, dest, *more: same          # тот же файл — тот же отпечаток
+calls.clear()
+handle(message(POSTS, file="RE1", text="упадёт в инсте"))
+bot._download = fake_download
+redo = last_job()
+say(redo["id"] != job["id"] and "tiktok" not in redo["targets"].split(",")
+    and "shorts" not in redo["targets"].split(",") and "reels" in redo["targets"].split(","),
+    f"в черновике отмечено только то, куда не вышло: {redo['targets']}")
+say("уже вышло в: TikTok, YouTube Shorts" in said(), "и сказано почему")
+jobs.cancel(redo["id"])
 
 print("\n--- в архив переслать не вышло ---")
 _, job = from_stock("CCC")
@@ -243,11 +340,27 @@ state["forward_fail"] = set()
 print("\n--- нет права удалять ---")
 _, job = from_stock("EEE")
 state["delete_fail"] = "Bad Request: message can't be deleted"
+state["can_delete"] = False
 calls.clear()
 report = post(job["id"])
 say(api("forwardMessage") and jobs.stock_find("EEE"), "в архив ушло, запись о запасе осталась")
 say("удалить не смог" in report and "Удалением сообщений" in report and "вручную" in report,
     f"сказано, что делать: {report.splitlines()[-1][:90]}")
+say(not api("setMessageReaction"), "реакцией не помечаем: дело в правах, а не в возрасте")
+state["can_delete"] = True
+
+print("\n--- видео лежит в запасах дольше 48 часов: Telegram ботам такое удалять не даёт ---")
+old = handle(message(STOCK, file="AGED", text="давнее", date=int(time.time()) - 5 * 86400))
+handle(message(POSTS, file="AGED", text="давнее", forwarded=True))
+calls.clear()
+report = post(last_job()["id"])
+mark = api("setMessageReaction")
+say(api("forwardMessage") and "48 часов" in report and "вручную" in report
+    and "Удалением сообщений" not in report,
+    f"в архив ушло, причина названа честно: {report.splitlines()[-1][:110]}")
+say(mark and int(mark[0]["message_id"]) == old["message_id"] and bot.REACTION_DONE in str(__import__("json").loads(mark[0]["reaction"])),
+    "видео в запасах помечено реакцией — видно, что оно вышло")
+say(not jobs.stock_find("AGED"), "и больше не числится в запасах")
 state["delete_fail"] = "Bad Request: message to delete not found"
 _, job = from_stock("FFF")
 report = post(job["id"])
@@ -268,6 +381,40 @@ calls.clear()
 report = post(last_job()["id"])
 say(api("forwardMessage") and report.splitlines()[-1] == "📦 Переслал в «запощено».",
     f"всё запощенное — в архив, без лишних слов про запасы: {report.splitlines()[-1]}")
+
+print("\n--- видео лежало в запасах до бота: «/post» ответом на него ---")
+ancient = {"message_id": 77, "from": {"id": int(MEMBER)}, "date": int(time.time()) - 3600,
+           "caption": "лежало тут до бота",
+           "video": {"file_id": "id-ANC", "file_unique_id": "ANC", "file_size": 1000}}
+calls.clear()
+handle(message(STOCK, MEMBER, "/post", reply=ancient))
+job = last_job()
+src = jobs.tg_source(job)
+say(job["status"] == "draft" and job["caption"] == "лежало тут до бота"
+    and src.get("msg") == 77 and not src.get("fwd"),
+    f"черновик из самого сообщения запасов: {src}")
+drafts = [p for p in api("sendMessage") if p.get("reply_markup")]
+say(drafts and drafts[0].get("message_thread_id") == POSTS and job["chat"] == f"{GROUP}:{POSTS}",
+    "черновик и отчёты — в теме постинга, в запасах бот молчит")
+calls.clear()
+report = post(job["id"])
+say(api("forwardMessage") and int(api("forwardMessage")[0]["message_id"]) == 77
+    and api("deleteMessage") and int(api("deleteMessage")[0]["message_id"]) == 77
+    and "удалил" in report,
+    "после выхода — в архив и из запасов прочь, хотя бот этого видео раньше не видел")
+calls.clear()
+handle(message(STOCK, MEMBER, "/post"))
+say("ответь командой /post на само видео" in said() and last_job()["id"] == job["id"],
+    "«/post» без видео — подсказка, а не черновик")
+
+print("\n--- то же видео числится в запасах ДРУГОГО бота (база у телефонов общая) ---")
+jobs.stock_add("SHARED", "-100999", "5", 555)
+_, job = from_stock("SHARED")
+calls.clear()
+report = post(job["id"])
+say([str(p["chat_id"]) for p in api("deleteMessage")] == [GROUP]
+    and [r["chat"] for r in jobs.stock_find("SHARED")] == ["-100999"],
+    "удалено только из своих запасов, чужая запись не тронута")
 
 print("\n--- одно и то же видео в запасах дважды ---")
 handle(message(STOCK, file="TWO", text="копия 1"))
@@ -292,6 +439,25 @@ handle(message(STOCK, OWNER, "/everywhere запасы"))
 calls.clear()
 handle(message(STOCK, MEMBER, file="HHH", text="теперь это обычная тема"))
 say(bot.shelf_home("stock") is None and not jobs.stock_find("HHH"), "запасы сняты — больше не запоминаем")
+
+print("\n--- полок нет вовсе, а видео переслано — подсказка один раз, а не молчание ---")
+handle(message(POSTS, file="HINT1", text="переслал", forwarded=True))
+report = post(last_job()["id"])
+say("назови темы «Запасы» и «Архив»" in report, "бот объяснил, как включить архив и запасы")
+handle(message(POSTS, file="HINT2", text="переслал ещё", forwarded=True))
+report = post(last_job()["id"])
+say("назови темы" not in report, "во второй раз не повторяет")
+
+print("\n--- видео прислали в тему ДО того, как её назначили запасами ---")
+handle(message(POSTS, OWNER, "/everywhere"))                # бот снова берёт видео из любой темы
+early = handle(message(PLAIN, file="EARLY", text="положил заранее"))
+say(last_job()["status"] == "draft" and jobs.tg_source(last_job()).get("msg") == early["message_id"],
+    "тема обычная — бот взял видео на постинг")
+calls.clear()
+handle(message(PLAIN, OWNER, "/here запасы"))
+rows = jobs.stock_find("EARLY")
+say(rows and rows[0]["msg"] == early["message_id"] and "тоже запомнил" in said(),
+    "назначили запасами — уже взятое отсюда видео запомнено как запас")
 
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)

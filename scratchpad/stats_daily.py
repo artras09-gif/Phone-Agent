@@ -185,7 +185,7 @@ accstats._collect_all = fake_collect
 albums = []
 bot.send_album = lambda pics, chat_id=None, thread=None: albums.append((pics, chat_id, thread)) or True
 bot.destinations = lambda role: []
-config.FEED_APPS = ["tiktok", "reels", "shorts"]
+config.STATS_APPS = ["tiktok", "reels", "shorts"]
 
 
 def run_due():
