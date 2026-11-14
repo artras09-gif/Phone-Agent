@@ -454,9 +454,20 @@ def run_step(step, ctx, log_path, index):
             # Серая кнопка: нажатие ничего не сделает, а отчёт сказал бы
             # «готово» (так было с YouTube: аудитория не выбрана, видео не
             # прочитано). Ждём, пока оживёт, — иначе честная ошибка.
-            end = time.time() + step.get("enabled_timeout", 30)
+            started = time.time()
+            end = started + step.get("enabled_timeout", 30)
+            nudged = False
             while time.time() < end and not node.enabled:
                 time.sleep(1.5)
+                if step.get("nudge_scroll") and not nudged and time.time() - started > 8:
+                    # Facebook: «Share now» оживает быстрее, если чуть
+                    # прокрутить экран настроек рилса (совет пользователя
+                    # 2026-11-13). Протяжка посреди экрана — ничего не нажимает.
+                    nudged = True
+                    _ensure_front(ctx, label)
+                    w, h = adb.screen_size()
+                    adb.swipe(w // 2, int(h * 0.62), w // 2, int(h * 0.48), 450)
+                    human.pause(1.0, 1.5)
                 nodes = ui.dump(retries=1, tolerant=True)
                 node = ui.find_any(nodes, selectors) or node
             if not node.enabled:
@@ -936,6 +947,30 @@ def _added_ago(text):
     return count * (60 if m.group(2).lower().startswith(("min", "мин")) else 1)
 
 
+def _cells_by_duration(nodes):
+    """Клетки галереи, найденные по подписи длины, а не по id.
+
+    TikTok меняет id клеток с каждой версией (eve/ioj -> ipj за две недели,
+    12.11.2026 пост из-за этого сорвался). Подпись «00:09» есть всегда: клетка
+    — это самая мелкая нажимаемая область в той же колонке над ней (кружок
+    выбора вверху справа, длина внизу справа — правые края совпадают).
+    Порядок — как на экране: сверху вниз, слева направо."""
+    labels = [n for n in nodes if n.area > 0 and _seconds_of(n.text or n.desc) is not None]
+    cells = []
+    for lab in labels:
+        above = [n for n in nodes if n.clickable and n.area > 0
+                 and abs(n.bounds[2] - lab.bounds[2]) <= 45
+                 and 0 <= lab.bounds[1] - n.bounds[1] <= 800
+                 and n.bounds[3] <= lab.bounds[3]]
+        if above:
+            # Ближайшая над подписью — своей клетки; самая мелкая по всей
+            # колонке была бы кружком ряда выше (поймано тестом 13.11).
+            cell = min(above, key=lambda n: (lab.bounds[1] - n.bounds[1], n.area))
+            if cell not in cells:
+                cells.append(cell)
+    return sorted(cells, key=lambda n: (n.bounds[1] // 50, n.bounds[0]))
+
+
 def _pick_video(step, ctx, log_path, index):
     """Выбрать в галерее приложения НАШ ролик — тот, что программа только что залила.
 
@@ -958,6 +993,8 @@ def _pick_video(step, ctx, log_path, index):
             targets = [n for n in ui.find(nodes, **sel) if n.area > 0]
             if targets:
                 break
+        if not targets and step.get("cell_by_duration"):
+            targets = _cells_by_duration(nodes)
         if not targets:
             time.sleep(0.8)
             continue
