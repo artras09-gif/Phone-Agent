@@ -242,6 +242,7 @@ def fake_post(path, text, target, extra=None):
 
 
 poster.post = fake_post
+scheduler._missing_app = lambda target: ""      # не спрашивать настоящий телефон
 
 # Съёмка статистики на «телефоне» — подменена: живой телефон тест не трогает.
 import accstats  # noqa: E402
@@ -495,8 +496,15 @@ say_to(OWNER, OWNER, "двойник", media=video(same))
 say_to(OWNER, OWNER, "двойник", media=video(same))
 say(last_text(OWNER, m, "убрал"),
     "второе такое же, пока первое — черновик: старый черновик убран, новый вместо него")
-twins = jobs.connect().execute("SELECT COUNT(*) FROM jobs WHERE caption='двойник' "
-                               "AND status!='cancelled'").fetchone()[0]
+
+
+def count_twins():
+    return jobs.connect().execute("SELECT COUNT(*) FROM jobs WHERE caption='двойник' "
+                                  "AND status!='cancelled'").fetchone()[0]
+
+
+# Ждём: «убрал» уходит раньше, чем подпись новой задачи записана в базу.
+twins = wait(lambda: count_twins() == 1, timeout=5.0) and count_twins()
 say(twins == 1, f"в базе одна задача: {twins}")
 
 print("\n--- «Своё время» не съедает ссылку ---")

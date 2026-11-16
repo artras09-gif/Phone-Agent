@@ -74,6 +74,7 @@ recipes = json.load(io.open(os.path.join(os.path.dirname(HERE), "recipes.json"),
 say(recipes["shorts"].get("needs_storage") is True, "у маршрута YouTube стоит needs_storage")
 pushed = []
 device.unlock = lambda: True
+device.ensure_awake = lambda *a, **k: True        # снимок экрана — не с живого телефона
 device.keep_awake = lambda on=True: None
 device.close_overlays = lambda *a, **k: None
 device.push_video = lambda path: pushed.append(path) or "/sdcard/Movies/x.mp4"

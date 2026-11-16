@@ -57,10 +57,11 @@ print("\n--- экран публикации не остаётся открыт�
                    "steps": [{"op": "sleep", "min": 0, "max": 0}]}}
 
 saved_dev = {n: getattr(device, n) for n in (
-    "unlock", "keep_awake", "close_overlays", "push_video", "share_video",
+    "unlock", "ensure_awake", "keep_awake", "close_overlays", "push_video", "share_video",
     "wait_for_app", "stop_app", "remove_remote", "_remove_recent_tasks", "tx_bytes",
     "cleanup_pushed", "remember_pushed", "forget_pushed")}
 device.unlock = lambda: True
+device.ensure_awake = lambda *a, **k: True        # снимок экрана — не с живого телефона
 device.keep_awake = lambda on=True: None
 device.close_overlays = lambda *a, **k: None
 device.push_video = lambda path: "/sdcard/Movies/x.mp4"

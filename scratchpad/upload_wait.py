@@ -127,7 +127,7 @@ abort.clear()
 
 print("\n--- в публикации: файл удаляется только после загрузки ---")
 removed, stopped, homes = [], [], []
-for name, fn in {"unlock": lambda: True, "keep_awake": lambda on=True: None,
+for name, fn in {"unlock": lambda: True, "ensure_awake": lambda *a, **k: True, "keep_awake": lambda on=True: None,
                  "close_overlays": lambda *a, **k: None,
                  "push_video": lambda path: "/sdcard/Movies/v.mp4",
                  "refresh_media": lambda remote: None,

@@ -186,7 +186,7 @@ config.DRY_RUN = False
 
 print("\n--- сбой ПОСЛЕ финальной кнопки: приложение не закрывать, файл не удалять ---")
 stopped, removed, homes = [], [], []
-for name, fn in {"unlock": lambda: True, "keep_awake": lambda on=True: None,
+for name, fn in {"unlock": lambda: True, "ensure_awake": lambda *a, **k: True, "keep_awake": lambda on=True: None,
                  "close_overlays": lambda *a, **k: None, "has_storage_access": lambda p: True,
                  "push_video": lambda path: "/sdcard/Movies/v.mp4",
                  "refresh_media": lambda remote: None,

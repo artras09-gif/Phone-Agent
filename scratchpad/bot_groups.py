@@ -189,6 +189,9 @@ import poster     # noqa: E402
 
 say(jobs.by_id(job["id"])["chat"] == GROUP, "задача помнит чат, откуда её заказали")
 poster.post = lambda path, text, target, extra=None: (True, f"{target}: опубликовано")
+# Есть ли Facebook и Threads, иначе спрашивалось бы у настоящего телефона: с
+# подключённым телефоном отчёт кончался «приложения нет — пропускаю».
+scheduler._missing_app = lambda target: ""
 
 
 def tell(text):                       # как webui._tell: без адреса

@@ -148,7 +148,7 @@ except poster.StepFailed as e:
     say("не дождался главной" in str(e), f"главной нет — ошибка: {str(e)[:60]}")
 
 print("\n--- сбой — заново с главной; после финальной кнопки — никогда ---")
-for name in ("unlock", "keep_awake", "close_overlays", "cleanup_pushed", "remove_remote",
+for name in ("unlock", "ensure_awake", "keep_awake", "close_overlays", "cleanup_pushed", "remove_remote",
              "forget_pushed", "remember_pushed"):
     setattr(device, name, lambda *a, **k: True)
 device.push_video = lambda path: "/sdcard/Movies/x.mp4"
