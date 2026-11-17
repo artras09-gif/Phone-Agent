@@ -32,6 +32,7 @@ TESTS = [
     ("scratchpad/adb_heal.py", "слепой сервер adb: перезапуск с занятым портом, не чаще раза в минуту"),
     ("scratchpad/tiktok_gallery.py", "галерея TikTok: наш ролик по подписи длины, даже когда id сменились"),
     ("scratchpad/threads_net.py", "Threads: пост и статистика без прогрева, свежий ролик, чужой черновик"),
+    ("scratchpad/post_helper.py", "модель в публикации: расчистить экран (список тем Threads), но не публиковать"),
     ("scratchpad/quote_paths.py", "путь к видео уходит на телефон в кавычках"),
     ("scratchpad/never_publish.py", "НИЧЕГО не отправляет и не публикует само"),
     ("scratchpad/keys_ui.py", "ключи и адреса вписываются мышкой в окне"),

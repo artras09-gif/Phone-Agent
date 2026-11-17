@@ -143,6 +143,44 @@ def _awake_if_dark(ctx):
     return False
 
 
+def _target_words(step, selectors, label):
+    """Что ищет шаг — словами, для модели: «кнопку «Post» (post button)»."""
+    names = []
+    for sel in selectors:
+        for key in ("text", "desc", "text_has", "desc_has"):
+            if sel.get(key):
+                names.append(str(sel[key]))
+        if sel.get("rid") and not any(sel.get(k) for k in ("text", "desc")):
+            names.append(str(sel["rid"]).replace("_", " "))
+    shown = ", ".join(dict.fromkeys(names))[:120]
+    what = "кнопку публикации" if step.get("op") == "publish" else f"элемент «{label}»"
+    return f"{what} ({shown})" if shown else what
+
+
+def _model_clear(step, selectors, label, ctx, nodes):
+    """Шаг не нашёл кнопку — модель расчищает экран, маршрут ищет снова.
+
+    Свобода ограничена (`escape.clear_for_post`): закрыть список, окно или
+    клавиатуру. Что она сделала — в отчёт публикации (`ctx["helper"]`).
+    (узел, дерево) — как у `ui.wait_any`; узел None — не помогло."""
+    import escape
+
+    def found():
+        return ui.find_any(ui.dump(retries=1, tolerant=True, timeout=6), selectors) is not None
+
+    lines = []
+    try:
+        rep = escape.clear_for_post(_target_words(step, selectors, label), ctx.get("package"),
+                                    found, log=lines)
+    except (adb.AdbError, OSError) as e:
+        lines.append(f"  модель: не смогла — {str(e)[:80]}")
+        rep = {"ok": False}
+    ctx.setdefault("helper", []).extend(lines)
+    if not rep.get("ok"):
+        return None, nodes
+    return ui.wait_any(selectors, timeout=8)
+
+
 def _wake_full():
     """Разбудить и разблокировать по-настоящему, с проверкой снимком.
 
@@ -441,6 +479,9 @@ def run_step(step, ctx, log_path, index):
             # Классика: маршрут перекрыт внезапным окном. Пробуем убрать и повторить.
             if ui.dismiss_popup(nodes):
                 node, nodes = ui.wait_any(selectors, timeout=max(6, timeout // 2))
+
+        if node is None and op in ("tap", "wait", "publish") and nodes and config.POST_HELPER:
+            node, nodes = _model_clear(step, selectors, label, ctx, nodes)
 
         if node is None and step.get("xy") and op in ("tap", "optional_tap") and (
                 not step.get("xy_if") or ui.find_any(nodes, step["xy_if"]) is not None):
@@ -1738,7 +1779,11 @@ def post(video_path, caption, target, recipes=None, extra=None):
                     _open_for_post(recipe, package, remote, caption)
                     report.append("приложение открыто на экране публикации")
                 for i, step in enumerate(steps, start=1):
-                    line = run_step(step, ctx, log_path, i)
+                    try:
+                        line = run_step(step, ctx, log_path, i)
+                    finally:
+                        for said in ctx.pop("helper", []):     # что делала модель
+                            report.append(said)
                     report.append(f"  {i:2d}. {line}")
                 break
             except (StepFailed, adb.AdbError, RuntimeError) as e:

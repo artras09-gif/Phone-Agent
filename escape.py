@@ -1056,3 +1056,187 @@ def _screencap():
     except adb.AdbError:
         return None
     return None if vision.looks_blank(png) else png
+
+
+# ============================================================ публикация
+
+# Помощник маршрута публикации (просьба пользователя 2026-11-17): «дать
+# модели свободу в непредвиденных ситуациях». 16.11 Threads не опубликовал
+# пост: подпись кончалась хэштегом «#egipto», Threads раскрыл список тем, и
+# тот вместе с клавиатурой закрыл кнопку «Post». Модель описала это верно и
+# предложила закрыть список, но в публикации её совет не исполнялся никогда.
+#
+# Свобода здесь — только РАСЧИСТИТЬ экран, а не публиковать:
+# - зовут модель, лишь когда шаг маршрута не нашёл свою кнопку;
+# - она может нажать кнопку из списка, «назад», убрать клавиатуру, подождать;
+# - кнопки публикации, черновиков, удаления, выбора медиа, верхней панели
+#   (выход из окна поста) и поля текста в список не попадают вовсе — модель
+#   их просто не видит;
+# - нажатия по точке («руки») здесь нет: только кнопки из дерева;
+# - нашлась кнопка шага — дальше снова маршрут: финальную кнопку жмёт код
+#   и сам проверяет, что пост ушёл.
+POST_NEVER = (
+    "post", "опубликов", "publish", "share", "поделит", "отправ", "send", "upload",
+    "загруз", "next", "далее", "done", "готово", "save", "сохран", "draft", "черновик",
+    "discard", "отмен", "don't", "не сохран", "delete", "удал", "remove", "убрать влож",
+    "photo", "video", "фото", "видео", "gallery", "галере", "camera", "камер", "media",
+    "медиа", "gif", "attach", "влож", "audience", "аудитор", "reply", "ответ",
+    "schedule", "расписан", "boost", "продвиж", "pay", "оплат", "allow", "разреш",
+)
+
+# Подписи закрывающих значков (сравнение вхождением, нижний регистр).
+CLOSE_WORDS = ("dismiss", "close", "закрыть", "скрыть", "hide", "cerrar", "ocultar")
+
+# Действия второго вопроса.
+POST_ACTIONS = ("back", "keyboard", "wait", "none")
+
+ASK_POST = """Экран создания поста в приложении. Маршрут ищет {target}, но не находит — что-то
+мешает (окно, список подсказок, клавиатура) или экран ещё грузится.
+Кнопки, которые можно нажать:
+{menu}
+{tried}
+Что сделать, чтобы {target_short} стала видна? Ответь одним JSON:
+{{"кнопка": номер}} — нажать кнопку из списка;
+{{"иначе": "keyboard"}} — убрать клавиатуру;
+{{"иначе": "back"}} — системное «назад» (закрывает списки и окна);
+{{"иначе": "wait"}} — подождать загрузку;
+{{"иначе": "none"}} — ничего из этого не поможет."""
+
+
+def _post_forbidden(node, h):
+    label = (_label_of(node) + " " + node.rid.split("/")[-1]).lower()
+    if any(bad in label for bad in POST_NEVER) or _forbidden(_label_of(node)):
+        return True
+    # Верхняя панель окна поста: «Cancel» / «назад» там закрывают сам пост
+    # (Threads спрашивает «Сохранить в черновики?»). Списки и окна закрывает
+    # системное «назад», а не крестик окна поста.
+    if node.bounds[3] < h * 0.12:
+        return True
+    return "EditText" in node.cls             # поле текста: тап сдвинет курсор, и только
+
+
+def post_menu(nodes, w, h, limit=10):
+    """Кнопки, которые модели можно нажимать на экране публикации."""
+    out, seen = [], set()
+    for node in nodes or []:
+        if node.area <= 0 or not node.enabled:
+            continue
+        # Крестик списка подсказок Threads («Dismiss typeahead») в дереве НЕ
+        # помечен нажимаемым (живьём 2026-11-17), а другого способа закрыть
+        # список нет: «назад» убирает только клавиатуру. Закрывающие значки
+        # берём и такими — касание по их месту закрывает.
+        closing = any(word in _label_of(node).lower() for word in CLOSE_WORDS)
+        if not (node.clickable or closing):
+            continue
+        if node.area > w * h * 0.5 or _post_forbidden(node, h):
+            continue
+        label = _label_of(node)
+        if not label:
+            continue                          # безымянный значок: не угадать, что он делает
+        key = (label.lower(), node.bounds)
+        if key not in seen:
+            seen.add(key)
+            out.append(node)
+    out.sort(key=lambda n: (_rank(n), n.area))
+    return out[:limit]
+
+
+def parse_post(text, menu):
+    """Ответ модели -> {"действие": tap/back/keyboard/wait/none, "кнопка": n}."""
+    data = vision._json_from(text)
+    if not isinstance(data, dict):
+        data = {}
+    try:
+        button = int(data.get("кнопка", 0) or 0)
+    except (TypeError, ValueError):
+        button = 0
+    if button:
+        if 1 <= button <= len(menu):
+            return {"действие": "tap", "кнопка": button}
+        return {"действие": "none", "кнопка": 0, "почему": f"кнопки №{button} в списке нет"}
+    action = str(data.get("иначе", "")).lower().strip()
+    action = {"назад": "back", "клавиатура": "keyboard", "убрать клавиатуру": "keyboard",
+              "ждать": "wait", "подождать": "wait", "ничего": "none", "": "none"}.get(action, action)
+    if action not in POST_ACTIONS:
+        return {"действие": "none", "кнопка": 0, "почему": "непонятный ответ: " + text.strip()[:60]}
+    return {"действие": action, "кнопка": 0}
+
+
+def clear_for_post(target, package, found, log=None, max_steps=None, deadline=None):
+    """Расчистить экран публикации, чтобы нашлась кнопка шага.
+
+    `target` — что ищем, словами («кнопку «Post»»). `found()` — нашлась ли она
+    (решает маршрут, по своим селекторам). Возвращает отчёт-словарь, как
+    `escape`: {"ok", "steps", "почему"}."""
+    steps = max_steps if max_steps is not None else config.POST_HELPER_STEPS
+    report = {"ok": False, "steps": [], "почему": ""}
+
+    def say(line):
+        if log is not None:
+            log.append(line)
+
+    if not config.VISION_ENABLED:
+        report["почему"] = "зрение выключено"
+        return report
+    w, h = adb.screen_size()
+    history, tried = [], set()
+    for step in range(1, steps + 1):
+        if abort.requested():
+            report["почему"] = "остановлено"
+            break
+        if deadline and time.time() > deadline:
+            report["почему"] = "время вышло"
+            break
+        pkg = adb.current_app()[0]
+        if package and pkg and pkg != package:
+            # Ушли из приложения — пост остался там, здесь модели делать нечего.
+            report["почему"] = "на экране уже не приложение, а " + pkg
+            break
+        nodes = ui.dump(retries=1, tolerant=True, timeout=6)
+        menu = post_menu(nodes, w, h)
+        png, iw, ih = _full_shot()
+        if png is None:
+            report["почему"] = "кадр не снялся"
+            break
+        prompt = ASK_POST.format(target=target, target_short=target.split(" (")[0],
+                                 menu=_describe_menu(menu, w, h), tried=_describe_tried(history))
+        try:
+            raw = vision.ask(png, prompt, system=SYSTEM, max_tokens=ANSWER_TOKENS,
+                             temperature=0.1, think=THINK)
+        except vision.VisionError as e:
+            report["почему"] = "модель недоступна: " + str(e)[:70]
+            break
+        hint = parse_post(raw, menu)
+        action, button = hint["действие"], hint["кнопка"]
+        name = _name_of(menu[button - 1]) if button else ""
+        say(f"  модель {step}/{steps}: {action}{(' ' + name) if name else ''}")
+        if action == "none":
+            report["почему"] = hint.get("почему") or "модель не видит, чем помочь"
+            break
+        key = (action, name)
+        if key in tried:
+            report["почему"] = "модель повторяет то же действие — не помогает"
+            break
+        tried.add(key)
+        if action == "tap":
+            ui.tap_node(menu[button - 1])
+            did = "нажала " + name
+        elif action == "back":
+            device.back()
+            did = "«назад»"
+        elif action == "keyboard":
+            did = "убрала клавиатуру" if device.hide_keyboard() else "клавиатуры не было"
+        else:
+            human.pause(2.0, 3.0)
+            did = "подождала"
+        human.pause(0.8, 1.4)
+        report["steps"].append(did)
+        if found():
+            report["ok"] = True
+            report["почему"] = "помогло: " + did
+            break
+        history.append(did + " — не помогло")
+    if not report["ok"] and not report["почему"]:
+        report["почему"] = f"не вышло за {steps} шагов"
+    say("  модель: " + ("помогла — " if report["ok"] else "не помогла — ") + report["почему"])
+    return report
