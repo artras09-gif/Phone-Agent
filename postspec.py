@@ -55,6 +55,19 @@ TITLES = {"tiktok": "TikTok", "shorts": "YouTube Shorts", "reels": "Instagram Re
 # Threads — 500 знаков на пост: длиннее он не даёт нажать «Post».
 LIMITS = {"shorts": 100, "tiktok": 2200, "reels": 2200, "facebook": 2200, "threads": 500}
 
+# Сети, которые считают знаки как Java/Android — в UTF-16: эмодзи там два
+# знака. Живьём 2026-11-17: подпись в 496 знаков с пятью эмодзи Threads
+# посчитал как 501, показал «-1», и «Post» не нажать.
+UTF16_COUNT = ("threads",)
+
+
+def length(text, target):
+    """Длина описания так, как её считает сеть."""
+    text = str(text or "")
+    if target in UTF16_COUNT:
+        return len(text.encode("utf-16-le")) // 2
+    return len(text)
+
 KEY_WHERE = ("куда", "сети", "соцсети", "где")
 KEY_WHEN = ("когда", "время", "дата")
 KEY_TEXT = ("описание", "текст", "подпись")
@@ -339,9 +352,9 @@ def parse(text, now=None):
     for target in targets:
         limit = LIMITS.get(target)
         body = caption_for(spec, target)
-        if limit and len(body) > limit:
+        if limit and length(body, target) > limit:
             spec["notes"].append(
-                f"{TITLES[target]}: описание {len(body)} знаков, влезет {limit} — "
+                f"{TITLES[target]}: описание {length(body, target)} знаков, влезет {limit} — "
                 + ("обрежу по последнему целому слову. Своё короткое: строка "
                    "«описание шортс: …»" if target == "shorts" else "лишнее обрежу"))
     return spec
@@ -369,9 +382,11 @@ def fit(text, target):
     """Уложить описание в предел сети — по последнему целому слову."""
     limit = LIMITS.get(target)
     text = str(text or "").strip()
-    if not limit or len(text) <= limit:
+    if not limit or length(text, target) <= limit:
         return text
     cut = text[:limit]
+    while length(cut, target) > limit:            # эмодзи в UTF-16 — два знака
+        cut = cut[:-1]
     space = max(cut.rfind(" "), cut.rfind("\n"))
     return (cut[:space] if space > limit * 0.6 else cut).rstrip(" ,.;:—-\n")
 
