@@ -676,6 +676,20 @@ pre.report{
           по-новому. В списке — темы, где бот уже видел сообщения; нужной нет —
           напиши в ней что-нибудь, и она появится.</p>
         <div class="list" id="bs-jobs"></div>
+        <p class="hint" style="margin:12px 0 6px">Нужной темы нет в списке? В Telegram — долгое
+          нажатие на тему → «Копировать ссылку», и вставь её сюда. Или просто напиши
+          что-нибудь в этой теме.</p>
+        <div class="row">
+          <label class="field" style="flex:1;min-width:240px">
+            Ссылка на тему
+            <input type="text" id="bs-link" placeholder="https://t.me/c/3904397006/15">
+          </label>
+          <label class="field" style="width:200px">
+            Название (как в Telegram)
+            <input type="text" id="bs-link-name" placeholder="Статистика">
+          </label>
+          <button class="btn" id="b-bs-link" style="align-self:flex-end">Добавить тему</button>
+        </div>
         <h2 style="margin:18px 0 6px">Статистика сама</h2>
         <p class="hint" style="margin:0 0 10px">В это время каждый день бот снимает
           статистику и шлёт её в тему статистики (не привязана — владельцу).
@@ -1017,7 +1031,7 @@ function renderBot(s){
    правки помечают карточку «изменено», и до сохранения её не перерисовываем. */
 const BS_KINDS = [["day", "за вчера — каждый день"], ["week", "за неделю — по понедельникам"],
                   ["month", "за месяц — 1-го"]];
-let bsSign = "", bsDirty = false, bsKinds = [], bsPhone = null;
+let bsSign = "", bsDirty = false, bsKinds = [], bsPhone = null, bsKeep = null;
 
 function bsMark(){
   bsDirty = true;
@@ -1074,6 +1088,17 @@ function renderBotSetup(setup, phone){
   }
   $("bs-time").value = setup.stats_time || "";
   bsKinds = setup.stats_kinds.slice();
+  if(bsKeep){                            // тему добавили посреди правок — правки на место
+    for(const sel of box.querySelectorAll("select")){
+      if(sel.dataset.job in bsKeep.jobs){
+        sel.value = bsKeep.jobs[sel.dataset.job];
+        sel.dispatchEvent(new Event("change"));
+      }
+    }
+    $("bs-time").value = bsKeep.time;
+    bsKinds = bsKeep.kinds;
+    bsKeep = null;
+  }
   const kinds = $("bs-kinds");
   kinds.innerHTML = "";
   for(const [kind, title] of BS_KINDS){
@@ -1090,6 +1115,19 @@ function renderBotSetup(setup, phone){
 }
 
 $("bs-time").addEventListener("input", bsMark);
+$("b-bs-link").addEventListener("click", async () => {
+  const data = await send("bot-topic", {link: $("bs-link").value.trim(), name: $("bs-link-name").value.trim()});
+  if(data && data.ok !== false){
+    $("bs-link").value = ""; $("bs-link-name").value = "";
+    if(bsDirty){                         // перерисовать, не потеряв несохранённое
+      const jobs = {};
+      for(const sel of $("bs-jobs").querySelectorAll("select")) jobs[sel.dataset.job] = sel.value;
+      bsKeep = {jobs, time: $("bs-time").value, kinds: bsKinds.slice()};
+      bsDirty = false;
+    }
+    bsSign = "";
+  }
+});
 $("b-bs").addEventListener("click", async () => {
   const jobs = {};
   for(const sel of $("bs-jobs").querySelectorAll("select")){

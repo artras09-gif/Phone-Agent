@@ -1871,13 +1871,15 @@ def _job_home(job):
 
 def setup():
     """Всё, что окно показывает о боте этого телефона."""
+    _fix_names()
     groups = []
     for g in _groups():
         topics = dict(g.get("topics") or {}) if isinstance(g.get("topics"), dict) else {}
         for bound in list(_roles(g["id"]).values()) + list(_shelves(g["id"]).values()):
             key = str(bound["topic"])
-            if bound.get("name") and not topics.get(key):
-                topics[key] = bound["name"]
+            name = bound.get("name") or ""
+            if name and not PLACEHOLDER.match(name) and not topics.get(key):
+                topics[key] = name
             topics.setdefault(key, "")
         topics.setdefault(GENERAL, "Общая")
         rows = [{"id": k, "name": (v or ("Общая" if k == GENERAL else f"тема №{k}"))}
@@ -1893,6 +1895,42 @@ def setup():
             "stats_time": daily_stats_time(), "stats_kinds": stats_kinds()}
 
 
+PLACEHOLDER = re.compile(r"^тема №\d+$")
+
+
+def _topic_title(chat_id, topic):
+    """Настоящее название темы, если оно где-нибудь известно; иначе «тема №N»."""
+    key = str(topic)
+    for g in _groups():
+        if g["id"] != str(chat_id):
+            continue
+        names = g.get("topics") if isinstance(g.get("topics"), dict) else {}
+        seen = [names.get(key) or ""] + [b.get("name") or "" for b in
+                                         list(_roles(chat_id).values()) + list(_shelves(chat_id).values())
+                                         if str(b["topic"]) == key]
+        real = next((n for n in seen if n and not PLACEHOLDER.match(n)), "")
+        if real:
+            return real
+    return "Общая" if key == GENERAL else f"тема №{key}"
+
+
+def _fix_names():
+    """У привязанных дел вместо названия «тема №8», а настоящее известно —
+    вернуть настоящее (сохранение из окна 18.11 так их портило)."""
+    groups = _groups()
+    changed = False
+    for g in groups:
+        for box in ("roles", "shelves"):
+            for v in (g.get(box) or {}).values():
+                if isinstance(v, dict) and PLACEHOLDER.match(str(v.get("name") or "")):
+                    real = _topic_title(g["id"], v.get("topic"))
+                    if not PLACEHOLDER.match(real):
+                        v["name"] = real
+                        changed = True
+    if changed:
+        _write_groups(groups)
+
+
 def _keep_topic_names():
     """Названия тем, к которым привязаны дела, — в список тем группы: снимут
     дело — название останется, и в окне тема не станет «тема №8»."""
@@ -1902,12 +1940,39 @@ def _keep_topic_names():
         topics = g.get("topics") if isinstance(g.get("topics"), dict) else {}
         for bound in list(_roles(g["id"]).values()) + list(_shelves(g["id"]).values()):
             key = str(bound["topic"])
-            if bound.get("name") and not topics.get(key):
-                topics[key] = bound["name"]
+            name = bound.get("name") or ""
+            if name and not PLACEHOLDER.match(name) and not topics.get(key):
+                topics[key] = name
                 changed = True
         g["topics"] = topics
     if changed:
         _write_groups(groups)
+
+
+TOPIC_LINK = re.compile(r"(?:https?://)?t\.me/c/(\d+)/(\d+)(?:/\d+)?/?$")
+
+
+def add_topic(link, name=""):
+    """Тема по ссылке «t.me/c/3904397006/15» (в Telegram: долгое нажатие на
+    тему → «Копировать ссылку»). Списка тем Bot API не даёт — так её можно
+    выбрать в окне, даже если бот в ней ещё ничего не видел."""
+    m = TOPIC_LINK.search(str(link or "").strip())
+    if not m:
+        raise ValueError("нужна ссылка на тему вида https://t.me/c/3904397006/15 — "
+                         "в Telegram: долгое нажатие на тему → «Копировать ссылку»")
+    chat, topic = "-100" + m.group(1), m.group(2)
+    groups = _groups()
+    for g in groups:
+        if g["id"] != chat:
+            continue
+        topics = g.get("topics") if isinstance(g.get("topics"), dict) else {}
+        name = str(name or "").strip()[:60]
+        topics[topic] = name or topics.get(topic) or ""
+        g["topics"] = topics
+        _write_groups(groups)
+        title = name or _topic_title(chat, topic)
+        return f"тема «{title}» группы «{g.get('title') or chat}» добавлена — выбери её в списке"
+    raise ValueError("этой группы у бота нет — сначала добавь бота в неё")
 
 
 def apply_setup(data):
@@ -1944,12 +2009,9 @@ def apply_setup(data):
     _keep_topic_names()
 
     def name_of(chat, topic):
-        g = known[chat]
-        names = g.get("topics") if isinstance(g.get("topics"), dict) else {}
-        for bound in list(_roles(chat).values()) + list(_shelves(chat).values()):
-            if str(bound["topic"]) == str(topic) and bound.get("name"):
-                return bound["name"]
-        return names.get(str(topic)) or ("Общая" if topic == GENERAL else f"тема №{topic}")
+        # Свежее чтение: `known` снят до `_keep_topic_names` и до снятия дел —
+        # из него 18.11 названия брались пустыми, и «Запощено» стало «тема №8».
+        return _topic_title(chat, topic)
 
     for job, place in wanted.items():
         for chat in known:                         # дело одно на бота — снимаем отовсюду
@@ -1974,6 +2036,7 @@ def apply_setup(data):
         set_daily_stats_time(value)
     if "stats_kinds" in data:
         set_stats_kinds(data.get("stats_kinds"))
+    _fix_names()
     return "настройки бота сохранены"
 
 

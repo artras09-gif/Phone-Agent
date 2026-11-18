@@ -1470,6 +1470,19 @@ def _cmd_bot_setup(body):
     return {"ok": True, "message": message, "setup": telegram_bot.setup()}
 
 
+@command("bot-topic")
+def _cmd_bot_topic(body):
+    """Тема группы по ссылке — чтобы выбрать её в окне, даже если бот в ней
+    ещё ничего не видел (списка тем Bot API не даёт)."""
+    import telegram_bot
+
+    try:
+        message = telegram_bot.add_topic(body.get("link"), body.get("name"))
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "message": message}
+
+
 @command("stats")
 def _cmd_stats(body):
     # report() отдаёт СПИСОК строк, а не текст: без склейки страница печатала

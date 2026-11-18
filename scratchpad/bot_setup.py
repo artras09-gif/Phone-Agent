@@ -115,6 +115,44 @@ say(bot.shelf_home("archive") is None and not sent, "сообщение в те�
 bot.apply_setup({"jobs": {"archive": {"chat": GROUP, "topic": "8"}}})
 say(bot.shelf_home("archive") == (GROUP, 8, "Запощено"), "назначили снова — архив на месте, имя темы прежнее")
 
+print("\n--- названия тем не портятся при сохранении (живьём 18.11) ---")
+# Как было у пользователя: тем ещё не помнили, дела привязаны командами с
+# настоящими названиями. Сохранение из окна превращало их в «тема №6».
+data = json.load(open(bot.shared_path(), encoding="utf-8"))
+g = data["groups"][0]
+g.pop("topics", None)
+g["roles"] = {"posts": {"topic": 6, "name": "Постинг для бота"}}
+g["shelves"] = {"stock": {"topic": 12, "name": "Запасы"}, "archive": {"topic": 8, "name": "Запощено"}}
+g.pop("no_auto", None)
+data["groups"][1].pop("roles", None)
+json.dump(data, open(bot.shared_path(), "w", encoding="utf-8"), ensure_ascii=False)
+bot.apply_setup({"jobs": {"posts": {"chat": GROUP, "topic": "6"}, "stock": {"chat": GROUP, "topic": "12"},
+                          "archive": {"chat": GROUP, "topic": "8"}}})
+names = (bot._roles(GROUP)["posts"]["name"], bot._shelves(GROUP)["stock"]["name"],
+         bot._shelves(GROUP)["archive"]["name"])
+say(names == ("Постинг для бота", "Запасы", "Запощено"), f"после сохранения названия те же: {names}")
+# Уже испорченное — чинится само, если настоящее название где-то известно.
+data = json.load(open(bot.shared_path(), encoding="utf-8"))
+data["groups"][0]["shelves"]["archive"]["name"] = "тема №8"
+json.dump(data, open(bot.shared_path(), "w", encoding="utf-8"), ensure_ascii=False)
+bot.setup()
+say(bot._shelves(GROUP)["archive"]["name"] == "Запощено", "«тема №8» вернулась в «Запощено»")
+
+print("\n--- тема по ссылке: бот в ней ещё ничего не видел ---")
+said = bot.add_topic("https://t.me/c/3904397006/15", "Ссылки")
+topics = {t["id"]: t["name"] for t in bot.setup()["groups"][0]["topics"]}
+say(topics.get("15") == "Ссылки" and "добавлена" in said, f"тема 15 «Ссылки» в списке: {said}")
+bot.add_topic("t.me/c/3904397006/16/120")                      # ссылка на сообщение в теме
+topics = {t["id"]: t["name"] for t in bot.setup()["groups"][0]["topics"]}
+say(topics.get("16") == "тема №16", "ссылка на сообщение внутри темы — тема 16, без названия — по номеру")
+for bad, why in (("https://t.me/somebody", "ссылка на тему вида"), ("https://t.me/c/999/3", "группы у бота нет")):
+    try:
+        bot.add_topic(bad)
+        refused = ""
+    except ValueError as e:
+        refused = str(e)
+    say(why in refused, f"{bad} — отказ: {refused[:60]}")
+
 print("\n--- статистика: выключенные отчёты сами не снимаются ---")
 bot.apply_setup({"stats_time": "12:00", "stats_kinds": ["day"]})
 monday = dt.datetime(2026, 11, 2, 13, 0)          # понедельник, 2-е — неделя есть, месяц догоняется
