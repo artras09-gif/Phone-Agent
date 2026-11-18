@@ -669,6 +669,31 @@ pre.report{
         </p>
       </div>
 
+      <div class="card" id="bs-card" style="display:none">
+        <h2>Что бот делает и где</h2>
+        <p class="hint" style="margin:0 0 10px">Для каждого дела — чат и тема группы.
+          То же, что команды /here в Telegram: поменяешь здесь — бот сразу работает
+          по-новому. В списке — темы, где бот уже видел сообщения; нужной нет —
+          напиши в ней что-нибудь, и она появится.</p>
+        <div class="list" id="bs-jobs"></div>
+        <h2 style="margin:18px 0 6px">Статистика сама</h2>
+        <p class="hint" style="margin:0 0 10px">В это время каждый день бот снимает
+          статистику и шлёт её в тему статистики (не привязана — владельцу).
+          Неделя — по понедельникам, месяц — 1-го числа. По команде /stats —
+          всегда, когда попросишь.</p>
+        <div class="row" style="align-items:flex-end">
+          <label class="field" style="width:150px">
+            Время
+            <input type="time" id="bs-time">
+          </label>
+          <div class="chips" id="bs-kinds" style="padding-bottom:6px"></div>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <button class="btn accent" id="b-bs">Сохранить</button>
+          <span class="hint" id="bs-dirty" style="margin:0"></span>
+        </div>
+      </div>
+
       <div class="card">
         <h2>Как он решает, куда и когда</h2>
         <p class="hint" style="margin:0">
@@ -981,10 +1006,102 @@ function renderBot(s){
                  : "остановлен");
   $("bot-when").textContent = "";
   $("bot-big").textContent = b.big || "";
+  renderBotSetup(b.setup, b.phone);
   $("bot-groups").textContent = (b.groups && b.groups.length)
     ? "Работает в чатах: " + b.groups.join(", ")
     : "В чатах: добавь бота в группу — он заработает там так же, как в личке.";
 }
+
+/* Настройки бота: дела по темам и расписание статистики (2026-11-18).
+   Обновление раз в секунду не должно сбивать выбор, пока человек его меняет:
+   правки помечают карточку «изменено», и до сохранения её не перерисовываем. */
+const BS_KINDS = [["day", "за вчера — каждый день"], ["week", "за неделю — по понедельникам"],
+                  ["month", "за месяц — 1-го"]];
+let bsSign = "", bsDirty = false, bsKinds = [], bsPhone = null;
+
+function bsMark(){
+  bsDirty = true;
+  $("bs-dirty").textContent = "есть несохранённые изменения";
+}
+
+function renderBotSetup(setup, phone){
+  const card = $("bs-card");
+  if(phone !== bsPhone){                 // другой телефон — его настройки, не наши правки
+    bsPhone = phone; bsDirty = false; bsSign = "";
+    $("bs-dirty").textContent = "";
+  }
+  card.style.display = setup ? "" : "none";
+  if(!setup || bsDirty) return;
+  const sign = JSON.stringify(setup);
+  if(sign === bsSign) return;
+  bsSign = sign;
+  const box = $("bs-jobs");
+  box.innerHTML = "";
+  for(const job of setup.order){
+    const j = setup.jobs[job];
+    const row = document.createElement("div");
+    row.className = "item";
+    row.innerHTML = '<div class="main"><b></b><span></span></div>';
+    row.querySelector("b").textContent = j.title;
+    const sel = document.createElement("select");
+    sel.dataset.job = job;
+    sel.style.maxWidth = "360px";
+    const none = new Option("не привязано — " + j.unbound, "");
+    sel.append(none);
+    for(const g of setup.groups){
+      const grp = document.createElement("optgroup");
+      grp.label = g.title;
+      for(const t of g.topics){
+        grp.append(new Option(t.name, g.id + "|" + t.id));
+      }
+      sel.append(grp);
+    }
+    sel.value = j.chat ? j.chat + "|" + j.topic : "";
+    const hint = row.querySelector("span");
+    const say = () => {
+      hint.textContent = sel.value ? "только здесь" : j.unbound;
+    };
+    say();
+    sel.addEventListener("change", () => { say(); bsMark(); });
+    row.append(sel);
+    box.append(row);
+  }
+  if(!setup.groups.length){
+    const note = document.createElement("p");
+    note.className = "empty-note";
+    note.textContent = "Бот ещё ни в одной группе — добавь его в группу, и её темы появятся здесь.";
+    box.append(note);
+  }
+  $("bs-time").value = setup.stats_time || "";
+  bsKinds = setup.stats_kinds.slice();
+  const kinds = $("bs-kinds");
+  kinds.innerHTML = "";
+  for(const [kind, title] of BS_KINDS){
+    const chip = document.createElement("button");
+    chip.className = "chip" + (bsKinds.includes(kind) ? " on" : "");
+    chip.textContent = title;
+    chip.addEventListener("click", () => {
+      bsKinds = bsKinds.includes(kind) ? bsKinds.filter(k => k !== kind) : bsKinds.concat([kind]);
+      chip.classList.toggle("on", bsKinds.includes(kind));
+      bsMark();
+    });
+    kinds.append(chip);
+  }
+}
+
+$("bs-time").addEventListener("input", bsMark);
+$("b-bs").addEventListener("click", async () => {
+  const jobs = {};
+  for(const sel of $("bs-jobs").querySelectorAll("select")){
+    const [chat, topic] = sel.value ? sel.value.split("|") : ["", ""];
+    jobs[sel.dataset.job] = {chat, topic};
+  }
+  const data = await send("bot-setup", {jobs, stats_time: $("bs-time").value, stats_kinds: bsKinds});
+  if(data && data.ok !== false){
+    bsDirty = false; bsSign = "";
+    $("bs-dirty").textContent = "";
+  }
+});
 
 /* Какую ленту смотреть. Выбор запоминается: агент обычно живёт в одной. */
 let appId = localStorage.getItem("pa-app") || "";

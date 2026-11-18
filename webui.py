@@ -683,7 +683,8 @@ def _bot_state():
             "phone": devices.name_of(config.SERIAL) if config.SERIAL else "",
             "username": telegram_bot._saved().get("username", ""),
             "server_url": telegram_bot.server_url(),
-            "bots": _bots_list()}
+            "bots": _bots_list(),
+            "setup": telegram_bot.setup() if cfg["token"] else None}
 
 
 def _bots_list():
@@ -1450,6 +1451,23 @@ def _cmd_telegram(body):
     if ok or telegram_bot.load_settings()["token"]:
         _start_bot()
     return {"ok": ok, "message" if ok else "error": info}
+
+
+@command("bot-setup")
+def _cmd_bot_setup(body):
+    """Что бот делает и где, как часто шлёт статистику — сохранить из окна.
+
+    Те же поля файла бота, что пишут команды /here и «/stats каждый день»:
+    служба читает их при каждом сообщении, перезапускать бота не нужно."""
+    import telegram_bot
+
+    if not telegram_bot.load_settings()["token"]:
+        return {"ok": False, "error": "сначала вставь токен бота"}
+    try:
+        message = telegram_bot.apply_setup(body)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "message": message, "setup": telegram_bot.setup()}
 
 
 @command("stats")

@@ -271,6 +271,23 @@ def set_daily_stats_time(value):
     _remember(daily_stats=value)
 
 
+# Какие отчёты слать самим (2026-11-18: «как часто отсылает стату — перенести
+# в приложение и чтобы можно было настраивать»). День — за вчера в
+# daily_stats_time(), неделя — по понедельникам, месяц — 1-го.
+STATS_KINDS = ("day", "week", "month")
+
+
+def stats_kinds():
+    saved = _saved().get("stats_kinds")
+    if not isinstance(saved, list):
+        return list(STATS_KINDS)
+    return [k for k in STATS_KINDS if k in saved]
+
+
+def set_stats_kinds(kinds):
+    _remember(stats_kinds=[k for k in STATS_KINDS if k in (kinds or [])])
+
+
 def api_keys():
     """(api_id, api_hash) с my.telegram.org — для своего сервера. Нет — ("", "")."""
     data = _read(shared_path())
@@ -965,6 +982,27 @@ def _thread_for(target, thread=None):
     return None
 
 
+def _remember_topic(chat_id, thread, msg):
+    """Запомнить тему группы, в которой бот видел сообщение, — чтобы в окне
+    программы её можно было выбрать для дела (Bot API списка тем не даёт).
+    Название — из служебного сообщения о создании темы, если оно пришло."""
+    made = (msg.get("forum_topic_created") or msg.get("forum_topic_edited")
+            or (msg.get("reply_to_message") or {}).get("forum_topic_created") or {})
+    name = str(made.get("name") or "").strip()
+    key = str(thread or GENERAL)
+    groups = _groups()
+    for g in groups:
+        if g["id"] != str(chat_id):
+            continue
+        topics = g.get("topics") if isinstance(g.get("topics"), dict) else {}
+        if key in topics and (not name or topics[key] == name):
+            return
+        topics[key] = name or topics.get(key) or ("Общая" if key == GENERAL else "")
+        g["topics"] = topics
+        _write_groups(groups)
+        return
+
+
 def _topic_name(msg):
     """Название темы — из служебного сообщения о её создании, если оно есть."""
     created = (msg.get("reply_to_message") or {}).get("forum_topic_created") or {}
@@ -1619,6 +1657,7 @@ def _handle(msg):
         # Запасы и архив — не для разговоров и не для постинга: в запасах
         # только запоминаем видео (опубликованное удалится отсюда), в архиве
         # молчим вовсе. Видео из запасов не должно стать черновиком само.
+        _remember_topic(chat_id, thread, msg)
         _auto_shelf(msg, chat_id, thread)
         shelf = _shelf_at(chat_id, thread or GENERAL)
         if shelf == "stock":
@@ -1806,6 +1845,136 @@ def _cmd_topic(text, chat, msg, sender, cfg):
     send(f"Готово: {place} — {ROLE_TITLES[picked[0]]}. {jobs_here} В других чатах и "
          "темах это дело больше не принимаю."
          + ("\nОстальное: " + ", ".join(others) if others else ""))
+
+
+# ------------------------------------------- настройка из окна (2026-11-18)
+#
+# «Все параметры ботов — в каком чате какие действия он выполняет и как часто
+# отсылает стату — перенести в приложение, чтобы там можно было настраивать».
+# Команды в Telegram (/here, /stats каждый день) работают как раньше; окно
+# читает и пишет те же поля файла бота.
+
+JOBS = ROLES + SHELVES
+JOB_TITLES = {"posts": "Видео на постинг", "links": "Ссылки", "stats": "Статистика",
+              "stock": "Запасы", "archive": "Архив (опубликованное)"}
+JOB_UNBOUND = {"posts": "в любом чате и теме", "links": "в любом чате и теме",
+               "stats": "владельцу в личку", "stock": "запасов нет", "archive": "архива нет"}
+
+
+def _job_home(job):
+    """(чат, тема) дела или полки — или None."""
+    if job in ROLES:
+        return role_home(job)
+    home = shelf_home(job)
+    return (home[0], home[1]) if home else None
+
+
+def setup():
+    """Всё, что окно показывает о боте этого телефона."""
+    groups = []
+    for g in _groups():
+        topics = dict(g.get("topics") or {}) if isinstance(g.get("topics"), dict) else {}
+        for bound in list(_roles(g["id"]).values()) + list(_shelves(g["id"]).values()):
+            key = str(bound["topic"])
+            if bound.get("name") and not topics.get(key):
+                topics[key] = bound["name"]
+            topics.setdefault(key, "")
+        topics.setdefault(GENERAL, "Общая")
+        rows = [{"id": k, "name": (v or ("Общая" if k == GENERAL else f"тема №{k}"))}
+                for k, v in topics.items()]
+        rows.sort(key=lambda r: (r["id"] != GENERAL, int(r["id"]) if r["id"].isdigit() else 0))
+        groups.append({"id": g["id"], "title": g.get("title") or g["id"], "topics": rows})
+    jobs_out = {}
+    for job in JOBS:
+        home = _job_home(job)
+        jobs_out[job] = {"title": JOB_TITLES[job], "unbound": JOB_UNBOUND[job],
+                         "chat": home[0] if home else "", "topic": str(home[1]) if home else ""}
+    return {"groups": groups, "jobs": jobs_out, "order": list(JOBS),
+            "stats_time": daily_stats_time(), "stats_kinds": stats_kinds()}
+
+
+def _keep_topic_names():
+    """Названия тем, к которым привязаны дела, — в список тем группы: снимут
+    дело — название останется, и в окне тема не станет «тема №8»."""
+    groups = _groups()
+    changed = False
+    for g in groups:
+        topics = g.get("topics") if isinstance(g.get("topics"), dict) else {}
+        for bound in list(_roles(g["id"]).values()) + list(_shelves(g["id"]).values()):
+            key = str(bound["topic"])
+            if bound.get("name") and not topics.get(key):
+                topics[key] = bound["name"]
+                changed = True
+        g["topics"] = topics
+    if changed:
+        _write_groups(groups)
+
+
+def apply_setup(data):
+    """Сохранить настройки из окна. Возвращает текст для человека или бросает
+    ValueError с понятной причиной."""
+    data = data or {}
+    known = {g["id"]: g for g in _groups()}
+    wanted = {}
+    for job in JOBS:
+        if job not in (data.get("jobs") or {}):
+            continue
+        place = data["jobs"][job] or {}
+        chat, topic = str(place.get("chat") or ""), str(place.get("topic") or "")
+        if not chat:
+            wanted[job] = None
+            continue
+        if chat not in known:
+            raise ValueError(f"{JOB_TITLES[job]}: бота в этом чате уже нет")
+        if not (topic == GENERAL or topic.isdigit()):
+            raise ValueError(f"{JOB_TITLES[job]}: тема — номер или «Общая»")
+        wanted[job] = (chat, topic if topic == GENERAL else int(topic))
+    # Полка (запасы, архив) — тема, где бот молчит. Делать в ней ещё что-то
+    # нельзя: видео на постинг оттуда он бы не взял, а архив съел бы запасы.
+    # Сверяем с тем, что получится в итоге: дела, которых нет в запросе, остаются где были.
+    final = {}
+    for job in JOBS:
+        home = wanted[job] if job in wanted else _job_home(job)
+        final[job] = (str(home[0]), str(home[1])) if home else None
+    for job in SHELVES:
+        for other in JOBS:
+            if other != job and final[job] and final[other] == final[job]:
+                raise ValueError(f"{JOB_TITLES[job]} и «{JOB_TITLES[other]}» — в одной теме нельзя: "
+                                 "в теме запасов и архива бот молчит")
+    _keep_topic_names()
+
+    def name_of(chat, topic):
+        g = known[chat]
+        names = g.get("topics") if isinstance(g.get("topics"), dict) else {}
+        for bound in list(_roles(chat).values()) + list(_shelves(chat).values()):
+            if str(bound["topic"]) == str(topic) and bound.get("name"):
+                return bound["name"]
+        return names.get(str(topic)) or ("Общая" if topic == GENERAL else f"тема №{topic}")
+
+    for job, place in wanted.items():
+        for chat in known:                         # дело одно на бота — снимаем отовсюду
+            if job in ROLES and role_topic(chat, job):
+                set_roles(chat, [job], None)
+            if job in SHELVES and _shelves(chat).get(job):
+                set_shelf(chat, job, None)
+        if place:
+            chat, topic = place
+            if job in ROLES:
+                set_roles(chat, [job], topic, name_of(chat, topic))
+            else:
+                set_shelf(chat, job, topic, name_of(chat, topic))
+        if job in SHELVES:
+            # Сняли руками — по названию темы больше не назначаем; назначили — можно.
+            _auto_off(job, place is None)
+
+    if "stats_time" in data:
+        value = str(data.get("stats_time") or "").strip()
+        if value and not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value):
+            raise ValueError("время статистики — как 12:00")
+        set_daily_stats_time(value)
+    if "stats_kinds" in data:
+        set_stats_kinds(data.get("stats_kinds"))
+    return "настройки бота сохранены"
 
 
 def _shelf_by_name(name):
