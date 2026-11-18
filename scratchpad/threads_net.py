@@ -191,8 +191,8 @@ path = accstats._shot_threads(folder, 1280, 2772, days=1)
 said = accstats._notes_in(folder)
 check(f"просмотры прочитаны из дерева экрана: {said.get('threads_views')!r} за {said.get('threads_when')!r}",
       path and said.get("threads_views") == "1 234" and said.get("threads_when") == "7 дней")
-check(f"пояснение не выдаёт 7 дней за вчера: {said.get('threads')!r}",
-      "7 дней" in said.get("threads", "") and "отдельного дня Threads не показывает" in said.get("threads", ""))
+check(f"графика нет — пояснение не выдаёт 7 дней за вчера: {said.get('threads')!r}",
+      "7 дней" in said.get("threads", "") and "за день с графика прочитать не вышло" in said.get("threads", ""))
 check(f"в отчёте числом — всегда с периодом: {accstats.numbers_text(folder, ['threads'])!r}",
       accstats.numbers_text(folder, ["threads"]) == "Threads — 1 234 (за 7 дней)")
 check("подписчики: «1 follower» в единственном числе тоже число",
@@ -200,6 +200,39 @@ check("подписчики: «1 follower» в единственном числ
       and not accstats.TH_FOLLOWERS.match("Edit profile"))
 check("снимок статистики — только из самого Threads",
       accstats._snap_app("threads") == "com.instagram.barcelona")
+
+print("\n--- день с графика: держим палец на последней точке (2026-11-18) ---")
+CHART = [
+    node(text="Views", bounds=(117, 1068, 229, 1114)),
+    node(text="1,416", bounds=(117, 1139, 312, 1230)),
+    node(text="2K", bounds=(65, 1520, 114, 1566)),
+    node(text="1K", bounds=(65, 1722, 114, 1768)),
+    node(text="0", bounds=(91, 1923, 114, 1969)),
+    node(text="Nov 14", bounds=(153, 1972, 507, 2018)),
+    node(text="Nov 15", bounds=(507, 1972, 861, 2018)),
+    node(text="Nov 16", bounds=(861, 1972, 1215, 2018)),
+    node(text="0", bounds=(1183, 1139, 1227, 1230)),          # «Net followers» — не шкала
+]
+spot = accstats._th_chart(CHART, 1280, 2772)
+check(f"палец — у правого края дат, между шкалой и датами: {spot}",
+      spot and 1180 <= spot[0] <= 1215 and 1520 < spot[1] < 1972)
+check("без подписей дат графика нет — не держим", accstats._th_chart(INSIGHTS, 1280, 2772) is None)
+held, answers = [], ['{"день": 16, "месяц": 11, "просмотры": "3"}']
+accstats.adb.shell = lambda cmd, check=True: held.append(cmd) or ""
+accstats.adb.current_app = lambda: ("com.instagram.barcelona", "")
+accstats.adb.screenshot = lambda path: open(path, "wb").write(b"x" * 20_000)
+import datetime as dt  # noqa: E402
+import vision          # noqa: E402
+vision.ask = lambda png, prompt, **kw: answers[0]
+day_dir = os.path.join(tmp, "day")
+got = accstats._th_day(day_dir, CHART, 1280, 2772, today=dt.date(2026, 11, 18))
+check(f"подсказка прочитана: {got and (str(got[0]), got[1])}",
+      got and str(got[0]) == "2026-11-16" and got[1] == "3" and held and "input swipe" in held[0])
+answers[0] = "{}"
+check("подсказки на снимке нет — None, остаётся 7 дней", accstats._th_day(day_dir, CHART, 1280, 2772) is None)
+answers[0] = '{"день": 30, "месяц": 12, "просмотры": "5"}'
+got = accstats._th_day(day_dir, CHART, 1280, 2772, today=dt.date(2027, 1, 2))
+check("в начале января «30 декабря» — прошлого года", got and str(got[0]) == "2026-12-30")
 
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)

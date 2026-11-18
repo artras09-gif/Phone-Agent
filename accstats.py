@@ -17,6 +17,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 
 import abort
@@ -3297,8 +3298,9 @@ def _shot_facebook(folder, w, h, days=None, videos=None):
 # Снято живьём 13.11 на обоих телефонах (Threads 455 по-английски). Устроен он
 # иначе, чем остальные сети: плиток с просмотрами в профиле нет, зато вся
 # статистика — текстом в дереве экрана. Профиль → «View insights» → «Views»,
-# «Viewers», «Net followers» за 7, 14, 30 или 90 дней. Отдельного дня и
-# календаря у Threads нет вовсе: самое короткое, что он показывает, — 7 дней.
+# «Viewers», «Net followers» за 7, 14, 30 или 90 дней. Выбрать день или
+# календарь нельзя: самый короткий период — 7 дней. Но число за день есть на
+# графике под карточками — его читает `_th_day` (держит палец на точке).
 # У вкладок и кнопок профиля постоянные resource-id — от языка не зависят.
 
 TH_INSIGHTS = ["View insights", "Посмотреть статистику", "Статистика", "Ver estadísticas",
@@ -3306,7 +3308,7 @@ TH_INSIGHTS = ["View insights", "Посмотреть статистику", "С
 TH_GOT_IT = ["Got it", "Понятно", "Entendido", "OK", "ОК"]
 TH_VIEWS = ["Views", "Просмотры", "Visualizaciones"]
 TH_PERIOD = re.compile(r"^\s*(7|14|30|90)\s*(days|дн\w*|d[ií]as)\s*$", re.I)
-# Какой период Threads выбирать под просьбу: дня у него нет — берём 7 дней.
+# Какой период Threads выбирать под просьбу. За день — 7 дней, и число дня с графика.
 TH_DAYS = {1: 7, 2: 7, "week": 7, "month": 30, ALL_TIME: 90}
 TH_FOLLOWERS = re.compile(r"\s*\d[\d\s.,]*\s*[KMКМkм]?\s*(followers?|подписчик|seguidor)", re.I)
 
@@ -3328,6 +3330,14 @@ def _read_threads(net, cfg, result):
     nodes, tab = _fb_wait(lambda n: _rid(n) == "barcelona_tab_profile", 12)
     if tab is None and nodes and ui.dismiss_popup(nodes):
         nodes, tab = _fb_wait(lambda n: _rid(n) == "barcelona_tab_profile", 8)
+    for _ in range(3):
+        # Приложение открылось там, где его оставили (Insights, чужой пост), —
+        # нижней панели там нет. «Назад» к ней, пока не вышли из Threads.
+        if tab is not None or adb.current_app()[0] != cfg["package"]:
+            break
+        device.back()
+        human.pause(1.0, 1.5)
+        nodes, tab = _fb_wait(lambda n: _rid(n) == "barcelona_tab_profile", 4)
     if tab is None:
         # Нижней панели нет: окно входа или приложение открылось не на главной.
         seen = _seen_buttons(nodes, h)
@@ -3349,6 +3359,88 @@ def _read_threads(net, cfg, result):
     count = next((n.text for n in nodes if TH_FOLLOWERS.match(n.text or "")), None)
     result["followers"] = parse_count(count) if count else None
     return result
+
+
+# День на графике «Views» (2026-11-18: «в Threads он почему-то только
+# недельную стату собирает»). Выбрать день Threads не даёт, но под карточками
+# — график по дням, и если ДЕРЖАТЬ на нём палец, всплывает подсказка «Nov 15 /
+# 278» (живьём 18.11 на телефоне T; от касания не всплывает, отпустил — ушла).
+# В дереве её нет: снимаем экран, пока палец держится, и читаем моделью.
+TH_AXIS_DATE = re.compile(r"^\s*([A-Za-zА-Яа-яё]{3,6}\.?\s+\d{1,2}|\d{1,2}\s+[A-Za-zА-Яа-яё]{3,6}\.?)\s*$")
+TH_TICK = re.compile(r"^\s*\d+([.,]\d+)?\s*[KMКМkм]?\s*$")
+TH_ASK = ("Это снимок статистики Threads. Над графиком всплыла подсказка: дата и число просмотров "
+          "за этот день. Ответь ТОЛЬКО JSON: {\"день\": число, \"месяц\": номер месяца 1-12, "
+          "\"просмотры\": \"число как на экране\"}. Подсказки на снимке нет — {}.")
+TH_HOLD_MS = 3200
+
+
+def _th_chart(nodes, w, h):
+    """Где последний день графика: (x, y) для пальца или None — графика нет.
+
+    Подписи дат под графиком («Nov 14 … Nov 16»): последняя прижата к правому
+    краю, и точка последнего дня — у правого края подписей. По высоте — между
+    верхней подписью шкалы («2K») и строкой дат: держать можно в любом месте
+    столбца, подсказка встаёт на ближайший день."""
+    dates = [n for n in nodes or [] if _sized(n) and TH_AXIS_DATE.match(n.text or "")
+             and h * 0.3 < n.bounds[1] < h * 0.95]
+    if len(dates) < 2:
+        return None
+    axis = min(n.bounds[1] for n in dates)
+    ticks = [n for n in nodes or [] if _sized(n) and TH_TICK.match(n.text or "")
+             and n.bounds[2] < w * 0.2 and axis - h * 0.25 < n.bounds[1] < axis]
+    top = min((n.bounds[1] for n in ticks), default=axis - int(h * 0.12))
+    x = max(n.bounds[2] for n in dates) - int(w * 0.012)
+    return x, (top + axis) // 2
+
+
+def _th_day(folder, nodes, w, h, today=None):
+    """Просмотры последнего дня на графике: (дата, просмотры, снимок) или None."""
+    spot = _th_chart(nodes, w, h)
+    if spot is None:
+        return None
+    x, y = spot
+    hold = threading.Thread(target=lambda: adb.shell(
+        f"input swipe {x} {y} {x + 1} {y} {TH_HOLD_MS}", check=False), daemon=True)
+    hold.start()
+    time.sleep(1.4)                       # подсказка встаёт, пока палец держится
+    # Снимаем сразу, без `_snap`: тот сперва ждёт, пока экран успокоится, и
+    # палец успевал отпуститься — на снимке не было подсказки (живьём 18.11).
+    path = os.path.join(folder, "threads.png")
+    try:
+        if adb.current_app()[0] != "com.instagram.barcelona":
+            return None
+        os.makedirs(folder, exist_ok=True)
+        adb.screenshot(path)
+    except (adb.AdbError, OSError):
+        return None
+    finally:
+        hold.join(timeout=TH_HOLD_MS / 1000 + 5)
+    if not os.path.isfile(path) or os.path.getsize(path) < 10_000:
+        return None
+    try:
+        import vision
+        with open(path, "rb") as f:
+            answer = vision.ask(f.read(), TH_ASK, max_tokens=120, temperature=0.0)
+    except Exception as e:
+        print(f"  Threads: подсказку графика не прочитал — {str(e)[:80]}", flush=True)
+        return None
+    m = re.search(r"\{.*\}", answer or "", re.S)
+    try:
+        data = json.loads(m.group(0)) if m else {}
+        day, month = int(data.get("день")), int(data.get("месяц"))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    views = str(data.get("просмотры") or "").strip()
+    if not NUMBER.match(views) or views.startswith("-"):
+        return None
+    today = today or dt.date.today()
+    try:
+        when = dt.date(today.year - (1 if month > today.month else 0), month, day)
+    except ValueError:
+        return None
+    if when > today:
+        return None
+    return when, _num(views), path
 
 
 def _th_periods(nodes):
@@ -3414,6 +3506,19 @@ def _shot_threads(folder, w, h, days=None):
     want = TH_DAYS.get(days)
     shown = _th_pick(want) if want else _th_shown(nodes)
     nodes, label = _fb_wait(lambda n: _label(n) in TH_VIEWS, 8)
+    if days == 1:
+        got = _th_day(folder, nodes, w, h)
+        if got is not None:
+            when, views, path = got
+            yesterday = dt.date.today() - dt.timedelta(days=1)
+            _views_note(folder, "threads", views, f"{when:%d.%m}")
+            _note(folder, "threads", f"за {when:%d.%m} — число из подсказки на графике"
+                  if when >= yesterday else
+                  f"за {when:%d.%m} — последний день, который Threads уже посчитал "
+                  "(вчерашнего на графике ещё нет)")
+            device.back()                           # к профилю
+            human.pause(0.8, 1.2)
+            return path
     value = _value_below(nodes, label) if label is not None else None
     views = _num(value.text) if value is not None else ""
     path = _snap(folder, "threads")
@@ -3424,8 +3529,7 @@ def _shot_threads(folder, w, h, days=None):
     elif want and shown != want:
         note = f"за последние {shown} дней — выбрать {want} дней не вышло"
     elif days == 1:
-        note = (f"за последние {shown} дней — отдельного дня Threads не показывает, "
-                "самый короткий период у него 7 дней")
+        note = (f"за последние {shown} дней — число за день с графика прочитать не вышло")
     elif days in ("week", "month"):
         note = (f"за последние {shown} дней — выбрать "
                 + ("прошлую неделю" if days == "week" else "прошлый месяц") + " Threads не даёт")
@@ -3878,7 +3982,10 @@ def reports_due(now=None):
         return []
     stamp = time.mktime(now.timetuple())
     out = []
+    wanted = telegram_bot.stats_kinds()           # какие отчёты включены (окно, 2026-11-18)
     for kind in REPORT_KINDS:
+        if kind not in wanted:
+            continue
         first, last = report_span(kind, now.date())
         late = (now.date() - last).days
         if kind != "day" and late > CATCH_UP_DAYS:
