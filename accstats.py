@@ -16,6 +16,7 @@ import datetime as dt
 import json
 import os
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -3059,7 +3060,13 @@ FB_ANALYTICS_TAB = re.compile(r"^(analytics|аналитика|estadísticas|an�
 FB_RANGE_BTN = ["Select date range", "Выбрать диапазон дат", "Seleccionar intervalo de fechas"]
 FB_RANGES = {7: r"^(last 7 days|последние 7 дней|últimos 7 días),", 28: r"^(last 28 days|последние 28 дней|últimos 28 días),",
              90: r"^(last 90 days|последние 90 дней|últimos 90 días),"}
-FB_POINT = re.compile(r"^([A-Za-zА-Яа-яéñ.]+\s+\d{1,2}|\d{1,2}\s+[A-Za-zА-Яа-яéñ.]+),\s*([\d.,]+\s*[KMКМ]?)$")
+# Подсказка графика: «Nov 11, 7»; бывает и с годом — «Nov 18, 2026, 24» / «Nov 18, 2026: 24».
+FB_POINT = re.compile(r"^([A-Za-zА-Яа-яéñ.]+\s+\d{1,2}|\d{1,2}\s+[A-Za-zА-Яа-яéñ.]+)(?:,?\s*20\d\d)?\s*[,:]\s*([\d.,]+\s*[KMКМ]?)$")
+FB_ASK = ("Это снимок аналитики Facebook. Над графиком просмотров всплыла подсказка: дата и число "
+          "просмотров за этот день. Ответь ТОЛЬКО JSON: {\"день\": число, \"месяц\": номер месяца "
+          "1-12, \"просмотры\": \"число как на экране\"}. Подсказки на снимке нет — {}.")
+FB_PACKAGE = "com.facebook.katana"
+FB_TIP = {"shot": None}          # снимок с подсказкой последнего удержания — в отчёт
 FB_SPAN = re.compile(r",\s*(.+?\d{1,2})\s*[-–]\s*(.+?\d{1,2})$")
 # У Страницы (первый телефон, 12.11) кнопки «Dashboard» в профиле нет — панель
 # стоит вкладкой нижней панели: «Creator Dashboard, tab 2 of 5».
@@ -3115,9 +3122,12 @@ def _fb_last_day(w, h):
     обновить и посмотреть ещё раз."""
     yesterday = dt.date.today() - dt.timedelta(days=1)
     day, value, nodes = None, "", []
+    FB_TIP["shot"] = None
 
     def point_of(tree):
-        return next((m for m in (FB_POINT.match((n.desc or "").strip()) for n in tree or []) if m), None)
+        # «Nov 18, 2026» без числа — это дата с годом, а не «2026 просмотров».
+        return next((m for m in (FB_POINT.match((n.desc or "").strip()) for n in tree or [])
+                     if m and not re.fullmatch(r"20\d\d", m.group(2).strip())), None)
 
     for attempt in range(2):
         nodes = ui.dump(retries=2, tolerant=True)
@@ -3142,6 +3152,13 @@ def _fb_last_day(w, h):
             point = point_of(nodes)
         if point is not None:
             day, value = _day_of(point.group(1)), _num(point.group(2))
+        elif box is not None:
+            # 19.11 на втором телефоне: касание подсказку не вызвало, и в отчёт
+            # ушла оценка по снимкам рилсов. Подсказка видна, пока палец лежит.
+            got = _hold_tip(x, (box[1] + box[3]) // 2, FB_PACKAGE,
+                            os.path.join(tempfile.gettempdir(), "pa_fb_tip.png"), FB_ASK, "Facebook")
+            if got is not None:
+                day, value, FB_TIP["shot"] = got
         if (day is not None and day >= yesterday) or attempt:
             break
         _fb_refresh(w, h)
@@ -3204,7 +3221,13 @@ def _fb_dashboard(folder, w, h, days):
             device.back()                                  # список закрыть, ничего не выбрав
             human.pause(1, 1.5)
     day, shown, nodes = _fb_last_day(w, h) if days == 1 else (None, "", ui.dump(retries=2, tolerant=True))
-    path = _snap(folder, "facebook")
+    path = None
+    if days == 1 and FB_TIP["shot"] and os.path.isfile(FB_TIP["shot"]):
+        # Снимок, на котором видна подсказка с числом за день, — нагляднее.
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, "facebook.png")
+        shutil.copyfile(FB_TIP["shot"], path)
+    path = path or _snap(folder, "facebook")
     total = next((n for n in nodes or [] if _sized(n) and _label(n) == "Views"
                   and n.selected), None)
     value = _value_below(nodes, total, dy=60) if total is not None else None
@@ -3393,36 +3416,38 @@ def _th_chart(nodes, w, h):
     return x, (top + axis) // 2
 
 
-def _th_day(folder, nodes, w, h, today=None):
-    """Просмотры последнего дня на графике: (дата, просмотры, снимок) или None."""
-    spot = _th_chart(nodes, w, h)
-    if spot is None:
-        return None
-    x, y = spot
+def _hold_tip(x, y, package, path, ask, who, today=None, hold_ms=None):
+    """Держать палец на графике и прочитать всплывшую подсказку: (дата,
+    просмотры, снимок) или None.
+
+    У Threads и Facebook число за день видно, только пока палец ЛЕЖИТ на
+    графике (живьём 18–19.11): от касания подсказка не всплывает или тут же
+    прячется, отпустил — ушла. В дереве её нет — снимаем экран во время
+    удержания и читаем дату и число моделью. Снимок с подсказкой — `path`."""
+    hold_ms = hold_ms or TH_HOLD_MS
     hold = threading.Thread(target=lambda: adb.shell(
-        f"input swipe {x} {y} {x + 1} {y} {TH_HOLD_MS}", check=False), daemon=True)
+        f"input swipe {x} {y} {x + 1} {y} {hold_ms}", check=False), daemon=True)
     hold.start()
     time.sleep(1.4)                       # подсказка встаёт, пока палец держится
     # Снимаем сразу, без `_snap`: тот сперва ждёт, пока экран успокоится, и
     # палец успевал отпуститься — на снимке не было подсказки (живьём 18.11).
-    path = os.path.join(folder, "threads.png")
     try:
-        if adb.current_app()[0] != "com.instagram.barcelona":
+        if adb.current_app()[0] != package:
             return None
-        os.makedirs(folder, exist_ok=True)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         adb.screenshot(path)
     except (adb.AdbError, OSError):
         return None
     finally:
-        hold.join(timeout=TH_HOLD_MS / 1000 + 5)
+        hold.join(timeout=hold_ms / 1000 + 5)
     if not os.path.isfile(path) or os.path.getsize(path) < 10_000:
         return None
     try:
         import vision
         with open(path, "rb") as f:
-            answer = vision.ask(f.read(), TH_ASK, max_tokens=120, temperature=0.0)
+            answer = vision.ask(f.read(), ask, max_tokens=120, temperature=0.0)
     except Exception as e:
-        print(f"  Threads: подсказку графика не прочитал — {str(e)[:80]}", flush=True)
+        print(f"  {who}: подсказку графика не прочитал — {str(e)[:80]}", flush=True)
         return None
     m = re.search(r"\{.*\}", answer or "", re.S)
     try:
@@ -3441,6 +3466,15 @@ def _th_day(folder, nodes, w, h, today=None):
     if when > today:
         return None
     return when, _num(views), path
+
+
+def _th_day(folder, nodes, w, h, today=None):
+    """Просмотры последнего дня на графике: (дата, просмотры, снимок) или None."""
+    spot = _th_chart(nodes, w, h)
+    if spot is None:
+        return None
+    return _hold_tip(spot[0], spot[1], "com.instagram.barcelona", os.path.join(folder, "threads.png"),
+                     TH_ASK, "Threads", today=today)
 
 
 def _th_periods(nodes):

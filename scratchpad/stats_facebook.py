@@ -135,6 +135,8 @@ accstats.ui.tap_node = tap_node
 accstats.device.back = lambda: backs.append(1)
 accstats.human.pause = lambda *a: None
 accstats.time.sleep = lambda s: None
+import vision  # noqa: E402
+vision.ask = lambda *a, **k: "{}"       # модель не настоящая: подсказку под пальцем «не видит»
 accstats.adb.current_app = lambda: (PKG, "")
 accstats._wait_clean = lambda **k: None
 
@@ -304,6 +306,54 @@ said = accstats._notes_in(f6)
 check(f"неделя: устаревший пункт списка не выбран, так и сказано: {said.get('facebook')!r}",
       "Select date range" in taps and not any(t.startswith("Last 7 days") for t in taps)
       and "устарел" in said.get("facebook", ""))
+
+# Живьём 2026-11-19, второй телефон: касание по графику подсказку не вызвало,
+# и в отчёт ушла «оценка прироста по снимкам рилсов». Подсказка видна, только
+# пока палец ЛЕЖИТ на графике: держим, снимаем экран, читаем моделью.
+print("\nподсказка — только пока палец лежит")
+held = []
+
+
+def phone_hold(cmd, **k):
+    if cmd.startswith("input swipe") and screens["now"] is STALE:
+        screens["now"] = FRESH
+    elif cmd.startswith("input swipe") and screens["now"] is FRESH:
+        held.append(cmd)                                 # удержание; касания подсказку не дают
+    return ""
+
+
+import json      # noqa: E402
+import vision    # noqa: E402
+
+real_shot, real_ask = accstats.adb.screenshot, vision.ask
+accstats.adb.shell = phone_hold
+accstats.adb.screenshot = lambda path: open(path, "wb").write(b"x" * 20_000)
+vision.ask = lambda png, prompt, **kw: json.dumps({"день": yest.day, "месяц": yest.month, "просмотры": "24"})
+screens["now"] = PRO[:1] + REELS
+taps.clear()
+f_hold = os.path.join(tmp, "hold")
+path = accstats._shot_facebook(f_hold, W, H, 1, vids)
+said = accstats._notes_in(f_hold)
+check(f"число за вчера — из подсказки под пальцем: {said.get('facebook_views')} за {said.get('facebook_when')}",
+      said.get("facebook_views") == "24" and said.get("facebook_when") == f"{yest:%d.%m}"
+      and not said.get("facebook_source"))
+hold_ms = [int(c.split()[-1]) for c in held]
+check(f"палец держали, а не касались: {held[:1]}", hold_ms and min(hold_ms) >= 2000)
+check("в отчёт — снимок с подсказкой", path and path.endswith("facebook.png") and os.path.getsize(path) == 20_000)
+vision.ask = lambda png, prompt, **kw: "{}"
+screens["now"] = PRO[:1] + REELS
+f_none = os.path.join(tmp, "hold_none")
+accstats._shot_facebook(f_none, W, H, 1, vids)
+said = accstats._notes_in(f_none)
+check("и под пальцем подсказки нет — честная оценка по снимкам с пометкой",
+      "оценка прироста" in said.get("facebook_source", ""))
+tip_year = FRESH + [node((1082, 836, 1205, 957), desc=f"{yest:%b} {yest.day}, {yest.year}")]
+screens["now"] = tip_year
+accstats.adb.shell = lambda cmd, **k: ""
+day, shown, _ = accstats._fb_last_day(W, H)
+check(f"подпись «{yest:%b} {yest.day}, {yest.year}» без числа — не «{yest.year} просмотров»: {shown!r}",
+      shown != str(yest.year))
+accstats.adb.screenshot, vision.ask = real_shot, real_ask
 
 # Живьём 2026-11-12, первый телефон: Страница «Tras el velo» без рилсов. Кнопки
 # «Dashboard» в профиле нет — панель стоит вкладкой нижней панели.
