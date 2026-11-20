@@ -1178,6 +1178,20 @@ def send_photo(image, caption="", chat_id=None, thread=None):
         return False
 
 
+ALBUM_RETRY_PAUSES = (20, 40)   # секунды перед 2-й и 3-й попыткой
+SHOTS_WHY = {"why": ""}          # почему send_shots вернул False: "нет снимков" | "telegram"
+
+
+def shots_failed_text(phone_hint=True):
+    """Что сказать человеку, когда альбом статистики не ушёл — правду: снимков
+    нет (тогда вопрос про телефон) или снимки есть, но их не принял Telegram."""
+    if SHOTS_WHY["why"] == "telegram":
+        return ("Снимки статистики сняты, но Telegram их не принял — связь с ним обрывается. "
+                "Нажми /stats ещё раз через пару минут.")
+    return "Снимки статистики не получились" + (" — телефон подключён и разблокирован?"
+                                                if phone_hint else "")
+
+
 def send_album(items, chat_id=None, thread=None):
     """Несколько снимков одним сообщением (до 10). items — [(байты, подпись)].
     True — Telegram принял. Подпись первого — подпись альбома."""
@@ -1205,14 +1219,23 @@ def send_album(items, chat_id=None, thread=None):
                  f'filename="shot{i}.{kind}"\r\nContent-Type: image/{kind}\r\n\r\n').encode()
         body += bytes(img) + b"\r\n"
     body += f"--{boundary}--\r\n".encode()
-    req = urllib.request.Request(
-        f"{api_base()}/bot{cfg['token']}/sendMediaGroup", data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-    try:
-        with urllib.request.urlopen(req, timeout=120) as r:
-            return bool(json.loads(r.read().decode("utf-8")).get("ok"))
-    except Exception:
-        return False
+    # Связь с Telegram мигает (живьём 21.11 в 00:51: обрывы SSL каждые
+    # несколько минут) — альбом в 5 МБ рвался с первого раза, а через две
+    # минуты уходил. Поэтому несколько попыток с паузами, а не одна.
+    for attempt, pause in enumerate((0,) + ALBUM_RETRY_PAUSES):
+        if pause:
+            time.sleep(pause)
+        req = urllib.request.Request(
+            f"{api_base()}/bot{cfg['token']}/sendMediaGroup", data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return bool(json.loads(r.read().decode("utf-8")).get("ok"))
+        except urllib.error.HTTPError:
+            return False                  # Telegram ответил отказом — повтор не поможет
+        except Exception as e:
+            print(f"[бот] альбом не ушёл (попытка {attempt + 1}): {str(e)[:80]}", flush=True)
+    return False
 
 
 def send_shots(chat_id=None, thread=None, fresh=False):
@@ -1221,6 +1244,7 @@ def send_shots(chat_id=None, thread=None, fresh=False):
     import accstats
 
     items, day = accstats.latest_shots()
+    SHOTS_WHY["why"] = "нет снимков"
     if not items or (fresh and day != dt.date.today().isoformat()):
         return False
     stamp = "" if day == dt.date.today().isoformat() else f" (снято {day[8:10]}.{day[5:7]})"
@@ -1232,6 +1256,7 @@ def send_shots(chat_id=None, thread=None, fresh=False):
         except OSError:
             pass
     sent = send_album(pics, chat_id=chat_id, thread=thread)
+    SHOTS_WHY["why"] = "" if sent else "telegram"
     numbers = accstats.numbers_text(os.path.dirname(items[0][0]))
     if sent and numbers:
         # «Нужно, чтобы бот дублировал цифрами в чате стату, которая на фото»
@@ -2400,7 +2425,9 @@ def _snap_stats(days=None, say=None):
                 accstats.collect_all(log=log, days=days)
             except Exception as e:                 # человек ждёт альбом — не молчать
                 log.append(f"сбой: {type(e).__name__}: {str(e)[:160]}")
-            if not send_shots(fresh=True):
+            if not send_shots(fresh=True) and SHOTS_WHY["why"] == "telegram":
+                send(shots_failed_text())
+            elif SHOTS_WHY["why"] == "нет снимков":
                 lines = [ln.strip() for ln in log.text().splitlines() if ln.strip()]
                 send("Снимки статистики не получились: "
                      + (lines[-1] if len(lines) > 1 else "телефон не ответил")

@@ -670,6 +670,132 @@ def _shot_tiles(net, folder, w, h, videos):
     return out
 
 
+# Где модели можно самой искать дорогу: только в аккаунтах, которые хоть раз
+# уже давали статистику. 20.11 на Redmi Instagram был переключён на ЛИЧНЫЙ
+# аккаунт (у него статистики нет — «снят профиль»), и без этого правила
+# модель пошла бы бродить по его настройкам. Имён аккаунтов в коде нет:
+# список копится сам из удачных снимков.
+
+def _stat_accounts_path():
+    return os.path.join(os.path.dirname(config.QUEUE_DIR), "analytics", "stat_accounts.json")
+
+
+def _stat_accounts():
+    try:
+        with open(_stat_accounts_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except (OSError, ValueError):
+        pass
+    # Первый запуск с этой версией — собрать из прошлых снимков.
+    import glob
+    root = os.path.join(os.path.dirname(config.QUEUE_DIR), "analytics")
+    data = {}
+    for path in glob.glob(os.path.join(root, "*", "notes.json")) + \
+            glob.glob(os.path.join(root, "*", "*", "notes.json")):
+        said = _notes_in(os.path.dirname(path))
+        for net, name in SHOT_FILES.items():
+            who = said.get(name + "_account")
+            if who and _real_stats(said, name) and who not in data.setdefault(net, []):
+                data[net].append(who)
+    return data
+
+
+def _real_stats(said, name):
+    """Число снято с НАСТОЯЩЕГО экрана статистики, а не посчитано по плиткам
+    профиля. У личного Instagram экрана статистики нет («снят профиль»), но
+    в отчёте за месяц у него было число — сумма плиток (живьём 10.2026)."""
+    note = said.get(name) or ""
+    return (bool(said.get(name + "_views")) and "снят профиль" not in note
+            and "нет «Статистики»" not in note)
+
+
+def _remember_stat_account(net, folder):
+    said = _notes_in(folder)
+    who = said.get(SHOT_FILES[net] + "_account")
+    if not (who and _real_stats(said, SHOT_FILES[net])):
+        return
+    data = _stat_accounts()
+    if who in data.get(net, []) and os.path.isfile(_stat_accounts_path()):
+        return
+    if who not in data.setdefault(net, []):
+        data[net].append(who)
+    try:
+        os.makedirs(os.path.dirname(_stat_accounts_path()), exist_ok=True)
+        with open(_stat_accounts_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def _nav_allowed(net, folder):
+    who = _notes_in(folder).get(SHOT_FILES[net] + "_account")
+    return bool(who) and who in _stat_accounts().get(net, [])
+
+
+def _route_broke(net, folder, shot):
+    """Жёсткий маршрут не дошёл до статистики: снимка нет — или он есть,
+    числа на нём нет, и модель говорит, что это вообще не экран статистики
+    (интерфейс поменялся, маршрут привёл не туда). Прочерки на настоящей
+    статистике — не поломка: TikTok просто ещё не посчитал день.
+
+    Только для аккаунтов, у которых статистика уже бывала (`_nav_allowed`)."""
+    if not _nav_allowed(net, folder):
+        return False
+    if not shot:
+        return True
+    if _notes_in(folder).get(SHOT_FILES[net] + "_views") or not _vision_set_up():
+        return False
+    import statnav
+    seen = statnav.look(shot, statnav.GOALS[net][0])
+    return bool(seen) and not seen.get("статистика")
+
+
+def _restart_for(net, cfg, allowed=()):
+    """Откуда модель начинает искать: свой профиль, у YouTube — Studio.
+    allowed — аккаунты, с которых можно начинать: открылся другой (приложение
+    переключили на личный) — False, искать не начинаем."""
+    package = _stats_package(net)
+    try:
+        device.finish_app(package, check_upload=False)
+        if net == "shorts":
+            device.open_app(STUDIO)
+            human.pause(3, 4)
+            return adb.current_app()[0] == STUDIO
+        probe = {"followers": None, "videos": [], "why": ""}
+        (_read_threads if net == "threads" else _read_profile)(net, cfg, probe)
+        return not probe["why"] and (not probe.get("account") or probe["account"] in allowed)
+    except (adb.AdbError, RuntimeError):
+        return False
+
+
+def _period_when(period):
+    """Период с экрана — в «18.11» / «12.11–18.11»; не дата — как написан."""
+    shown = _range_of(period or "")
+    return _span(*shown) if shown else (period or "")
+
+
+def _self_nav(net, cfg, folder, log=None):
+    """Жёсткий маршрут сломался — запомненный путь или модель (`statnav`).
+    Путь к снимку или None."""
+    import statnav
+    name = SHOT_FILES[net]
+    package = _stats_package(net)
+    got = statnav.find_stats(
+        net, package, snap=lambda: _snap(folder, name, package),
+        start=lambda: _restart_for(net, cfg, _stat_accounts().get(net, [])),
+        ver=_notes_in(folder).get(name + "_ver", ""), log=log)
+    if not got:
+        return None
+    _views_note(folder, name, _num(got["views"]), _period_when(got["period"]))
+    _note(folder, name, f"{got['how']}" + (f" — {got['period']}" if got["period"] else ""))
+    _note(folder, name + "_how", got["how"])
+    for key in ("_miss", "_why"):
+        _note(folder, name + key, "")
+    return got["path"]
+
+
 def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
     """Снять цифры профиля одной сети. {"followers", "videos", "why"}.
     days — период снимков статистики: 1 (вчера) или 2 дня, None — как в
@@ -693,6 +819,7 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
             # в окне «Accounts» (см. `_yt_enter`).
             if result.get("account"):
                 _note(folder, SHOT_FILES[net] + "_account", result["account"])
+            _track_version(folder, net, log)
             try:
                 w, h = adb.screen_size()
                 if tiles and net in TILE_FILES:
@@ -706,6 +833,11 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
             except (adb.AdbError, RuntimeError, OSError) as e:
                 result["shot"] = None
                 say(f"  {TITLES[net]}: снимок статистики не вышел — {str(e)[:80]}")
+            if not abort.requested() and _route_broke(net, folder, result.get("shot")):
+                got = _self_nav(net, cfg, folder, log)
+                if got:
+                    result["shot"] = got
+            _remember_stat_account(net, folder)
             note = _notes_in(folder).get(SHOT_FILES[net])
             if note:
                 say(f"  {TITLES[net]}: {note}")
@@ -928,6 +1060,18 @@ def _ig_views(nodes, h):
     return ""
 
 
+# Почему модель зрения не дала число — последняя причина по сети:
+# {"YouTube": "модель зрения не ответила: 429 ..."}. 19.11 в 22:15 разом
+# пропали TikTok, YouTube и Threads — ровно те, что читает модель, — а в
+# чате было «числа нет, снимок в альбоме: за вчера», без настоящей причины.
+VISION_MISS = {}
+
+
+def _vision_miss(who, why):
+    VISION_MISS[who] = why
+    print(f"  {who}: число со снимка не прочитал — {why}", flush=True)
+
+
 def _yt_read(png_path):
     """Что модель зрения прочла на снимке просмотров YouTube Studio:
     {"подсказка": ..., "итог": ...}. {} — зрения нет или ответ не JSON."""
@@ -937,14 +1081,17 @@ def _yt_read(png_path):
             png = f.read()
         answer = vision.ask(png, YT_ASK, max_tokens=120, temperature=0.0, shrink=YT_SHRINK)
     except Exception as e:
-        print(f"  YouTube: число со снимка не прочитал — {str(e)[:80]}", flush=True)
+        _vision_miss("YouTube", f"модель зрения не ответила: {str(e)[:80]}")
         return {}
     m = re.search(r"\{.*\}", answer or "", re.S)
     try:
         data = json.loads(m.group(0)) if m else {}
     except ValueError:
+        data = None
+    if not isinstance(data, dict):
+        _vision_miss("YouTube", "модель ответила не по форме")
         return {}
-    return data if isinstance(data, dict) else {}
+    return data
 
 
 def _yt_views(seen):
@@ -968,6 +1115,106 @@ def _views_note(folder, name, views, when):
     if views:
         _note(folder, name + "_views", views)
         _note(folder, name + "_when", when or "")
+        _note(folder, name + "_odd", _odd_views(folder, name, views, when))
+
+
+# ------------------------------------------------- сверка числа с прошлым
+#
+# Модель (или новая раскладка экрана) может прочесть не то число: итог за
+# 28 дней вместо дня, подписчиков вместо просмотров. Само по себе такое
+# число выглядит нормально — видно только на фоне прошлых дней.
+
+ODD_TIMES = 20        # во столько раз больше обычного — подозрительно
+ODD_FLOOR = 100       # меньше этого — не шум поднимать
+
+
+def _as_int(text):
+    digits = re.sub(r"[^\d]", "", str(text or ""))
+    return int(digits) if digits else None
+
+
+def _past_days(folder, name, limit=14):
+    """Прошлые просмотры сети за отдельные дни: {«18.11»: число} из других
+    папок статистики этого телефона (кроме `folder`) — только того же
+    аккаунта: 21.11 канал YouTube с 4 424 сравнился с ~30
+    другого канала и получил ложное «в 147 раз больше»."""
+    root = os.path.join(os.path.dirname(config.QUEUE_DIR), "analytics")
+    who = _notes_in(folder).get(name + "_account") or ""
+    found = {}
+    import glob
+    for path in glob.glob(os.path.join(root, "*", "notes.json")) + \
+            glob.glob(os.path.join(root, "*", "*", "notes.json")):
+        if os.path.normcase(os.path.dirname(path)) == os.path.normcase(folder):
+            continue
+        said = _notes_in(os.path.dirname(path))
+        if (said.get(name + "_account") or "") != who:
+            continue
+        when, value = said.get(name + "_when") or "", _as_int(said.get(name + "_views"))
+        if value is not None and re.fullmatch(r"\d\d\.\d\d", when):
+            found[when] = value
+    return dict(sorted(found.items(), key=lambda kv: kv[0][3:] + kv[0][:2])[-limit:])
+
+
+def _odd_views(folder, name, views, when):
+    """«в 40 раз больше обычного (обычно ~30) — проверь снимок» или ""."""
+    value = _as_int(views)
+    if value is None or not re.fullmatch(r"\d\d\.\d\d", when or ""):
+        return ""
+    past = [v for day, v in _past_days(folder, name).items() if day != when]
+    if len(past) < 3:
+        return ""
+    usual = sorted(past)[len(past) // 2]
+    if value >= ODD_FLOOR and value > ODD_TIMES * max(usual, 1):
+        return f"в {value // max(usual, 1)} раз больше обычного (обычно ~{usual}) — проверь снимок"
+    return ""
+
+
+# ------------------------------------------------- версии приложений
+#
+# Сбор ломается почти всегда после обновления приложения. Версия при каждом
+# снимке — и видно, ПОСЛЕ ЧЕГО сломалось, а не гадать.
+
+def _stats_package(net):
+    return STUDIO if net == "shorts" else NETS[net]["package"]
+
+
+def _app_version(package):
+    try:
+        out = adb.shell(f"dumpsys package {package}", check=False, timeout=20)
+    except adb.AdbError:
+        return ""
+    m = re.search(r"versionName=(\S+)", out or "")
+    return m.group(1) if m else ""
+
+
+def _versions_path():
+    return os.path.join(os.path.dirname(config.QUEUE_DIR), "analytics", "versions.json")
+
+
+def _track_version(folder, net, log=None):
+    """Записать версию приложения статистики сети; обновилось — отметить."""
+    ver = _app_version(_stats_package(net))
+    if not ver:
+        return ""
+    name = SHOT_FILES[net]
+    path = _versions_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            known = json.load(f)
+    except (OSError, ValueError):
+        known = {}
+    was = known.get(net, "")
+    _note(folder, name + "_ver", ver)
+    if was and was != ver:
+        _note(folder, name + "_upd", f"{was} → {ver}")
+        if log is not None:
+            log.append(f"  {TITLES[net]}: приложение обновилось {was} → {ver}")
+    if was != ver:
+        known[net] = ver
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(known, f, ensure_ascii=False)
+    return ver
 
 
 def numbers_text(folder, nets=None):
@@ -994,9 +1241,18 @@ def numbers_text(folder, nets=None):
                          else "")
                       + (f" · {said['facebook_source']}" if net == "facebook"
                          and said.get("facebook_source") else "")
+                      + (f" — за день не прочитал: {said['threads_daywhy']}" if net == "threads"
+                         and said.get("threads_daywhy") and "дн" in when else "")
+                      + (f" ⚠ {said[SHOT_FILES[net] + '_odd']}" if said.get(SHOT_FILES[net] + "_odd")
+                         else "")
+                      + (f" · {said[SHOT_FILES[net] + '_how']}" if said.get(SHOT_FILES[net] + "_how")
+                         else "")
                       for net, views, when in rows]
                      + [f"{TITLES[net]} — не снял: {why}" for net, why in failed]
-                     + [f"{TITLES[net]} — числа нет, снимок в альбоме: {why}" for net, why in missed])
+                     + [f"{TITLES[net]} — числа нет, снимок в альбоме: {why}" for net, why in missed]
+                     + [f"ℹ {TITLES[net]} обновился: {said[SHOT_FILES[net] + '_upd']}"
+                        for net in ("reels", "tiktok", "shorts", "facebook", "threads")
+                        if (nets is None or net in nets) and said.get(SHOT_FILES[net] + "_upd")])
 
 
 def _installed(package):
@@ -2023,14 +2279,15 @@ def _tt_read(png_path):
             png = f.read()
         answer = vision.ask(png, TT_ASK, max_tokens=120, temperature=0.0, shrink=YT_SHRINK)
     except Exception as e:
-        print(f"  TikTok: число со снимка не прочитал — {str(e)[:80]}", flush=True)
+        _vision_miss("TikTok", f"модель зрения не ответила: {str(e)[:80]}")
         return {}
     m = re.search(r"\{.*\}", answer or "", re.S)
     try:
         data = json.loads(m.group(0)) if m else {}
     except ValueError:
-        return {}
+        data = None
     if not isinstance(data, dict):
+        _vision_miss("TikTok", "модель ответила не по форме")
         return {}
     period = str(data.get("период") or "").strip()
     views = str(data.get("просмотры") or "").strip()
@@ -2553,6 +2810,7 @@ def _shot_youtube_studio(folder, w, h, days):
     path = _snap(folder, "youtube")
     if path:
         _note(folder, "youtube", note)
+        _note(folder, "youtube_period", period.removeprefix("за "))   # для `_reread`
         views, day = _yt_views(_yt_read(path))
         _views_note(folder, "youtube", views, f"{day:%d.%m}" if day else period.removeprefix("за "))
     return path
@@ -3395,6 +3653,7 @@ TH_ASK = ("Это снимок статистики Threads. Над график
           "за этот день. Ответь ТОЛЬКО JSON: {\"день\": число, \"месяц\": номер месяца 1-12, "
           "\"просмотры\": \"число как на экране\"}. Подсказки на снимке нет — {}.")
 TH_HOLD_MS = 3200
+TH_TIP_FILE = "threads_tip.png"
 
 
 def _th_chart(nodes, w, h):
@@ -3442,21 +3701,32 @@ def _hold_tip(x, y, package, path, ask, who, today=None, hold_ms=None):
         hold.join(timeout=hold_ms / 1000 + 5)
     if not os.path.isfile(path) or os.path.getsize(path) < 10_000:
         return None
+    got = _tip_read(path, ask, who, today)
+    return (*got, path) if got else None
+
+
+def _tip_read(path, ask, who, today=None):
+    """Дата и число из подсказки графика на снимке `path`: (дата, просмотры)
+    или None. Отдельно от съёмки — чтобы перечитать сохранённый снимок,
+    когда модель в первый раз не ответила (`_reread`)."""
     try:
         import vision
         with open(path, "rb") as f:
             answer = vision.ask(f.read(), ask, max_tokens=120, temperature=0.0)
     except Exception as e:
-        print(f"  {who}: подсказку графика не прочитал — {str(e)[:80]}", flush=True)
+        _vision_miss(who, f"модель зрения не ответила: {str(e)[:80]}")
         return None
     m = re.search(r"\{.*\}", answer or "", re.S)
     try:
         data = json.loads(m.group(0)) if m else {}
         day, month = int(data.get("день")), int(data.get("месяц"))
     except (ValueError, TypeError, AttributeError):
+        _vision_miss(who, "модель не нашла подсказку на графике" if m
+                     else "модель ответила не по форме")
         return None
     views = str(data.get("просмотры") or "").strip()
     if not NUMBER.match(views) or views.startswith("-"):
+        _vision_miss(who, "в подсказке графика нет числа")
         return None
     today = today or dt.date.today()
     try:
@@ -3465,7 +3735,7 @@ def _hold_tip(x, y, package, path, ask, who, today=None, hold_ms=None):
         return None
     if when > today:
         return None
-    return when, _num(views), path
+    return when, _num(views)
 
 
 def _th_day(folder, nodes, w, h, today=None):
@@ -3473,8 +3743,15 @@ def _th_day(folder, nodes, w, h, today=None):
     spot = _th_chart(nodes, w, h)
     if spot is None:
         return None
-    return _hold_tip(spot[0], spot[1], "com.instagram.barcelona", os.path.join(folder, "threads.png"),
-                     TH_ASK, "Threads", today=today)
+    # Снимок с подсказкой — отдельным файлом: не прочиталась — дальше снимется
+    # «threads.png» за 7 дней, а этот останется, чтобы перечитать (`_reread`).
+    got = _hold_tip(spot[0], spot[1], "com.instagram.barcelona", os.path.join(folder, TH_TIP_FILE),
+                    TH_ASK, "Threads", today=today)
+    if got is None:
+        return None
+    path = os.path.join(folder, "threads.png")
+    os.replace(got[2], path)
+    return got[0], got[1], path
 
 
 def _th_periods(nodes):
@@ -3546,6 +3823,7 @@ def _shot_threads(folder, w, h, days=None):
             when, views, path = got
             yesterday = dt.date.today() - dt.timedelta(days=1)
             _views_note(folder, "threads", views, f"{when:%d.%m}")
+            _note(folder, "threads_daywhy", "")
             _note(folder, "threads", f"за {when:%d.%m} — число из подсказки на графике"
                   if when >= yesterday else
                   f"за {when:%d.%m} — последний день, который Threads уже посчитал "
@@ -3681,8 +3959,8 @@ def _answer(address, days=None):
         telegram_bot.reply_to(address, role="stats")
         try:
             if not telegram_bot.send_shots(fresh=True):
-                telegram_bot.send("Снимки статистики не получились — телефон подключён "
-                                  "и разблокирован? Подробности — в журнале окна.")
+                telegram_bot.send(telegram_bot.shots_failed_text()
+                                  + " Подробности — в журнале окна.")
             else:
                 answered(days)
         finally:
@@ -3700,6 +3978,95 @@ def _phone_trouble(why):
     if why:
         return f"телефон не отвечает ({why.splitlines()[0][:120]}) — кабель на месте?"
     return "не смог разблокировать телефон — аналитику не снял"
+
+
+REREAD_PAUSES = (0, 45, 120)      # секунды перед каждой попыткой дочитать
+
+
+def _vision_set_up():
+    try:
+        import vision
+        return bool(vision.available()[0])
+    except Exception:
+        return False
+
+
+def _reread_todo(folder, nets):
+    """Сети, чьё число модель не прочла, а снимок для перечитывания есть."""
+    said = _notes_in(folder)
+    out = []
+    for net in nets:
+        if net in ("tiktok", "shorts"):
+            name = SHOT_FILES[net]
+            if not said.get(name + "_views") and os.path.isfile(os.path.join(folder, name + ".png")):
+                out.append(net)
+        elif net == "threads" and os.path.isfile(os.path.join(folder, TH_TIP_FILE)):
+            out.append(net)
+    return out
+
+
+def _reread_one(folder, net):
+    """Ещё раз спросить модель по сохранённому снимку. True — число есть."""
+    VISION_MISS.pop(TITLES[net], None)
+    if net == "tiktok":
+        seen = _tt_read(os.path.join(folder, "tiktok.png"))
+        if not seen.get("просмотры"):
+            return False
+        shown = _range_of(seen.get("период", ""))
+        _views_note(folder, "tiktok", seen["просмотры"], _span(*shown) if shown else "")
+        return True
+    if net == "shorts":
+        views, day = _yt_views(_yt_read(os.path.join(folder, "youtube.png")))
+        if not views:
+            return False
+        _views_note(folder, "youtube", views, f"{day:%d.%m}" if day
+                    else _notes_in(folder).get("youtube_period", ""))
+        return True
+    if net == "threads":
+        tip = os.path.join(folder, TH_TIP_FILE)
+        got = _tip_read(tip, TH_ASK, "Threads")
+        if not got:
+            return False
+        when, views = got
+        os.replace(tip, os.path.join(folder, "threads.png"))   # в альбом — снимок с подсказкой
+        _views_note(folder, "threads", views, f"{when:%d.%m}")
+        _note(folder, "threads", f"за {when:%d.%m} — число из подсказки на графике")
+        _note(folder, "threads_daywhy", "")
+        return True
+    return False
+
+
+def _reread(folder, nets, log=None, pauses=REREAD_PAUSES):
+    """Числа, которые модель зрения не прочла при съёмке, — ещё раз с уже
+    сохранённых снимков, с паузами: сбой облака (VPN, 429, таймаут) обычно
+    проходит за минуты. Телефон для этого не нужен.
+
+    Не вышло и так — в чат идёт настоящая причина, а не «числа нет»."""
+    left = _reread_todo(folder, nets)
+    if not left:
+        return
+    for pause in pauses:
+        if not left or abort.requested() or (pause and not _vision_set_up()):
+            break             # зрение вовсе не настроено — ждать нечего
+        time.sleep(pause)
+        for net in left:
+            if _reread_one(folder, net) and log is not None:
+                log.append(f"  {TITLES[net]}: число дочитал со снимка повторно")
+        left = _reread_todo(folder, left)
+    for net in left:
+        why = VISION_MISS.get(TITLES[net])
+        if not why:
+            continue          # модель ответила — на снимке просто нет числа (прочерки)
+        if net == "threads":
+            _note(folder, "threads_daywhy", why)
+            try:
+                os.remove(os.path.join(folder, TH_TIP_FILE))
+            except OSError:
+                pass
+        else:
+            _note(folder, SHOT_FILES[net] + "_miss", why)
+        if log is not None:
+            log.append(f"  {TITLES[net]}: числа нет — {why}")
 
 
 def _collect_all(nets=None, log=None, days=None, folder=None, fresh=True, full=True):
@@ -3751,6 +4118,8 @@ def _collect_all(nets=None, log=None, days=None, folder=None, fresh=True, full=T
             device.lock()
         except Exception:
             pass
+    if not abort.requested():
+        _reread(folder, list(out), log)
     return out
 
 
