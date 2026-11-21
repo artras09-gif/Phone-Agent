@@ -261,9 +261,21 @@ def screen_size():
     return w, h
 
 
+def window_dump(section="displays"):
+    """Раздел `dumpsys window` — без снимка «LAST ANR».
+
+    Живьём 22.11: TikTok на секунду завис в сухом прогоне, и Android записал
+    снимок окон на момент зависания — ПОЛНУЮ копию дампа со всеми разделами,
+    первой в `dumpsys window`, до перезагрузки. В ней mCurrentFocus — TikTok,
+    и `current_app` читал её вместо настоящего: Instagram и YouTube
+    открывались, а программа три попытки подряд считала «не открылся».
+    Запрос одного раздела (`displays`, `policy`) этого снимка не содержит."""
+    return shell(f"dumpsys window {section}")
+
+
 def current_app():
     """(package, activity) активного окна."""
-    out = shell("dumpsys window")
+    out = window_dump()
     for line in out.splitlines():
         if "mCurrentFocus" in line or "mFocusedApp" in line:
             for token in line.replace("}", " ").split():

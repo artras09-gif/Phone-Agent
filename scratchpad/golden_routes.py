@@ -39,8 +39,9 @@ def roots():
     out = [os.path.join(HERE, "golden")]
     local = os.environ.get("LOCALAPPDATA", "")
     if local:
-        out += glob.glob(os.path.join(local, "PhoneAgent", "analytics", "routes"))
-        out += glob.glob(os.path.join(local, "PhoneAgent", "devices", "*", "analytics", "routes"))
+        for kind in ("routes", "post_routes"):        # статистика и публикация
+            out += glob.glob(os.path.join(local, "PhoneAgent", "analytics", kind))
+            out += glob.glob(os.path.join(local, "PhoneAgent", "devices", "*", "analytics", kind))
     return [r for r in out if os.path.isdir(r)]
 
 

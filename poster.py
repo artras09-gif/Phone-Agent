@@ -181,6 +181,113 @@ def _model_clear(step, selectors, label, ctx, nodes):
     return ui.wait_any(selectors, timeout=8)
 
 
+def _goal_nav(step, selectors, label, ctx, nodes):
+    """Шаг до экрана описания не нашёл кнопку — запомненный путь или модель
+    с целью «дойти до этой кнопки» (`postnav`). (узел, дерево) — как у
+    `ui.wait_any`; узел None — не помогло."""
+    import postnav
+
+    lines = []
+    try:
+        node = postnav.reach(ctx.get("target", ""), ctx.get("package", ""), label,
+                             selectors, _target_words(step, selectors, label),
+                             app=ctx.get("title", ""), log=lines, final=ctx.get("final", ()))
+    except (adb.AdbError, OSError) as e:
+        lines.append(f"  путь: не вышло — {str(e)[:80]}")
+        node = None
+    ctx.setdefault("helper", []).extend(lines)
+    if node is None:
+        return None, nodes
+    return ui.wait_any(selectors, timeout=8)
+
+
+def _confirm(step, ctx, node, label, log_path, index):
+    """Нажали — открылось ли то, что должно (`expect`)? Нет — подождать и
+    нажать ещё раз, ОДИН раз. Возвращает хвост строки отчёта.
+
+    Раньше «нажал» значило «сделал»: 17–19.11 Instagram «выбирал» свежий ролик,
+    редактор не открывался, а маршрут шёл дальше и падал шагом позже."""
+    expect = step["expect"]
+    wait = int(step.get("expect_timeout", 8) * ctx.get("patience", 1.0))
+    hit, nodes = ui.wait_any(expect, timeout=wait)
+    if hit is not None:
+        return ""
+    human.pause(2.0, 3.0)
+    nodes = ui.dump(retries=1, tolerant=True)
+    if ui.find_any(nodes, expect) is not None:
+        return " (открылось не сразу)"
+    again = ui.find_any(nodes, step.get("any", [])) if step.get("any") else node
+    if again is None:
+        _snap(log_path, index, "STUCK")
+        raise StepFailed(f"нажал «{label}», но нужный экран не открылся, а кнопки уже нет")
+    ui.tap_node(again)
+    human.pause(1.5, 2.5)
+    hit, nodes = ui.wait_any(expect, timeout=wait)
+    if hit is None:
+        _snap(log_path, index, "STUCK")
+        with open(os.path.join(log_path, f"{index:02d}_screen.txt"), "w", encoding="utf-8") as f:
+            f.write(ui.describe(nodes, limit=80))
+        raise StepFailed(f"нажал «{label}» дважды, экран не сменился. Дерево экрана "
+                         f"сохранено в {log_path}" + _vision_note(log_path, index, label))
+    return " (со второго нажатия)"
+
+
+# Превью ролика в галерее. Instagram 17–19.11: только что залитый ролик стоял
+# тёмным квадратом без картинки (телефон ещё не сделал миниатюру), касание по
+# нему ничего не открывало. Ждём, пока у клетки появится картинка.
+THUMB_MIN_SPREAD = 10      # разброс яркости внутри клетки: меньше — пустая заливка
+THUMB_WAIT = 20
+
+
+def _thumb_spread(node):
+    """Насколько пёстрая клетка галереи на снимке: стандартное отклонение
+    яркости по выборке пикселей. None — снимок не снялся."""
+    import accstats
+
+    shot = accstats._raw_screen()
+    if shot is None:
+        return None
+    w, h, px = shot
+    x1, y1, x2, y2 = node.bounds
+    # Без краёв (там подпись длины и рамка) — середина клетки.
+    dx, dy = (x2 - x1) // 5, (y2 - y1) // 5
+    vals = []
+    for y in range(max(0, y1 + dy), min(h, y2 - dy), 6):
+        for x in range(max(0, x1 + dx), min(w, x2 - dx), 6):
+            i = (y * w + x) * 4
+            vals.append((px[i] * 299 + px[i + 1] * 587 + px[i + 2] * 114) // 1000)
+    if len(vals) < 20:
+        return None
+    mean = sum(vals) / len(vals)
+    return (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5
+
+
+def _wait_thumb(node, ctx, items):
+    """Дождаться картинки у клетки нашего ролика. Возвращает (узел, пометка).
+    Узел может смениться: галерея перерисовывается."""
+    end = time.time() + THUMB_WAIT * ctx.get("patience", 1.0)
+    rescanned, checks = False, 0
+    started = time.time()
+    while True:
+        spread = _thumb_spread(node)
+        checks += 1
+        if spread is None or spread >= THUMB_MIN_SPREAD:
+            waited = time.time() - started
+            return node, (f", превью ждал {waited:.0f} с" if checks > 1 else "")
+        if time.time() >= end or abort.requested():
+            return node, ", превью так и не появилось — жму как есть"
+        if not rescanned and time.time() - started > 6 and ctx.get("remote"):
+            device.refresh_media(ctx["remote"])
+            rescanned = True
+        time.sleep(1.5)
+        nodes = ui.dump(retries=1, tolerant=True)
+        for sel in items:
+            fresh = [n for n in ui.find(nodes, **sel) if n.area > 0]
+            if fresh:
+                node = fresh[0]
+                break
+
+
 def _wake_full():
     """Разбудить и разблокировать по-настоящему, с проверкой снимком.
 
@@ -276,7 +383,10 @@ def run_step(step, ctx, log_path, index):
 
     op = step["op"]
     selectors = step.get("any", [])
-    timeout = step.get("timeout", 20)
+    # Повтор с главной — терпеливее: на 2-й попытке ждём в полтора раза
+    # дольше, на 3-й — вдвое. Иначе три попытки были тремя одинаковыми
+    # падениями секунда в секунду (Instagram 17–19.11: семь из семи).
+    timeout = int(step.get("timeout", 20) * ctx.get("patience", 1.0))
     label = step.get("desc", op)
 
     if op == "sleep":
@@ -480,7 +590,14 @@ def run_step(step, ctx, log_path, index):
             if ui.dismiss_popup(nodes):
                 node, nodes = ui.wait_any(selectors, timeout=max(6, timeout // 2))
 
-        if node is None and op in ("tap", "wait", "publish") and nodes and config.POST_HELPER:
+        if (node is None and op in ("tap", "wait") and index < ctx.get("nav_until", 0)
+                and config.POST_NAV):
+            # До экрана описания — модель ведёт к ЦЕЛИ шага и запоминает путь
+            # (`postnav`). Просто «расчистить экран» здесь мало: 21.11 YouTube
+            # показал после «+» другой экран, и модель без цели нажала
+            # «Открыть редактор» → «Другие инструменты» → «Закрыть».
+            node, nodes = _goal_nav(step, selectors, label, ctx, nodes)
+        elif node is None and op in ("tap", "wait", "publish") and nodes and config.POST_HELPER:
             node, nodes = _model_clear(step, selectors, label, ctx, nodes)
 
         if node is None and step.get("xy") and op in ("tap", "optional_tap") and (
@@ -553,6 +670,8 @@ def run_step(step, ctx, log_path, index):
         human.pause(0.8, 1.8)
         if op == "publish" and step.get("verify_gone"):
             return _publish_went(step, selectors, node, label, log_path, index)
+        if op != "publish" and step.get("expect"):
+            return f"тап «{label}» -> {node}" + _confirm(step, ctx, node, label, log_path, index)
         return f"тап «{label}» -> {node}"
 
     if op == "type":
@@ -1056,7 +1175,7 @@ def _pick_video(step, ctx, log_path, index):
     want = ctx.get("video_seconds")
     label = step.get("desc", "наш ролик в галерее")
     seen, nodes = "галерея не открылась", []
-    end = time.time() + step.get("timeout", 20)
+    end = time.time() + step.get("timeout", 20) * ctx.get("patience", 1.0)
     while time.time() < end:
         nodes = ui.dump(retries=1, tolerant=True)
         targets = []
@@ -1101,9 +1220,15 @@ def _pick_video(step, ctx, log_path, index):
             human.pause(1.2, 2.0)
             return "выбран первый ролик (длину нашего прочесть не удалось — не сверял)"
         if want is not None and secs is not None and abs(secs - want) <= 1.6:
+            note = ""
+            if step.get("thumb_ready"):
+                first, note = _wait_thumb(first, ctx, items)
             ui.tap_node(first)
             human.pause(1.2, 2.0)
-            return f"выбран первый ролик: {lab.text or lab.desc}, наш — {want:.1f} с"
+            line = f"выбран первый ролик: {lab.text or lab.desc}, наш — {want:.1f} с{note}"
+            if step.get("expect"):
+                line += _confirm(step, ctx, first, label, log_path, index)
+            return line
         seen = (f"первым стоит «{(first.desc or first.text)[:50]}»" if step.get("by_name")
                 else f"первым стоит ролик длиной {lab.text if lab is not None else '?'}")
         time.sleep(1.0)       # медиатека могла ещё не обновиться
@@ -1762,14 +1887,22 @@ def post(video_path, caption, target, recipes=None, extra=None):
         tx_open = device.tx_bytes()            # счёт загрузки — с открытия приложения
 
         ctx = {"caption": caption, "video": video_path, "package": package,
-               "title": recipe.get("title", target),
+               "title": recipe.get("title", target), "target": target, "remote": remote,
                "video_name": os.path.basename(remote),
                "video_seconds": mp4_seconds(video_path), **(extra or {})}
         steps = recipe["steps"]
+        # До какого шага модель может вести к цели (`_goal_nav`): только до
+        # ввода описания — дальше экран поста, там лишь «расчистить».
+        ctx["nav_until"] = next((i for i, s in enumerate(steps, start=1)
+                                 if s.get("op") in ("type", "publish", "yt_details")), 0)
+        # Финальные кнопки маршрута — модель их не видит ни на каком экране.
+        ctx["final"] = [sel for s in steps if s.get("op") in ("publish", "publish_more")
+                        for sel in s.get("any", [])]
         from_home = bool(steps) and steps[0].get("op") == "home"
         attempts = max(1, int(recipe.get("attempts", config.POST_ATTEMPTS)))
         for attempt in range(1, attempts + 1):
             ctx.pop("at_home", None)
+            ctx["patience"] = 1.0 + 0.5 * (attempt - 1)
             try:
                 # Экран мог погаснуть за прошлую сеть или прошлую попытку.
                 if not _wake_full():

@@ -86,6 +86,8 @@ TESTS = [
     ("scratchpad/stats_hidden.py", "невидимые копии кнопок TikTok, обрезанная «Custom», календарь Instagram ниже края"),
     ("scratchpad/stats_blind.py", "«Аналитика» TikTok без подписей — по снимку; Instagram без дерева; окно доступа TikTok"),
     ("scratchpad/stats_facebook.py", "статистика Facebook: плитки «plays», «Post details», прибавка по снимкам"),
+    ("scratchpad/adb_focus.py", "текущее приложение — не из снимка последнего зависания (LAST ANR)"),
+    ("scratchpad/post_selfheal.py", "публикация: превью свежего ролика, повторное нажатие, терпеливые повторы, модель ведёт к кнопке и запоминает путь"),
     ("scratchpad/album_retry.py", "альбом статистики: повтор при обрыве связи, правда про Telegram, ⚠ по своему аккаунту"),
     ("scratchpad/stats_selfnav.py", "статистика: путь ищет модель и запоминает, личный аккаунт закрыт, версии, скачки чисел"),
     ("scratchpad/golden_routes.py", "эталоны путей к статистике узнаются"),

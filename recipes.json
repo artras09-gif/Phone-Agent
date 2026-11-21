@@ -547,7 +547,20 @@
           {
             "rid": "gallery_grid_item_label"
           }
-        ]
+        ],
+        "thumb_ready": true,
+        "expect": [
+          {
+            "rid": "clips_right_action_button"
+          },
+          {
+            "text": "Далее"
+          },
+          {
+            "text": "Next"
+          }
+        ],
+        "expect_timeout": 8
       },
       {
         "op": "tap",
@@ -695,7 +708,7 @@
         "leave_timeout": 45
       }
     ],
-    "rev": 9
+    "rev": 10
   },
   "shorts": {
     "package": "com.google.android.youtube",

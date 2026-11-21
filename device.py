@@ -28,7 +28,10 @@ def screen_state():
             return "off"
         return "unlocked" if "UNLOCKED" in state else "locked"
 
-    out = adb.shell("dumpsys window", check=False)
+    try:
+        out = adb.window_dump("displays")     # без снимка последнего зависания
+    except adb.AdbError:
+        out = ""
     m = re.search(r"mDreamingLockscreen=(true|false)", out)
     if m:
         awake = "mAwake=true" in out or "mWakefulness=Awake" in adb.shell("dumpsys power", check=False)
