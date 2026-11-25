@@ -669,6 +669,24 @@ pre.report{
         </p>
       </div>
 
+      <div class="card" id="ig-card">
+        <div class="row between" style="margin-bottom:6px">
+          <h2 style="margin:0">Монтаж: вход в Instagram</h2>
+          <span class="pill"><i class="dot" id="d-ig"></i><em id="t-ig">…</em></span>
+        </div>
+        <p class="hint">Instagram часто не отдаёт ролик по ссылке без входа в аккаунт.
+          Нажми «Войти» — на этом компьютере откроется отдельное окно браузера со
+          страницей входа. Войди в <b>запасной</b> аккаунт (не рабочий: его могут
+          заблокировать), дальше программа заберёт вход сама и закроет окно.
+          Вход хранится только на этом компьютере, монтаж всех телефонов берёт его отсюда.</p>
+        <div class="row">
+          <button class="btn accent" id="b-ig-login">Войти в Instagram</button>
+          <button class="btn" id="b-ig-logout">Выйти</button>
+          <a href="#" class="hint" id="b-ig-file" style="align-self:center">есть готовый cookies.txt? загрузить файлом</a>
+          <input type="file" id="ig-file" accept=".txt,text/plain" style="display:none">
+        </div>
+        <p class="hint" style="margin:8px 0 0" id="ig-last"></p>
+      </div>
       <div class="card" id="bs-card" style="display:none">
         <h2>Что бот делает и где</h2>
         <p class="hint" style="margin:0 0 10px">Для каждого дела — чат и тема группы.
@@ -883,6 +901,7 @@ function render(s){
   renderFleet(s);
   renderApps(s.apps);
   renderBot(s);
+  renderIg(s);
   renderSetup(s);
 }
 
@@ -986,6 +1005,17 @@ function renderSetup(s){
       dev.append(row);
     }
   }
+}
+
+function renderIg(s){
+  const g = s.iglogin;
+  if(!g) return;
+  $("t-ig").textContent = g.text;
+  $("d-ig").className = "dot " + (g.busy ? "warn" : g.has ? "ok" : "bad");
+  $("b-ig-login").textContent = g.busy ? "Окно входа открыто…" : g.has ? "Войти заново" : "Войти в Instagram";
+  $("b-ig-login").disabled = g.busy;
+  $("b-ig-logout").disabled = g.busy || !g.has;
+  $("ig-last").textContent = g.last || "";
 }
 
 function renderBot(s){
@@ -1767,6 +1797,20 @@ $("s-key").addEventListener("keydown", e => {
 $("s-provider").onchange = () => send("settings", {
   vision_provider: $("s-provider").value,
 });
+
+$("b-ig-login").onclick = () => send("ig-login", {});
+$("b-ig-logout").onclick = () => {
+  if(confirm("Стереть вход Instagram с этого компьютера? Монтаж по ссылкам из Instagram " +
+             "снова попросит вход.")) send("ig-logout", {});
+};
+$("b-ig-file").onclick = e => { e.preventDefault(); $("ig-file").click(); };
+$("ig-file").onchange = async () => {
+  const file = $("ig-file").files[0];
+  if(!file) return;
+  if(file.size > 1024 * 1024){ toast("это не cookies.txt — слишком большой файл", "bad"); return; }
+  await send("ig-cookies", {text: await file.text()});
+  $("ig-file").value = "";
+};
 
 $("b-bot-api").onclick = () => {
   const id = $("bot-api-id").value.trim(), hash = $("bot-api-hash").value.trim();

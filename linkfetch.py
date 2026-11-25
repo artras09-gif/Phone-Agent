@@ -276,6 +276,21 @@ def has_cookies():
     return os.path.exists(COOKIES) and os.path.getsize(COOKIES) > 0
 
 
+def cookie_until():
+    """До какого дня действует сохранённый вход Instagram: время (секунды)
+    или 0 — входа нет / срок не записан. Само содержимое не читается наружу."""
+    try:
+        with open(COOKIES, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                cols = line.rstrip("\n").split("\t")
+                if (len(cols) == 7 and "instagram.com" in cols[0] and cols[5] == "sessionid"
+                        and cols[4].isdigit()):
+                    return int(cols[4])
+    except OSError:
+        pass
+    return 0
+
+
 def save_cookies(raw):
     """Принять файл cookies.txt (формат Netscape). Возвращает текст для
     человека или бросает ValueError с понятной причиной. Содержимое никуда

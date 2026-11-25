@@ -34,6 +34,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -1453,6 +1454,90 @@ def _cmd_telegram(body):
     return {"ok": ok, "message" if ok else "error": info}
 
 
+# ------------------------------------------- вход в Instagram для монтажа
+#
+# Просьба 2026-11-25: «я сделаю запасной акк, но его должно быть легко
+# привязать в интерфейсе». Раньше вход давали только командой /login в теме
+# «Монтаж» или файлом cookies.txt в Telegram. Теперь — кнопкой в окне: то же
+# окно входа (`iglogin.login`), вход ложится туда же (`montage/cookies.txt`
+# на этом ПК), и его видит монтаж любого телефона. Команды — самого окна
+# (`HUB_COMMANDS`): вход принадлежит компьютеру, а не телефону.
+
+IGLOGIN = {"busy": False, "text": "", "ok": None}
+
+
+def _ig_state():
+    import linkfetch
+
+    until = linkfetch.cookie_until() if linkfetch.has_cookies() else 0
+    if IGLOGIN["busy"]:
+        text = "окно входа открыто на этом компьютере — войди в нём в ЗАПАСНОЙ аккаунт"
+    elif linkfetch.has_cookies():
+        text = ("вход есть" + (f", действует до {time.strftime('%d.%m.%Y', time.localtime(until))}"
+                               if until else ""))
+        if until and until < time.time():
+            text = "вход устарел — войди заново"
+    else:
+        text = "входа нет — Instagram может не отдать ролик по ссылке"
+    return {"busy": IGLOGIN["busy"], "has": linkfetch.has_cookies() and not (until and until < time.time()),
+            "text": text, "last": IGLOGIN["text"], "last_ok": IGLOGIN["ok"]}
+
+
+@command("ig-login")
+def _ig_login(body):
+    import iglogin
+
+    if IGLOGIN["busy"]:
+        return {"ok": True, "message": "окно входа уже открыто — войди в нём"}
+    if not iglogin.browser():
+        return {"ok": False, "error": "на компьютере нет ни Edge, ни Chrome — окно входа открыть "
+                                      "нечем. Можно загрузить готовый cookies.txt"}
+    IGLOGIN.update(busy=True, text="", ok=None)
+
+    def run():
+        try:
+            IGLOGIN.update(text=iglogin.login(), ok=True)
+        except Exception as e:                 # LoginError, ValueError и прочее — словами
+            IGLOGIN.update(text=f"вход не забрал: {e}", ok=False)
+        finally:
+            IGLOGIN["busy"] = False
+
+    threading.Thread(target=run, daemon=True, name="ig-login-ui").start()
+    return {"ok": True, "message": "открыл окно входа Instagram — войди в запасной аккаунт"}
+
+
+@command("ig-cookies")
+def _ig_cookies(body):
+    import linkfetch
+
+    raw = str(body.get("text") or "")
+    if not raw.strip():
+        return {"ok": False, "error": "файл пустой"}
+    try:
+        said = linkfetch.save_cookies(raw)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    IGLOGIN.update(text=said, ok=True)
+    return {"ok": True, "message": said}
+
+
+@command("ig-logout")
+def _ig_logout(body):
+    import iglogin
+    import linkfetch
+
+    if IGLOGIN["busy"]:
+        return {"ok": False, "error": "окно входа ещё открыто — закрой его или дождись входа"}
+    for path in (linkfetch.COOKIES, linkfetch.COOKIES + ".tmp"):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    shutil.rmtree(iglogin.PROFILE, ignore_errors=True)
+    IGLOGIN.update(text="вход стёрт с этого компьютера", ok=True)
+    return {"ok": True, "message": "вход Instagram стёрт с этого компьютера"}
+
+
 @command("bot-setup")
 def _cmd_bot_setup(body):
     """Что бот делает и где, как часто шлёт статистику — сохранить из окна.
@@ -1697,7 +1782,8 @@ HUB = {"selected": "", "devices": [], "names": {}, "brief": {}, "vision": None,
        "vision_at": 0.0}
 HUB_EVERY = 2.0
 # Команды самого пульта. Остальные — про телефон, их делает его служба.
-HUB_COMMANDS = {"device", "device-rename", "fleet-start", "fleet-stop", "fleet-stop-all", "settings"}
+HUB_COMMANDS = {"device", "device-rename", "fleet-start", "fleet-stop", "fleet-stop-all", "settings",
+                "ig-login", "ig-cookies", "ig-logout"}
 
 
 def _hub_live():
@@ -1818,6 +1904,7 @@ def _hub_state(since):
     data["devices"] = [{"serial": d["serial"], "state": d["state"], "name": d["name"],
                         "link": d["link"]} for d in HUB["devices"]]
     data["hub"] = True
+    data["iglogin"] = _ig_state()
     return data
 
 

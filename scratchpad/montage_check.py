@@ -81,11 +81,52 @@ say(all(font.width(line, size) <= tpl["title"]["max_width"] for line in lines),
     "ни одна строка не шире 864 px")
 
 print("2. Ролик в кадре")
-say(montage.fit_video(1280, 720, tpl) == (1080, 606, 0, 682), "16:9 — во всю ширину, по центру 986")
+say(montage.fit_video(1280, 720, tpl) == (1080, 608, 0, 682), "16:9 — во всю ширину, по центру 986")
 vw, vh, vx, vy = montage.fit_video(720, 1280, tpl)
-say(vh == 860 and vw % 2 == 0 and vx == (1080 - vw) // 2, f"вертикальный — не выше 860: {vw}x{vh}")
+say((vw, vh, vx, vy) == (1080, 1920, 0, 0),
+    f"вертикальный — тоже во всю ширину, «от экрана до экрана»: {vw}x{vh} в {vx},{vy}")
+say(montage.title_top(vh, vy, tpl) == 986 - 430, "высокий ролик: заголовок на постоянном месте")
+say(montage.title_top(608, 682, tpl) == 682, "невысокий: заголовок над роликом")
 base = montage.title_baselines(2, 40, 682, tpl)
 say(base[1] == 582 and base[0] == 582 - round(40 * 1.22), f"заголовок в 100 px над роликом: {base}")
+
+print("2а. Настоящий кадр в чужом вертикальном ролике")
+# Серые кадры 128x228, как их даёт ffmpeg: чёрное поле (0), сверху чужой
+# текст — неподвижные буквы, в середине съёмка — меняется от кадра к кадру.
+import random  # noqa: E402
+SW, SH = 128, 228
+
+
+def frames_like(text_rows, shot_rows, shot_cols=(0, SW), dark=False, count=5):
+    out = []
+    for k in range(count):
+        rnd = random.Random(k)
+        fr = bytearray(SW * SH)
+        for y in text_rows:
+            for x in range(20, 108):
+                fr[y * SW + x] = 255 if (x * 7 + y) % 3 else 0        # буквы — на месте
+        for y in range(*shot_rows):
+            for x in range(*shot_cols):
+                top = 70 if dark else 250
+                fr[y * SW + x] = rnd.randrange(0, top)                 # съёмка — живая
+        out.append(bytes(fr))
+    return out
+
+
+box = montage.content_box(frames_like(range(60, 72), (78, 150)), SW, SH)
+say(box is not None and box[1] == 78 and box[3] == 149 and box[0] == 0 and box[2] == SW - 1,
+    f"поля и чужой текст сверху — съёмка найдена, текст не захвачен: {box}")
+box = montage.content_box(frames_like(range(66, 76), (76, 150), dark=True), SW, SH)
+say(box is not None and box[1] >= 76 and box[3] == 149,
+    f"тёмная съёмка и текст вплотную над ней — текст не захвачен: {box}")
+box = montage.content_box(frames_like(range(40, 50), (55, 170), shot_cols=(21, 107)), SW, SH)
+say(box is not None and (box[0], box[2]) == (21, 106), f"поля по бокам — обрезаны: {box}")
+box = montage.content_box(frames_like(range(40, 50), (55, 170), shot_cols=(0, 70)), SW, SH)
+say(box is not None and (box[0], box[2]) == (0, SW - 1),
+    f"чёрное только с одного боку (ночь) — ширину не режем: {box}")
+say(montage.content_box(frames_like([], (0, SH)), SW, SH) is None, "съёмка на весь кадр — резать нечего")
+say(montage.content_box(frames_like(range(60, 72), (0, 0)), SW, SH) is None,
+    "одни неподвижные буквы — съёмки не нашёл, не режу")
 
 print("3. Чистка текстов")
 say(montage._clean_title("«Putin» llega a Pekín 🇨🇳. #news", font) == "PUTIN LLEGA A PEKÍN",
@@ -489,6 +530,11 @@ if not ff:
 else:
     fp = os.path.join(os.path.dirname(ff), "ffprobe.exe")
     fp = fp if os.path.exists(fp) else shutil.which("ffprobe")
+if ff and not fp:
+    # ffmpeg без ffprobe (на одном из ПК так и есть) — программа в этом случае
+    # скачает полный ffmpeg сама, а здесь проверять нечем.
+    print("  — ffprobe на ПК нет, пропускаю")
+elif ff:
     src = os.path.join(tmp, "src.mp4")
     subprocess.run([ff, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=25:d=2",
                     "-f", "lavfi", "-i", "sine=f=440:d=2", "-c:v", "libx264", "-pix_fmt", "yuv420p",

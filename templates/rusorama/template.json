@@ -6,7 +6,9 @@
   "background": "#000000",
   "video": {
     "center_y": 986,
-    "max_height": 860
+    "max_height": 860,
+    "fill_width": true,
+    "crop_bars": true
   },
   "title": {
     "font": "Rubik-Bold.ttf",

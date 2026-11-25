@@ -240,16 +240,158 @@ def layout_title(title, tpl):
 
 
 def fit_video(src_w, src_h, tpl):
-    """Размер и место ролика в кадре: во всю ширину, но не выше `max_height`.
-    Чётные числа — их требует yuv420p."""
+    """Размер и место ролика в кадре: (w, h, x, y). Чётные числа — их требует
+    yuv420p.
+
+    Во всю ширину кадра («видео во всю ширину от экрана до экрана», просьба
+    2026-11-25): прежде ролик вписывался целиком в `max_height`, и вертикальный
+    исходник с чёрными полями выходил узкой полоской посередине. Невысокий
+    ролик стоит по центру `center_y`, высокий — по центру кадра, а заголовок и
+    подпись канала ложатся на него поверх плашки (`render`).
+    `fill_width: false` в шаблоне — по-старому, целиком в `max_height`."""
     width, height = tpl["size"]
     box = tpl["video"]
-    scale = min(width / src_w, box["max_height"] / src_h)
-    w = max(2, int(src_w * scale) // 2 * 2)
-    h = max(2, int(src_h * scale) // 2 * 2)
+    if box.get("fill_width", True):
+        scale = width / src_w
+    else:
+        scale = min(width / src_w, box["max_height"] / src_h)
+    w = max(2, int(round(src_w * scale)) // 2 * 2)
+    h = max(2, int(round(src_h * scale)) // 2 * 2)
     x = (width - w) // 2
-    y = int(round(box["center_y"] - h / 2)) // 2 * 2
+    if h <= box["max_height"]:
+        y = int(round(box["center_y"] - h / 2)) // 2 * 2
+    else:
+        y = int(round((height - h) / 2)) // 2 * 2
     return w, h, x, y
+
+
+def title_top(vh, vy, tpl):
+    """Верх ролика, от которого отсчитывается заголовок. Высокий ролик
+    (выше `max_height`) заходит под заголовок — тогда заголовок стоит там же,
+    где стоял бы над роликом наибольшей высоты: место у него постоянное."""
+    box = tpl["video"]
+    if vh <= box["max_height"]:
+        return vy
+    return int(round(box["center_y"] - box["max_height"] / 2))
+
+
+# ------------------------------------------------ настоящий кадр в исходнике
+#
+# Исходники канала — чаще всего чужие вертикальные ролики: чёрный кадр 9:16,
+# сверху их собственный текст («When Putin's FSO Met Indian Security…»), в
+# середине сама съёмка (живьём 25.11). Если вписывать такой ролик целиком,
+# съёмка выходит узкой полоской, а чужой текст остаётся. Поэтому сначала
+# находим полосу съёмки и обрезаем по ней: поля и текст на них уходят.
+#
+# Как отличить съёмку от текста на чёрном: строка съёмки занята картинкой
+# почти во всю ширину и меняется от кадра к кадру; строка текста — редкие
+# буквы на чёрном и стоит на месте. Без сторонних библиотек: несколько
+# маленьких серых кадров сырыми байтами из ffmpeg.
+
+PROBE_W = 128              # ширина серых кадров для разбора
+DARK = 28                  # ярче этого — уже не чёрное поле
+ROW_SURE = 0.9             # так плотно занята картинкой — съёмка, даже если стоит
+MOVE = 0.5                 # средняя разница яркости между кадрами: строка «живая»
+BAR_MAX = 20               # самая яркая точка чёрного поля (сжатие даёт шум)
+
+
+def _gray_frames(path, ffmpeg, meta, count=7):
+    """Несколько серых кадров PROBE_W x sh из разных мест ролика: (sh, [bytes])."""
+    sh = max(8, int(round(PROBE_W * meta["h"] / meta["w"])) // 2 * 2)
+    duration = meta.get("duration") or 0
+    frames = []
+    for i in range(count):
+        at = duration * (i + 0.5) / count if duration > 1 else 0
+        res = _run([ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{at:.2f}", "-i", path,
+                    "-frames:v", "1", "-vf",
+                    f"scale={meta['w']}:{meta['h']},setsar=1,scale={PROBE_W}:{sh},format=gray",
+                    "-f", "rawvideo", "-"], 120)
+        if len(res.stdout) == PROBE_W * sh:
+            frames.append(res.stdout)
+    return sh, frames
+
+
+def _longest_run(flags, gap=2):
+    """Самый длинный отрезок True, разрывы до `gap` подряд — не разрыв: (начало, конец)."""
+    best, start, misses = (0, -1), None, 0
+    for i, on in enumerate(list(flags) + [False] * (gap + 1)):
+        if on:
+            start = i if start is None else start
+            misses = 0
+        elif start is not None:
+            misses += 1
+            if misses > gap:
+                end = i - misses
+                if end - start > best[1] - best[0]:
+                    best = (start, end)
+                start, misses = None, 0
+    return best
+
+
+def content_box(frames, sw, sh):
+    """Полоса съёмки по серым кадрам: (x1, y1, x2, y2) в клетках PROBE_W x sh
+    (концы включительно) или None — не нашлась или это весь кадр."""
+    if not frames:
+        return None
+    n = len(frames)
+    rows, moves = [0.0] * sh, [0.0] * sh
+    for k, fr in enumerate(frames):
+        for y in range(sh):
+            line = fr[y * sw:(y + 1) * sw]
+            lit = 0
+            for x in range(sw):
+                if line[x] > DARK:
+                    lit += 1
+            rows[y] += lit / sw
+            if k:
+                prev = frames[k - 1][y * sw:(y + 1) * sw]
+                moves[y] += sum(abs(a - b) for a, b in zip(line, prev)) / sw
+    rows = [r / n for r in rows]
+    moves = [m / max(1, n - 1) for m in moves]
+    # Главный признак — движение: строки чужого текста на поле неподвижны
+    # (разница между кадрами ровно 0), строки съёмки меняются. По одной
+    # «занятости» не различить: на пробе с ночной съёмкой (тёмные костюмы на
+    # чёрном, как на примере 25.11) буквы занимали строку на 50–70 %, а сама
+    # съёмка — на треть. Плотно занятая строка (ярко, во всю ширину) —
+    # съёмка, даже если стоит на месте.
+    flags = [r >= ROW_SURE or (n > 1 and m >= MOVE) for r, m in zip(rows, moves)]
+    y1, y2 = _longest_run(flags, gap=4)
+    if y2 < y1 or (y2 - y1 + 1) < sh * 0.15:
+        return None
+    # Поля слева и справа — чистый чёрный по всей высоте полосы во всех
+    # кадрах. Тёмная съёмка тоже бывает «пустой» по занятости, но хоть
+    # где-то в столбце светлее поля — поэтому меряем самую яркую точку.
+    peak = [max(fr[y * sw + x] for fr in frames for y in range(y1, y2 + 1)) for x in range(sw)]
+    x1, x2 = _longest_run([p > BAR_MAX for p in peak], gap=2)
+    # Поля по бокам у настоящих исходников симметричны (ролик по центру).
+    # Чёрное только с одной стороны — это тёмный угол самой съёмки (ночь),
+    # резать нельзя: ширину оставляем всю.
+    if x2 < x1 or abs(x1 - (sw - 1 - x2)) > sw * 0.06:
+        x1, x2 = 0, sw - 1
+    if (y2 - y1 + 1) >= sh * 0.97 and (x2 - x1 + 1) >= sw * 0.97:
+        return None
+    return x1, y1, x2, y2
+
+
+def detect_content(path, ffmpeg, meta):
+    """Где в исходнике сама съёмка: (w, h, x, y) в пикселях показа для
+    фильтра crop — или None (обрезать нечего / не понять). По краю — на
+    одну клетку внутрь: на границе поля и съёмки бывает серая полоса."""
+    sh, frames = _gray_frames(path, ffmpeg, meta)
+    box = content_box(frames, PROBE_W, sh)
+    if box is None:
+        return None
+    x1, y1, x2, y2 = box
+    fx, fy = meta["w"] / PROBE_W, meta["h"] / sh
+    inset_x = 1 if x1 > 0 or x2 < PROBE_W - 1 else 0
+    left = int((x1 + inset_x) * fx)
+    right = int((x2 + 1 - inset_x) * fx)
+    top = int((y1 + 1) * fy)
+    bottom = int(y2 * fy)
+    w, h = (right - left) // 2 * 2, (bottom - top) // 2 * 2
+    if w < 16 or h < 16:
+        return None
+    return w, h, left // 2 * 2, top // 2 * 2
 
 
 def title_baselines(count, size, video_top, tpl):
@@ -326,7 +468,9 @@ def render(src, title, tpl, out, tools, meta=None, cap_mb=None):
     meta = meta or probe(src, ffprobe)
     width, height = tpl["size"]
     fps = int(tpl.get("fps", 30))
-    vw, vh, vx, vy = fit_video(meta["w"], meta["h"], tpl)
+    crop = detect_content(src, ffmpeg, meta) if tpl["video"].get("crop_bars", True) else None
+    cw, ch = (crop[0], crop[1]) if crop else (meta["w"], meta["h"])
+    vw, vh, vx, vy = fit_video(cw, ch, tpl)
     size, lines = layout_title(title, tpl)
     work = out + ".parts"
     shutil.rmtree(work, ignore_errors=True)
@@ -350,15 +494,43 @@ def render(src, title, tpl, out, tools, meta=None, cap_mb=None):
                      f"fontsize={fsize}:fontcolor={_color(color)}:x={x}:y={y}:y_align=baseline")
 
     accent = t.get("accent") == "first_line" and len(lines) > 1
-    for i, (line, base) in enumerate(zip(lines, title_baselines(len(lines), size, vy, tpl))):
+    bases = title_baselines(len(lines), size, title_top(vh, vy, tpl), tpl)
+    for i, (line, base) in enumerate(zip(lines, bases)):
         color = t["accent_color"] if accent and i == 0 else t["color"]
         draw(line, t["font"], size, color, "(w-text_w)/2", base)
     for line, base in zip(badge.get("lines", []), badge.get("baselines", [])):
         draw(line, badge["font"], badge["size"], badge["color"], badge["x"], base)
 
+    # Плашки: ролик во всю ширину бывает выше места между заголовком и
+    # подписью канала. Тогда верх кадра до низа заголовка и низ от подписи
+    # канала закрываются цветом фона: текст читается, а чужой текст вверху и
+    # внизу исходника (его заголовок, ник, субтитры) уходит под плашку. Узкая
+    # полоса только под строками выглядела бы зеброй и чужой текст выше
+    # заголовка оставляла бы на виду (проверено на пробном ролике 25.11).
+    plates = []
+    pad = round(size * 0.6)
+    regions = [(0, bases[-1] + round(size * 0.3) + pad)] if bases else []
+    if badge:
+        tops = [base - badge["size"] for base in badge.get("baselines", [])]
+        bottoms = [base + round(badge["size"] * 0.3) for base in badge.get("baselines", [])]
+        if badge.get("image"):
+            half = badge["image_size"] // 2
+            tops.append(badge["image_center_y"] - half)
+            bottoms.append(badge["image_center_y"] + half)
+        if tops:
+            bpad = round(badge["size"] * 0.8)
+            regions.append((min(tops) - bpad, height))
+    for top, bottom in regions:
+        top, bottom = max(0, top), min(height, bottom)
+        if bottom > top and top < vy + vh and bottom > vy:      # ролик под текстом
+            plates.append(f"drawbox=x=0:y={top}:w={width}:h={bottom - top}:"
+                          f"color={_color(tpl.get('background', '#000000'))}:t=fill")
+
+    src_chain = (f"scale={meta['w']}:{meta['h']}:flags=lanczos,setsar=1,"
+                 f"crop={crop[0]}:{crop[1]}:{crop[2]}:{crop[3]}," if crop else "")
     graph = [f"color=c={_color(tpl.get('background', '#000000'))}:s={width}x{height}:r={fps}[bg]",
-             f"[0:v]scale={vw}:{vh}:flags=lanczos,setsar=1,fps={fps}[v]",
-             f"[bg][v]overlay={vx}:{vy}:shortest=1[s0]"]
+             f"[0:v]{src_chain}scale={vw}:{vh}:flags=lanczos,setsar=1,fps={fps}[v]",
+             f"[bg][v]overlay={vx}:{vy}:shortest=1" + "".join("," + p for p in plates) + "[s0]"]
     inputs = ["-i", src]
     last = "s0"
     if badge.get("image"):
@@ -395,7 +567,8 @@ def render(src, title, tpl, out, tools, meta=None, cap_mb=None):
         tail = res.stderr.decode("utf-8", "replace").strip().splitlines()[-3:]
         raise MontageError("ffmpeg не смонтировал: " + (" / ".join(tail) or f"код {res.returncode}"))
     shutil.rmtree(work, ignore_errors=True)
-    return {"size": size, "lines": lines, "video": (vw, vh, vx, vy), "meta": meta}
+    return {"size": size, "lines": lines, "video": (vw, vh, vx, vy), "meta": meta,
+            "crop": crop, "plates": len(plates)}
 
 
 # ------------------------------------------------------------------- тексты
