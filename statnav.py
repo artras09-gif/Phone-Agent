@@ -46,15 +46,34 @@ import vision
 # Что ищем — словами для модели. Подписи на двух языках: телефоны бывают
 # и с русским, и с английским интерфейсом.
 GOALS = {
-    "tiktok": ("TikTok", "TikTok Studio → раздел «Аналитика» (Analytics), где есть "
-                         "карточка «Просмотры публикаций» (Post views)"),
-    "shorts": ("YouTube Studio", "раздел «Аналитика» (Analytics) канала с числом "
-                                 "просмотров (Views) и графиком"),
-    "reels": ("Instagram", "статистика СВОЕГО профиля («Статистика», Insights, "
-                           "«Ваша панель» → «Просмотры» / Views) с числом просмотров"),
-    "facebook": ("Facebook", "панель профессионала (Professional dashboard) → "
-                             "Insights / Analytics с числом просмотров (Views)"),
-    "threads": ("Threads", "статистика профиля (Insights) с числом просмотров (Views)"),
+    "tiktok": ("TikTok", "TikTok Studio → «Статистика» / «Аналитика» (Analytics): экран, где "
+                         "ВВЕРХУ выбирается период (7 дней, 28 дней, «Другое» / Custom) и есть "
+                         "«Просмотры публикаций» (Post views). Главная TikTok Studio (вкладки "
+                         "«Инструменты» и «Трансляция») — ещё не цель: оттуда — в карточку "
+                         "«Статистика ›»"),
+    "shorts": ("YouTube Studio", "раздел «Аналитика» (Analytics) канала: выбор периода "
+                                 "(28 дней и т. п.), число просмотров (Views) и график. "
+                                 "Главная Studio («Панель управления») — ещё не цель"),
+    "reels": ("Instagram", "статистика СВОЕГО профиля («Статистика» / Insights → «Обзор»): "
+                           "выбор периода (последние 7 / 30 дней) и число просмотров (Views). "
+                           "Профиль и «Ваша панель» — ещё не цель"),
+    "facebook": ("Facebook", "панель профессионала (Professional dashboard) → Insights / "
+                             "Analytics: выбор периода и число просмотров (Views)"),
+    "threads": ("Threads", "статистика профиля (Insights): выбор периода (7 / 14 / 30 дней) "
+                           "и число просмотров (Views)"),
+}
+
+# Чем экран похож на статистику, но ею не является — для строгой проверки
+# (`look`). 25.11: главная TikTok Studio («Статистика: 50 тыс. за 7 дн.»)
+# прошла за статистику, и самопочинка промолчала.
+NOT_STATS = {
+    "tiktok": "Главная TikTok Studio (вкладки «Инструменты» и «Трансляция», карточки "
+              "«Статистика», «Монетизация») — НЕ экран статистики.",
+    "shorts": "Главная YouTube Studio («Панель управления», «Последняя опубликованная») — "
+              "НЕ экран статистики.",
+    "reels": "Профиль и «Ваша панель» (профессиональная панель) — НЕ экран статистики.",
+    "facebook": "Профиль и лента — НЕ экран статистики.",
+    "threads": "Профиль — НЕ экран статистики.",
 }
 
 # Сверх запретов `escape.NEVER`: в статистике модели нечего делать в
@@ -69,6 +88,9 @@ NEVER = escape.NEVER + [
     "редактировать", "edit profile", "изменить профиль",
     "реклам", "promote", "boost", "продвиж", "монетиз", "monetiz",
     "загрузить", "upload", "новая публикац", "new post", "черновик", "draft",
+    # Кампании и программы для авторов на главной TikTok Studio («Join», «Join
+    # Now» — живьём 25.11): вступить в кампанию — не путь к статистике.
+    "join", "присоедин", "участвов", "подать заявку", "apply", "unirse", "participar",
 ]
 
 # Переключатели и галочки модели не даём вообще: в настройках, через
@@ -80,17 +102,31 @@ NAV_ASK = """Снимок экрана телефона, приложение {a
 Кнопки на экране:
 {menu}{tried}
 Ответь ТОЛЬКО JSON без пояснений:
-{{"готово": true — если цель УЖЕ на экране (видно число просмотров), иначе false,
- "кнопка": номер кнопки из списка, которая ведёт к цели, или 0,
+{{"готово": true — если цель УЖЕ на экране (видно число просмотров и выбор периода), иначе false,
+ "кнопка": номер кнопки из списка, которая ведёт к цели, или 0,{point}
  "иначе": "back" | "swipe" | "wait" — если ни одна кнопка не ведёт к цели}}"""
 
+# «Руки»: на веб-страницах внутри приложения кнопок в дереве нет вовсе
+# (25.11, новая TikTok Studio: «Статистика ›» нарисована, а в дереве — только
+# вкладки и «Join»), и выбрать из списка модели нечего. Тогда она называет
+# точку на снимке — с проверенной меткостью (`escape.hands_ready`).
+NAV_POINT = """
+ "точка": {{"x": число, "y": число, "что": "что это"}} — только если нужный элемент ВИДЕН
+   на снимке, но его НЕТ в списке кнопок; координаты в пикселях снимка {iw}x{ih},"""
+
 LOOK_ASK = """Снимок экрана телефона, приложение {app}.
-Это экран статистики аккаунта, где видно число просмотров (Views / «Просмотры»)?
+Это экран статистики аккаунта, где видно число просмотров (Views / «Просмотры») И есть
+переключатель периода (7 дней, 28 дней, «Последние 30 дней», «Другое», Custom и т. п.)?
+{not_stats}
 Ответь ТОЛЬКО JSON без пояснений:
 {{"статистика": true или false,
+ "выбор_периода": true, если на экране есть переключатель периода, иначе false,
  "период": "период, за который показаны числа, как написан на экране (например «Nov 18 - Nov 18», «Last 7 days», «28 дней»)",
  "просмотры": "число просмотров за этот период, как написано на экране"}}
 Не экран статистики или числа не видно — {{"статистика": false}}."""
+
+# Почему поиск пути не удался — для отчёта (`accstats._self_nav`).
+LAST = {"why": ""}
 
 FAIL_DAYS = 7         # не нашла — столько дней не искать на той же версии
 
@@ -176,7 +212,7 @@ def forbidden(label):
     return any(bad in low for bad in NEVER)
 
 
-def menu(nodes, w, h, limit=14):
+def menu(nodes, w, h, limit=20):
     """Кнопки, которые модели можно нажимать по пути к статистике."""
     picked = escape._menu(nodes, w, h, limit=limit * 2, risky=False)
     out = [n for n in picked
@@ -236,6 +272,12 @@ def replay(steps, w, h, keep=None):
         if step.get("do"):
             _do(step, w, h)
             continue
+        if step.get("point"):
+            # Точка с веб-страницы: кнопки в дереве нет, жмём по месту.
+            human.pause(1.0, 1.6)
+            adb.tap(int(step["point"][0] * w), int(step["point"][1] * h))
+            human.pause(1.8, 2.8)
+            continue
         node = None
         for _ in range(3):                       # экран мог ещё грузиться
             nodes = ui.dump(retries=1, tolerant=True)
@@ -254,12 +296,14 @@ def replay(steps, w, h, keep=None):
 
 # ------------------------------------------------------------- модель
 
-def look(png_path, app):
+def look(png_path, app, net=""):
     """Что модель видит на снимке: {"статистика", "период", "просмотры"}.
-    {} — модель не ответила или ответила не по форме."""
+    «Статистика» — только с переключателем периода: сводка «за 7 дней» на
+    главной Studio — не она. {} — модель не ответила или ответила не по форме."""
     try:
         with open(png_path, "rb") as f:
-            raw = vision.ask(f.read(), LOOK_ASK.format(app=app), max_tokens=200, temperature=0.0)
+            raw = vision.ask(f.read(), LOOK_ASK.format(app=app, not_stats=NOT_STATS.get(net, "")),
+                             max_tokens=200, temperature=0.0)
     except Exception as e:
         print(f"  [путь] модель не ответила: {str(e)[:80]}", flush=True)
         return {}
@@ -267,18 +311,43 @@ def look(png_path, app):
     if not isinstance(data, dict):
         return {}
     views = str(data.get("просмотры") or "").strip()
-    return {"статистика": data.get("статистика") is True,
+    return {"статистика": data.get("статистика") is True and data.get("выбор_периода") is True,
             "период": str(data.get("период") or "").strip()[:60],
             "просмотры": views if NUMBER.match(views) and not views.startswith("-") else ""}
 
 
-def _ask_nav(png, app, goal, items, history, w, h):
-    tried = ("\nУже пробовали: " + "; ".join(history[-4:]) + ".") if history else ""
-    raw = vision.ask(png, NAV_ASK.format(app=app, goal=goal,
+def _ask_nav(png, app, goal, items, history, w, h, hands=None, iw=0, ih=0):
+    tried = ("\nУже пробовали: " + "; ".join(history[-5:]) + ".") if history else ""
+    point = NAV_POINT.format(iw=iw, ih=ih) if hands else ""
+    raw = vision.ask(png, NAV_ASK.format(app=app, goal=goal, point=point,
                                          menu=escape._describe_menu(items, w, h), tried=tried),
-                     max_tokens=escape.ANSWER_TOKENS, temperature=0.1, think=True)
+                     max_tokens=escape.ANSWER_TOKENS, temperature=0.1, think=True,
+                     shrink=1 if hands else None)
     data = vision._json_from(raw or "")
     return data if isinstance(data, dict) else {}
+
+
+def _screen_key(nodes):
+    """Чем экран отличается от других — чтобы заметить, что ходим по кругу."""
+    return "|".join(sorted({(n.text or n.desc or "").strip()[:30] for n in nodes or []
+                            if n.clickable and (n.text or n.desc)})[:40])
+
+
+def _point_ok(nodes, x, y, w, h, what):
+    """Можно ли жать по точке модели: не системные полосы, не запретное под
+    пальцем и не запретное в её же описании. (да/нет, почему)."""
+    if not (h * 0.04 < y < h * 0.95 and 0 <= x <= w):
+        return False, "точка вне приложения"
+    if forbidden(what):
+        return False, f"«{what}» — запрещено"
+    node, _ = escape._node_at(nodes, x, y, w, h)
+    if node is not None:
+        label = _label(node)
+        if label and forbidden(label):
+            return False, f"под точкой «{label}» — запрещено"
+        if any(t in node.cls.lower() for t in TOGGLES):
+            return False, "под точкой переключатель"
+    return True, ""
 
 
 def explore(net, package, w, h, log=None, max_steps=None, keep=None):
@@ -288,6 +357,7 @@ def explore(net, package, w, h, log=None, max_steps=None, keep=None):
     статистика» делает вызывающий — по снимку."""
     app, goal = GOALS[net]
     steps, history = [], []
+    tapped = {}                # экран -> что на нём уже жали (не ходить по кругу)
     for n in range(1, (max_steps or config.STATS_NAV_STEPS) + 1):
         if abort.requested():
             return None, "остановлено"
@@ -304,15 +374,23 @@ def explore(net, package, w, h, log=None, max_steps=None, keep=None):
             history.append("последняя кнопка уводила из приложения")
             continue
         nodes = ui.dump(retries=1, tolerant=True)
-        png = escape._screencap()
+        png, iw, ih = escape._full_shot()
         if not png:
             human.pause(1, 2)
             continue
         if keep:
             _keep_tree(keep, f"шаг{n}", nodes, w, h)
-        items = menu(nodes, w, h)
+        key = _screen_key(nodes)
+        done_here = tapped.setdefault(key, set())
+        # Что на этом же экране уже жали — модели не предлагаем: 25.11 она
+        # двенадцать шагов подряд ходила «значок → Просмотры профиля → назад».
+        items = [it for it in menu(nodes, w, h) if _label(it) + str(it.bounds) not in done_here]
+        if done_here:
+            history.append("на этом экране уже пробовали: " + ", ".join(
+                sorted(x.split("(")[0] or "значок" for x in done_here))[:120])
+        hands = escape.hands_ready(iw, ih) if config.ESCAPE_HANDS else None
         try:
-            answer = _ask_nav(png, app, goal, items, history, w, h)
+            answer = _ask_nav(png, app, goal, items, history, w, h, hands, iw, ih)
         except Exception as e:
             _say(log, f"  [путь] {app}: модель не ответила — {str(e)[:80]}")
             return None, "down"
@@ -324,6 +402,7 @@ def explore(net, package, w, h, log=None, max_steps=None, keep=None):
             button = 0
         if 1 <= button <= len(items):
             node = items[button - 1]
+            done_here.add(_label(node) + str(node.bounds))
             sig = signature(node, w, h)
             sig["tree"] = f"шаг{n}"              # эталон: на каком экране жали
             steps.append(sig)
@@ -331,6 +410,27 @@ def explore(net, package, w, h, log=None, max_steps=None, keep=None):
             ui.tap_node(node)
             human.pause(1.5, 2.5)
             continue
+        spot = answer.get("точка")
+        if hands and isinstance(spot, dict):
+            try:
+                px, py = escape._to_image(float(spot.get("x")), float(spot.get("y")), hands, iw, ih)
+            except (TypeError, ValueError):
+                px = py = None
+            if px is not None:
+                x, y = int(px * w / iw), int(py * h / ih)
+                what = str(spot.get("что") or "").strip()[:60]
+                fine, why = _point_ok(nodes, x, y, w, h, what)
+                if not fine:
+                    history.append(f"точку «{what}» не нажал: {why}")
+                    continue
+                done_here.add(f"точка {what}({x // 40},{y // 40})")
+                steps.append({"point": [round(x / w, 3), round(y / h, 3)], "что": what,
+                              "tree": f"шаг{n}"})
+                history.append(f"нажали точку «{what}»")
+                _say(log, f"  [путь] {app}: жму по точке «{what}» ({x},{y})")
+                adb.tap(x, y)
+                human.pause(1.8, 2.8)
+                continue
         other = str(answer.get("иначе") or "").lower().strip()
         if other in ("back", "назад"):
             device.back()
@@ -361,7 +461,9 @@ def find_stats(net, package, snap, start, ver="", log=None):
     на своём профиле (или в приложении статистики). Возвращает
     {"path", "period", "views", "how"} или None.
     """
+    LAST["why"] = ""
     if not (config.STATS_SELF_NAV and vision.available()[0]):
+        LAST["why"] = "зрение выключено или не настроено"
         return None
     app = GOALS[net][0]
     w, h = adb.screen_size()
@@ -373,7 +475,7 @@ def find_stats(net, package, snap, start, ver="", log=None):
         path = snap()
         if not path:
             return None
-        seen = look(path, app)
+        seen = look(path, app, net)
         if seen.get("статистика") and seen.get("просмотры"):
             return {"path": path, "period": seen["период"], "views": seen["просмотры"], "how": how}
         try:
@@ -399,11 +501,14 @@ def find_stats(net, package, snap, start, ver="", log=None):
     failed = route.get("failed") or {}
     if failed.get("ver") == ver and failed.get("on", "") >= \
             (dt.date.today() - dt.timedelta(days=FAIL_DAYS)).isoformat():
+        LAST["why"] = (f"{failed['on']} модель уже не нашла её на этой версии приложения "
+                       f"({failed.get('why', '')}) — снова поищу после обновления")
         _say(log, f"  [путь] {app}: {failed['on']} модель уже не нашла статистику на этой версии — "
                   "не ищу до обновления приложения")
         return None
 
     def give_up(why):
+        LAST["why"] = why
         _say(log, f"  [путь] {app}: {why}")
         route["failed"] = {"ver": ver, "on": dt.date.today().isoformat(), "why": why}
         routes[net] = route
@@ -411,12 +516,14 @@ def find_stats(net, package, snap, start, ver="", log=None):
         return None
 
     if not start():
+        LAST["why"] = "не открыл свой профиль — искать не с чего"
         _say(log, f"  [путь] {app}: не открыл свой профиль — искать не с чего")
         return None
     _say(log, f"  [путь] {app}: маршрут не сработал — модель ищет дорогу к статистике")
     started = time.time()
     steps, why = explore(net, package, w, h, log, keep=gold)
     if abort.requested() or why == "down":
+        LAST["why"] = "модель зрения не ответила"
         return None                    # сбой связи — не повод забыть сеть на неделю
     if steps is None:
         return give_up(f"модель не дошла до статистики ({why})")

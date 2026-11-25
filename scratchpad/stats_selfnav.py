@@ -118,7 +118,8 @@ def fake_ask(png, prompt, **kw):
         return '{"готово": false, "кнопка": 0, "иначе": "back"}'
     asked["look"] += 1
     if phone["screen"] == "статистика":
-        return '{"статистика": true, "период": "Nov 18 - Nov 18", "просмотры": "1,234"}'
+        return ('{"статистика": true, "выбор_периода": true, "период": "Nov 18 - Nov 18", '
+                '"просмотры": "1,234"}')
     return '{"статистика": false}'
 
 
@@ -130,6 +131,8 @@ human.scroll_feed = lambda *a, **k: None
 adb.screen_size = lambda: (W, H)
 adb.current_app = lambda: (phone["app"], "")
 escape._screencap = lambda: b"\x89PNG" + b"0" * 2000
+escape._full_shot = lambda: (b"\x89PNG" + b"0" * 2000, W, H)
+escape.hands_ready = lambda iw, ih, say=None: None          # «руки» — в разделе 10
 vision.ask = fake_ask
 vision.available = lambda: (True, "test")
 abort.requested = lambda: False
@@ -271,6 +274,86 @@ other = os.path.join(root, "2026-11-24")
 accstats._note(other, "instagram_account", "studio_work")
 say(accstats._nav_allowed("reels", other), "рабочий (статистика уже бывала) — можно")
 say(accstats._restart_for.__defaults__ == ((),), "старт проверяет аккаунт")
+
+print("10. Кнопки нет в дереве (веб-страница) — модель жмёт по точке")
+# Новая TikTok Studio 25.11: «Статистика ›» нарисована, в дереве — только
+# вкладки и «Join». Модель называет точку; запретное под точкой — не жмём.
+PKG2 = "com.zhiliaoapp.musically"
+studio = [node("TikTok Studio", 134), node("Трансляция", 236), node("Join", 1898)]
+analytics = [node("Обзор", 300), node("28 дней", 400)]
+place = {"screen": "studio", "taps": []}
+ui.dump = lambda *a, **k: list(studio if place["screen"] == "studio" else analytics)
+adb.current_app = lambda: (PKG2, "")
+escape.hands_ready = lambda iw, ih, say=None: "pixels"
+
+
+def tap_xy(x, y):
+    place["taps"].append((x, y))
+    if place["screen"] == "studio" and 900 <= x <= 1060 and 400 <= y <= 500:
+        place["screen"] = "analytics"
+
+
+adb.tap = tap_xy
+answers = iter(['{"готово": false, "кнопка": 0, "точка": {"x": 520, "y": 1950, "что": "Join"}}',
+                '{"готово": false, "кнопка": 0, "точка": {"x": 972, "y": 449, "что": "стрелка Статистика"}}',
+                '{"готово": true}'])
+seen_prompts = []
+
+
+def nav_ask(png, prompt, **kw):
+    if "Цель:" in prompt:
+        seen_prompts.append(prompt)
+        return next(answers)
+    return ('{"статистика": true, "выбор_периода": true, "период": "23 нояб - 23 нояб", '
+            '"просмотры": "13K"}') if place["screen"] == "analytics" else '{"статистика": false}'
+
+
+vision.ask = nav_ask
+statnav._save_routes({})
+log = []
+steps, why = statnav.explore("tiktok", PKG2, W, H, log)
+print("   " + "\n   ".join(log))
+say(steps and steps[-1].get("point") == [0.9, 0.187] and place["screen"] == "analytics",
+    f"дошёл по точке до аналитики ({steps})")
+say(not any(1898 <= y <= 2100 for _, y in place["taps"]), "в «Join» по точке не нажал")
+say("пикселях снимка 1080x2400" in seen_prompts[0], "модели сказано, что можно назвать точку")
+place.update(screen="studio", taps=[])
+statnav.replay(steps, W, H)
+say(place["screen"] == "analytics", "запомненная точка повторяется без модели")
+
+print("11. По кругу не ходит")
+loop = {"screen": "profile"}
+prof = [node("Меню", 300), node("Просмотры профиля", 600)]
+views_scr = [node("Вернуться", 200)]
+ui.dump = lambda *a, **k: list(prof if loop["screen"] == "profile" else views_scr)
+
+
+def tap_loop(n):
+    if n.text == "Просмотры профиля":
+        loop["screen"] = "views"
+
+
+ui.tap_node = tap_loop
+device.back = lambda: loop.__setitem__("screen", "profile")
+escape.hands_ready = lambda iw, ih, say=None: None
+menus = []
+
+
+def loop_ask(png, prompt, **kw):
+    if "Цель:" not in prompt:
+        return '{"статистика": false}'
+    menus.append(prompt)
+    for line in prompt.splitlines():
+        m = re.match(r"\[(\d+)\] «(.+?)»", line)
+        if m and m.group(2) == "Просмотры профиля":
+            return f'{{"кнопка": {m.group(1)}}}'
+    return '{"кнопка": 0, "иначе": "back"}'
+
+
+vision.ask = loop_ask
+statnav.explore("reels", PKG2, W, H, [], max_steps=5)
+offers = sum(bool(re.search(r"^\[\d+\] «Просмотры профиля»", p, re.M)) for p in menus if "«Меню»" in p)
+say(offers == 1, f"«Просмотры профиля» на том же экране предложена один раз, а не каждый круг ({offers})")
 
 print("ВСЁ ХОРОШО" if ok else "ЕСТЬ ОШИБКИ")
 sys.exit(0 if ok else 1)

@@ -743,12 +743,12 @@ def _route_broke(net, folder, shot):
     Только для аккаунтов, у которых статистика уже бывала (`_nav_allowed`)."""
     if not _nav_allowed(net, folder):
         return False
-    if not shot:
-        return True
+    if not shot or _notes_in(folder).get(SHOT_FILES[net] + "_fallback"):
+        return True                     # нет снимка — или маршрут сам снял запасной экран
     if _notes_in(folder).get(SHOT_FILES[net] + "_views") or not _vision_set_up():
         return False
     import statnav
-    seen = statnav.look(shot, statnav.GOALS[net][0])
+    seen = statnav.look(shot, statnav.GOALS[net][0], net)
     return bool(seen) and not seen.get("статистика")
 
 
@@ -782,18 +782,26 @@ def _self_nav(net, cfg, folder, log=None):
     import statnav
     name = SHOT_FILES[net]
     package = _stats_package(net)
+    broke = _notes_in(folder).get(name + "_fallback") or "маршрут не дошёл до статистики"
+    # Снимок модели — отдельным файлом: не нашла — в альбоме остаётся то,
+    # что снял маршрут (лучше, чем ничего), а не пустое место.
     got = statnav.find_stats(
-        net, package, snap=lambda: _snap(folder, name, package),
+        net, package, snap=lambda: _snap(folder, name + "_nav", package),
         start=lambda: _restart_for(net, cfg, _stat_accounts().get(net, [])),
         ver=_notes_in(folder).get(name + "_ver", ""), log=log)
     if not got:
+        _note(folder, name + "_navfail", f"маршрут сломался ({broke}); путь к статистике не нашёл: "
+                                          + (statnav.LAST.get("why") or "причина в журнале"))
         return None
+    path = os.path.join(folder, name + ".png")
+    os.replace(got["path"], path)
+    # Число маршрута с запасного экрана (за 7 дней) больше не годится.
+    for key in ("_views", "_when", "_miss", "_why", "_fallback", "_navfail", "_odd"):
+        _note(folder, name + key, "")
     _views_note(folder, name, _num(got["views"]), _period_when(got["period"]))
     _note(folder, name, f"{got['how']}" + (f" — {got['period']}" if got["period"] else ""))
-    _note(folder, name + "_how", got["how"])
-    for key in ("_miss", "_why"):
-        _note(folder, name + key, "")
-    return got["path"]
+    _note(folder, name + "_how", f"маршрут сломался — {got['how']}")
+    return path
 
 
 def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
@@ -823,6 +831,8 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
             if result.get("account"):
                 _note(folder, SHOT_FILES[net] + "_account", result["account"])
             _track_version(folder, net, log)
+            for key in ("_fallback", "_how", "_navfail"):      # от прошлой попытки
+                _note(folder, SHOT_FILES[net] + key, "")
             try:
                 w, h = adb.screen_size()
                 if tiles and net in TILE_FILES:
@@ -1267,7 +1277,10 @@ def numbers_text(folder, nets=None):
                      + [f"{TITLES[net]} — числа нет, снимок в альбоме: {why}" for net, why in missed]
                      + [f"ℹ {TITLES[net]} обновился: {said[SHOT_FILES[net] + '_upd']}"
                         for net in ("reels", "tiktok", "shorts", "facebook", "threads")
-                        if (nets is None or net in nets) and said.get(SHOT_FILES[net] + "_upd")])
+                        if (nets is None or net in nets) and said.get(SHOT_FILES[net] + "_upd")]
+                     + [f"⚠ {TITLES[net]}: {said[SHOT_FILES[net] + '_navfail']}"
+                        for net in ("reels", "tiktok", "shorts", "facebook", "threads")
+                        if (nets is None or net in nets) and said.get(SHOT_FILES[net] + "_navfail")])
 
 
 # ------------------------------------------------- цифры таблицей (2026-11-25)
@@ -1378,6 +1391,9 @@ def numbers_table(folder, head, nets=None):
     notes += [f"ℹ {TITLES[net]} обновился: {said[SHOT_FILES[net] + '_upd']}"
               for net in NET_ORDER if (nets is None or net in nets)
               and said.get(SHOT_FILES[net] + "_upd")]
+    notes += [f"⚠ {TITLES[net]}: {said[SHOT_FILES[net] + '_navfail']}"
+              for net in NET_ORDER if (nets is None or net in nets)
+              and said.get(SHOT_FILES[net] + "_navfail")]
     if notes:
         out.append("\n".join(html.escape(n) for n in notes))
     return "\n".join(out)
@@ -1556,6 +1572,18 @@ def _note(folder, name, text):
     data[name] = text
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
+
+
+def _fallback(folder, name, text):
+    """Маршрут не дошёл до статистики и снял запасной экран (главную Studio,
+    профиль). Это ПОЛОМКА, а не результат: отметка `<сеть>_fallback` включает
+    поиск пути (`_route_broke`).
+
+    25.11 TikTok переделал TikTok Studio: маршрут снял главную «за 7 дней»,
+    назвал это результатом, и самопочинка молчала — снимок ведь был, и на
+    нём действительно статистика, только не та."""
+    _note(folder, name, text)
+    _note(folder, name + "_fallback", text)
 
 
 def _span(first, last):
@@ -2470,13 +2498,20 @@ def _menu_icon(nodes, w, h):
                key=lambda n: (not n.clickable, n.bounds[2] - n.bounds[0]))
 
 
+TT_STUDIO_TABS = ("posts", "live", "tools", "инструменты", "трансляция", "публикации",
+                  "herramientas", "en vivo", "publicaciones")
+
+
 def _tt_studio_card_point(nodes, w, h, title):
     # В новом Studio карточка рисуется без узлов, ниже вкладок Posts/LIVE.
     # Отсчёт от заголовка попадал в полоску вкладок, не открывая аналитику.
+    # 25.11 на Redmi по-русски: вкладки «Инструменты / Трансляция», и строка
+    # «Статистика ›» сразу под ними — та же раскладка, но русских подписей в
+    # списке не было, и касание уходило во вкладку «Инструменты».
     tabs = {str(_label(n)).casefold(): n for n in nodes or []
-            if _sized(n) and _label(n).casefold() in ("posts", "live")
+            if _sized(n) and _label(n).casefold() in TT_STUDIO_TABS
             and h * 0.08 < n.bounds[1] < h * 0.19}
-    if title is not None and len(tabs) == 2:
+    if title is not None and len(tabs) >= 2:
         return int(w * 0.90), max(n.bounds[3] for n in tabs.values()) + int(h * 0.043)
     below = (title.bounds[3] if title else int(h * 0.081)) + int(h * 0.062)
     return w // 2, below
@@ -2543,10 +2578,16 @@ def _shot_tiktok(folder, w, h, days=None):
         home = ui.dump(retries=2, tolerant=True)
     title = studio_title()
 
-    def open_card(screen, heading):
+    def open_card(screen, heading, arrow=True):
         card = next((n for n in screen or [] if _label(n) in TT_ANALYTICS
                      and _sized(n) and n.bounds[1] < h * 0.45), None)
-        if card is not None:
+        if card is not None and arrow:
+            # С 25.11 «Статистика» — заголовок карточки со стрелкой «›»
+            # справа, а под ним цифры за 7 дней (вкладки «Инструменты /
+            # Трансляция»). Середина карточки — это цифры, касание по ним
+            # аналитику не открывало. Стрелка — в строке заголовка у правого края.
+            adb.tap(int(w * 0.9), card.center[1])
+        elif card is not None:
             ui.tap_node(_clickable_at(screen, card))
         else:
             adb.tap(*_tt_studio_card_point(screen, w, h, heading))
@@ -2562,8 +2603,8 @@ def _shot_tiktok(folder, w, h, days=None):
         if _tt_analytics_open(nodes, h) or _tt_blind_row(nodes, w, h) or _tt_bare(nodes, w, h):
             break
         if again and time.time() - start > 6 and (title := studio_title()) is not None:
-            again = False                  # всё ещё главная — касание не дошло
-            open_card(nodes, title)
+            again = False                  # всё ещё главная — стрелка не сработала
+            open_card(nodes, title, arrow=False)      # тогда — по самой карточке
     # Вкладки есть, а ряда периодов нет: либо он ещё едет, либо его не будет
     # вовсе (статистику аккаунта TikTok ещё считает). Даём ему время.
     for _ in range(3):
@@ -2590,8 +2631,8 @@ def _shot_tiktok(folder, w, h, days=None):
             return None
         path = _snap(folder, "tiktok")
         if path:
-            _note(folder, "tiktok", "главная TikTok Studio, 7 дней (раздел «Аналитика» не открылся"
-                  + (f"; на его месте: {seen}" if seen else "") + ")")
+            _fallback(folder, "tiktok", "главная TikTok Studio, 7 дней (раздел «Аналитика» не открылся"
+                      + (f"; на его месте: {seen}" if seen else "") + ")")
             # Цифра с главной — за 7 дней, так и подписываем: без неё TikTok
             # пропадал из сообщения с цифрами вовсе (2026-10-30).
             _views_note(folder, "tiktok", _tt_views(ui.dump(retries=2, tolerant=True), h, top=0.08),
@@ -2902,7 +2943,7 @@ def _shot_youtube_studio(folder, w, h, days):
     if not _yt_analytics(w, h):
         path = _snap(folder, "youtube")
         if path:
-            _note(folder, "youtube", "вкладка «Аналитика» не открылась — снята главная Studio")
+            _fallback(folder, "youtube", "вкладка «Аналитика» не открылась — снята главная Studio")
         return path
     human.pause(2, 3)
     note, period = "последние 28 дней", "за 28 дней"         # period — для цифр текстом
@@ -3283,12 +3324,12 @@ def _ig_wait_views(h, wait=25.0):
 def _shot_instagram(folder, w, h, days=None):
     """«Статистика · Обзор» Instagram (как «Estadísticas · Resumen» у человека)."""
     if not _ig_open_settings(w, h):
-        _note(folder, "instagram", "меню ☰ не открылось — снят профиль")
+        _fallback(folder, "instagram", "меню ☰ не открылось — снят профиль")
         return _snap(folder, "instagram")
     entry, nodes = _find_scrolling(IG_ENTRY, w, h)
     if entry is None:
         device.back()
-        _note(folder, "instagram", "в настройках нет «Статистики» — снят профиль")
+        _fallback(folder, "instagram", "в настройках нет «Статистики» — снят профиль")
         return _snap(folder, "instagram")                    # хотя бы профиль
     ui.tap_node(_row(nodes, entry))
     human.pause(4, 5)
@@ -3333,7 +3374,7 @@ def _shot_instagram(folder, w, h, days=None):
                                "последний день Instagram ещё не открыл")
         _note(folder, "instagram", note)
     else:
-        _note(folder, "instagram", "статистика не открылась — снята панель")
+        _fallback(folder, "instagram", "статистика не открылась — снята панель")
     views = _ig_wait_views(h) if insights else ""
     path = _snap(folder, "instagram")
     if path and insights:
