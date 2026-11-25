@@ -24,10 +24,12 @@ r"""Сборка PhoneAgent в ОДИН exe-файл — как у нормал�
 Нужен PyInstaller — единственная зависимость проекта, и та только для сборки.
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
+import zipfile
 
 SRC = os.path.dirname(os.path.abspath(__file__))
 DESKTOP = os.path.join(os.path.expanduser("~"), "Desktop")
@@ -100,7 +102,7 @@ def keep(dest):
 
 
 a = Analysis([{main!r}], pathex=[{src!r}], datas={datas!r},
-             hiddenimports=["bundled"], excludes=[], noarchive=False)
+             hiddenimports={hidden!r}, excludes=[], noarchive=False)
 dropped = [d for d in a.datas if not keep(d[0])]
 a.datas = [d for d in a.datas if keep(d[0])]
 print(f"[build_exe] из Tcl/Tk выкинуто файлов: {{len(dropped)}}")
@@ -109,6 +111,38 @@ exe = EXE(pyz, a.scripts, a.binaries, a.datas, [],
           name="PhoneAgent", console=False, icon={icon!r},
           upx=False, runtime_tmpdir=None)
 '''
+
+
+def ytdlp_stdlib():
+    """Модули стандартной библиотеки, которые импортирует yt-dlp.
+
+    Монтажёр запускает yt-dlp (zip с кодом на Python) самим PhoneAgent.exe
+    (`main._run_ytdlp`). PyInstaller кладёт в exe только те модули, что
+    импортирует НАША программа, — а yt-dlp тянет http.cookiejar, xml.etree,
+    email и прочее. Список берётся из самого zip: обновится yt-dlp —
+    пересборка возьмёт и его новые импорты."""
+    sys.path.insert(0, SRC)
+    import linkfetch
+
+    try:
+        path, _ = linkfetch.ensure("stable-py")
+    except linkfetch.FetchError as e:
+        print(f"  [!] нет yt-dlp для разбора импортов ({e}) — монтаж по ссылкам в exe "
+              "может не скачивать")
+        return []
+    names = set()
+    with zipfile.ZipFile(path) as z:
+        for name in z.namelist():
+            if not name.endswith(".py"):
+                continue
+            code = z.read(name).decode("utf-8", "replace")
+            for m in re.finditer(r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))",
+                                 code, re.M):
+                module = m.group(1) or m.group(2)
+                if module.split(".")[0] in sys.stdlib_module_names:
+                    names.add(module)
+    drop = ("tkinter", "idlelib", "turtle", "test", "lib2to3", "ensurepip", "venv")
+    return sorted(n for n in names if n.split(".")[0] not in drop)
 
 
 def run_pyinstaller():
@@ -129,6 +163,13 @@ def run_pyinstaller():
         f.write(time.strftime("%Y%m%d-%H%M%S"))
 
     extra = data(os.path.join(SRC, "webui.html"), ".") + data(stamp, ".")
+    # Шаблоны монтажа (`montage.py`) читаются прямо из распаковки, как
+    # webui.html; свои шаблоны человек кладёт в %LOCALAPPDATA%\PhoneAgent\templates.
+    templates = os.path.join(SRC, "templates")
+    for root, _, files in os.walk(templates):
+        for name in files:
+            rel = os.path.relpath(root, SRC).replace(os.sep, "/")
+            extra += data(os.path.join(root, name), rel)
     for name in DEFAULTS:
         path = os.path.join(SRC, name)
         if os.path.exists(path):
@@ -180,7 +221,7 @@ def run_pyinstaller():
     with open(spec, "w", encoding="utf-8") as f:
         f.write(SPEC.format(drop=TCL_DROP, keep=TCL_KEEP_ENC,
                             main=os.path.join(SRC, "main.py"), src=SRC,
-                            datas=extra,
+                            datas=extra, hidden=["bundled"] + ytdlp_stdlib(),
                             icon=icon if os.path.exists(icon) else None))
 
     cmd = [

@@ -1,0 +1,49 @@
+{
+  "name": "Rusorama",
+  "about": "Снят 25.11.2026 с двух примеров: чёрный кадр 9:16, сверху заголовок капсом (Rubik Bold, первая строка жёлтая), в середине ролик во всю ширину, снизу глобус и подпись канала. Координаты — в кадре 1080x1920.",
+  "size": [1080, 1920],
+  "fps": 30,
+  "background": "#000000",
+  "video": {
+    "center_y": 986,
+    "max_height": 860
+  },
+  "title": {
+    "font": "Rubik-Bold.ttf",
+    "size": 40,
+    "min_size": 33,
+    "max_width": 864,
+    "max_lines": 2,
+    "line_height": 1.22,
+    "gap": 100,
+    "color": "#FFFFFF",
+    "accent": "first_line",
+    "accent_color": "#EAC93C",
+    "glue": ["a", "al", "de", "del", "el", "la", "las", "los", "lo", "en", "y", "e", "o", "u",
+             "con", "por", "para", "un", "una", "que", "se", "su", "sus", "sin", "tras", "ante", "sobre"]
+  },
+  "badge": {
+    "image": "globe.png",
+    "image_x": 40,
+    "image_center_y": 1524,
+    "image_size": 117,
+    "font": "Rubik-Bold.ttf",
+    "size": 24,
+    "color": "#FFFFFF",
+    "x": 167,
+    "baselines": [1511, 1539],
+    "lines": ["Política, historia", "y actualidad internacional"]
+  },
+  "texts": {
+    "about": "канал о политике, истории и международных новостях",
+    "language": "испанский (español)",
+    "title_chars": 75,
+    "examples": [
+      "KIM JONG-UN RECIBE PERSONALMENTE | A VLADIMIR PUTIN",
+      "UN GRUPO DE MODELOS VESTIDAS DE NOVIA | RODEÓ A PUTIN PARA TOMARSE UNA SELFIE CON ÉL"
+    ],
+    "title_rule": "Заголовок длиннее 30 знаков раздели на две строки знаком | там, где пауза по смыслу: первая строка — главное (кто и что сделал), вторая — продолжение.",
+    "caption_style": "1–3 коротких предложения своими словами (не переписывай исходную подпись): что происходит в ролике и почему это важно, затем 3–5 хэштегов по теме в конце. Не пиши о самом канале.",
+    "caption_chars": 450
+  }
+}

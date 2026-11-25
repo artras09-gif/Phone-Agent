@@ -708,12 +708,18 @@ def post_stats(text):
 #
 # Это не дела (`ROLES`): «/here» без слова сюда не относится — иначе тема
 # постинга стала бы и запасами, и бот удалял бы видео из неё же.
-SHELVES = ("stock", "archive")
+#
+# «Монтаж» (2026-11-25, `montage.py`) — тоже полка: в его теме бот не
+# публикует и не собирает ссылки в подборку, а монтирует присланное по
+# шаблону и кладёт готовое в запасы.
+SHELVES = ("stock", "archive", "montage")
 SHELF_WORDS = {
     "stock": ("запас", "stock", "резерв", "склад"),
     "archive": ("архив", "archive", "запощен", "опубликован", "posted"),
+    "montage": ("монтаж", "montage", "монтир"),
 }
-SHELF_TITLES = {"stock": "запасы", "archive": "архив"}
+SHELF_TITLES = {"stock": "запасы", "archive": "архив", "montage": "монтаж"}
+STOCK_PAIR = {"stock": "archive", "archive": "stock"}
 
 
 def _shelves(chat_id):
@@ -1176,6 +1182,58 @@ def send_photo(image, caption="", chat_id=None, thread=None):
             return bool(json.loads(r.read().decode("utf-8")).get("ok"))
     except Exception:
         return False
+
+
+def send_video(path, caption="", chat_id=None, thread=None, width=0, height=0, duration=0,
+               timeout=900):
+    """Видео файлом (монтаж кладёт готовое в запасы). Возвращает ответ Telegram
+    целиком: из него номер сообщения и file_unique_id для `jobs.stock_add`.
+
+    Файл идёт кусками, а не целиком в память: смонтированный ролик бывает и в
+    сотни мегабайт, когда работает свой сервер Bot API."""
+    import secrets
+
+    cfg = load_settings()
+    target = chat_id or current_chat() or cfg["owner"]
+    if not cfg["token"] or not target:
+        return {"ok": False, "description": "бот не настроен"}
+    boundary = "----pa" + secrets.token_hex(12)
+    fields = [("chat_id", target), ("caption", caption[:1024]), ("supports_streaming", "true")]
+    for key, value in (("width", width), ("height", height), ("duration", duration)):
+        if value:
+            fields.append((key, str(int(value))))
+    topic = _thread_for(target, thread)
+    if topic:
+        fields.append(("message_thread_id", topic))
+    head = "".join(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'
+        for k, v in fields).encode("utf-8")
+    head += (f'--{boundary}\r\nContent-Disposition: form-data; name="video"; '
+             f'filename="{os.path.basename(path)}"\r\nContent-Type: video/mp4\r\n\r\n').encode()
+    tail = f"\r\n--{boundary}--\r\n".encode()
+    length = len(head) + os.path.getsize(path) + len(tail)
+
+    def body():
+        yield head
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                yield chunk
+        yield tail
+
+    req = urllib.request.Request(
+        f"{api_base()}/bot{cfg['token']}/sendVideo", data=body(),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}",
+                 "Content-Length": str(length)})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            return json.loads(e.read().decode("utf-8"))
+        except Exception:
+            return {"ok": False, "description": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"ok": False, "description": f"{type(e).__name__}: {e}"}
 
 
 ALBUM_RETRY_PAUSES = (20, 40)   # секунды перед 2-й и 3-й попыткой
@@ -1688,6 +1746,10 @@ def _handle(msg):
         if shelf == "stock":
             _remember_stock(msg, chat_id, thread)
             _post_from_stock(msg, text, chat_id, thread)
+        if shelf == "montage":
+            import montage
+
+            montage.on_message(msg, text, chat_id, thread, sender, cfg["owner"])
         if shelf:
             return
 
@@ -1835,12 +1897,13 @@ def _cmd_topic(text, chat, msg, sender, cfg):
         if word else list(ROLES)
     if word and not picked:
         send("Не понял, какое дело. Так: /here видео, /here ссылки, /here статистика, "
-             "/here запасы, /here архив или просто /here — всё сюда.")
+             "/here запасы, /here архив, /here монтаж или просто /here — всё сюда.")
         return
     if not text.startswith("/everywhere") and _shelf_at(chat_id, thread or GENERAL):
         kind = _shelf_at(chat_id, thread or GENERAL)
-        send(f"Эта тема — {SHELF_TITLES[kind]}. Видео отсюда я не публикую "
-             f"(опубликованное удаляю из запасов). Сначала сними: /everywhere "
+        what = ("здесь я только монтирую присланное" if kind == "montage" else
+                "видео отсюда я не публикую (опубликованное удаляю из запасов)")
+        send(f"Эта тема — {SHELF_TITLES[kind]}: {what}. Сначала сними: /everywhere "
              f"{SHELF_TITLES[kind]}.")
         return
     if text.startswith("/everywhere"):
@@ -1881,9 +1944,11 @@ def _cmd_topic(text, chat, msg, sender, cfg):
 
 JOBS = ROLES + SHELVES
 JOB_TITLES = {"posts": "Видео на постинг", "links": "Ссылки", "stats": "Статистика",
-              "stock": "Запасы", "archive": "Архив (опубликованное)"}
+              "stock": "Запасы", "archive": "Архив (опубликованное)",
+              "montage": "Монтаж (ссылка → шаблон → запасы)"}
 JOB_UNBOUND = {"posts": "в любом чате и теме", "links": "в любом чате и теме",
-               "stats": "владельцу в личку", "stock": "запасов нет", "archive": "архива нет"}
+               "stats": "владельцу в личку", "stock": "запасов нет", "archive": "архива нет",
+               "montage": "монтажа нет"}
 
 
 def _job_home(job):
@@ -2062,6 +2127,10 @@ def apply_setup(data):
     if "stats_kinds" in data:
         set_stats_kinds(data.get("stats_kinds"))
     _fix_names()
+    if shelf_home("montage"):
+        import montage
+
+        montage.start()
     return "настройки бота сохранены"
 
 
@@ -2088,14 +2157,18 @@ def _auto_off(kind, off):
 
 def _assign_shelf(kind, chat_id, here, name, place, auto=False):
     """Сделать тему полкой. Возвращает текст для человека."""
-    other = "archive" if kind == "stock" else "stock"
     for g in _groups():                       # полка одна на бота — переезжает сюда
         if g["id"] != str(chat_id) and _shelves(g["id"]).get(kind):
             set_shelf(g["id"], kind, None)
     set_shelf(chat_id, kind, here, name)
-    pair = shelf_home(other)
     head = f"{place} называется как {SHELF_TITLES[kind]} — так и считаю" if auto \
         else f"Готово: {place} — {SHELF_TITLES[kind]}"
+    if kind == "montage":
+        lines = [head + _montage_hello()]
+        if auto:
+            lines.append("Это не монтаж? Напиши здесь /everywhere монтаж.")
+        return "\n\n".join(lines)
+    pair = shelf_home(STOCK_PAIR[kind])
     if kind == "stock":
         lines = [head + ". Запоминаю каждое видео, которое сюда попадает (сам здесь молчу). "
                  "Перешлёшь его на постинг — после выхода во все сети перешлю в архив и "
@@ -2126,6 +2199,33 @@ def _assign_shelf(kind, chat_id, here, name, place, auto=False):
                          "или /here запасы в теме, откуда удалять опубликованное.")
     if auto:
         lines.append(f"Это не {SHELF_TITLES[kind]}? Напиши здесь /everywhere {SHELF_TITLES[kind]}.")
+    return "\n\n".join(lines)
+
+
+def _montage_hello():
+    """Что сказать, когда тема стала «Монтажом», и чего не хватает для работы."""
+    import linkfetch
+    import montage
+
+    montage.start()
+    try:
+        name = montage.load_template(_saved().get("montage_template") or None).get("name")
+    except montage.MontageError as e:
+        name = None
+        warn = f"⚠ {e}."
+    lines = [f". Кидай сюда видео — смонтирую по шаблону «{name or '?'}», модель напишет "
+             "заголовок и описание, и готовое положу в запасы. Подпись к видео — исходное "
+             "описание ролика: по нему модель и пишет. Можно и ссылкой на ролик (Instagram, "
+             "TikTok, YouTube) — свой заголовок тогда текстом рядом со ссылкой."]
+    if name is None:
+        lines.append(warn)
+    stock = shelf_home("stock")
+    lines.append(f"Готовое кладу в «{stock[2]}»." if stock else
+                 "⚠ Запасы не назначены — готовое класть некуда. Назови тему «Запасы» и "
+                 "напиши в ней что-нибудь, или /here запасы в ней.")
+    if not linkfetch.has_cookies():
+        lines.append("Ссылки на Instagram пока не скачаю: нужен вход в запасной аккаунт "
+                     "(/login здесь). Видео файлом — работает и без этого.")
     return "\n\n".join(lines)
 
 
@@ -2196,16 +2296,18 @@ def _cmd_shelf(kind, text, chat, msg, thread):
         _auto_off(kind, True)                 # сняли руками — по названию не возвращаем
         send({"stock": "Запасы сняты: из них больше ничего не удаляю.",
               "archive": "Архив снят: опубликованное больше никуда не пересылаю и из "
-                         "запасов не удаляю."}[kind])
+                         "запасов не удаляю.",
+              "montage": "Монтаж снят: ссылки больше не монтирую."}[kind])
         return
     posts = role_home("posts")
     if posts and posts == (chat_id, here):
         send(f"Здесь тема постинга — она не может быть ещё и «{title}». Назначь "
              f"{title} в другой теме.")
         return
-    other = "archive" if kind == "stock" else "stock"
-    if _shelf_at(chat_id, here) == other:
-        send(f"Эта тема уже {SHELF_TITLES[other]}. Запасы и архив — разные темы.")
+    other = _shelf_at(chat_id, here)
+    if other and other != kind:
+        send(f"Эта тема уже {SHELF_TITLES[other]}. {SHELF_TITLES[kind].capitalize()} — "
+             "в другой теме.")
         return
     _auto_off(kind, False)
     name = _topic_name(msg) if (thread or chat.get("is_forum")) else (chat.get("title") or "этот чат")
@@ -3130,6 +3232,12 @@ def poll_forever(generation=0):
         _TROUBLE["text"] = REJECTED
     _drop_stale_drafts()
     bind_shared()
+    if shelf_home("montage"):
+        # Монтаж, прерванный перезапуском, доделывается; проверка скачивания
+        # раз в сутки идёт в том же потоке.
+        import montage
+
+        montage.start()
     _REPLY.polling = True        # видео из этого потока качаются в своём (_later)
     said = ""
     conflict_since = None

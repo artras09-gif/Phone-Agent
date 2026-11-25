@@ -29,7 +29,41 @@ import os
 import sys
 import time
 
-import adb
+
+def _run_ytdlp(argv):
+    """`PhoneAgent.exe ytdlp <файл yt-dlp> <аргументы>` — выполнить yt-dlp
+    (zip с кодом на Python) нашим же Python. Нужен монтажёру в сборке: своего
+    python.exe там нет, а yt-dlp.exe на ПК с шифрованным DNS не находит сайты
+    (см. `linkfetch`). Вывод — в трубы, которые дал `linkfetch`.
+
+    Стоит ДО остальных импортов: `import config` в сборке раскладывает
+    инструменты и может перезапустить adb — на каждое скачивание этого не надо."""
+    if sys.stdout is None or sys.stderr is None:
+        # Окно без консоли: Python мог не открыть трубы сам — открываем их
+        # по описателям, которые передал родитель.
+        try:
+            import ctypes
+            import msvcrt
+
+            for std, name in ((-11, "stdout"), (-12, "stderr")):
+                handle = ctypes.windll.kernel32.GetStdHandle(std)
+                if handle and handle != -1 and getattr(sys, name) is None:
+                    fd = msvcrt.open_osfhandle(handle, 0)
+                    setattr(sys, name, open(fd, "w", encoding="utf-8", errors="replace",
+                                            closefd=False))
+        except (OSError, AttributeError, ImportError):
+            pass
+    sys.path.insert(0, argv[0])
+    import yt_dlp
+
+    sys.argv = ["yt-dlp"] + argv[1:]
+    return yt_dlp.main()
+
+
+if __name__ == "__main__" and sys.argv[1:2] == ["ytdlp"] and len(sys.argv) > 2:
+    sys.exit(_run_ytdlp(sys.argv[2:]))
+
+import adb  # noqa: E402
 import config
 import device
 import devices

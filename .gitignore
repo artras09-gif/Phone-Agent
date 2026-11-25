@@ -12,6 +12,9 @@ telegram.json
 settings.json
 pin.txt
 remote.txt
+# montage/ — работа монтажёра: cookies.txt запасного аккаунта Instagram,
+# скачанные yt-dlp и ffmpeg, черновые ролики
+montage/
 *.key
 *.pem
 
@@ -51,6 +54,8 @@ PhoneAgent-transfer/
 scratchpad/screens/
 *.png
 !bot-avatar.png
+# картинки шаблонов монтажа — часть программы
+!templates/**/*.png
 *.jpg
 *.mp4
 *.html.bak

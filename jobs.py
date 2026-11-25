@@ -70,6 +70,24 @@ CREATE TABLE IF NOT EXISTS stock (
     at     REAL,
     UNIQUE (chat, msg)
 );
+-- Заказы монтажа из темы «Монтаж» (`montage.py`, 2026-11-25): переживают
+-- перезапуск, и одну ссылку дважды не монтируем.
+CREATE TABLE IF NOT EXISTS montage (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    url        TEXT DEFAULT '',     -- ссылка на ролик; '' — прислан файлом
+    file_id    TEXT DEFAULT '',     -- ролик файлом: file_id Telegram
+    note       TEXT DEFAULT '',     -- к ссылке — свой заголовок, к файлу — его подпись
+    chat       TEXT,
+    thread     TEXT DEFAULT '',     -- тема «Монтаж»: номер или 'general'
+    msg        INTEGER DEFAULT 0,
+    status     TEXT DEFAULT 'queued',   -- queued | running | done | failed
+    title      TEXT DEFAULT '',
+    caption    TEXT DEFAULT '',
+    error      TEXT DEFAULT '',
+    stock_msg  INTEGER DEFAULT 0,   -- сообщение с готовым видео в запасах
+    created_at REAL,
+    done_at    REAL
+);
 """
 
 
@@ -332,6 +350,47 @@ def stock_add(file, chat, thread, msg, sender="", at=None):
                     " VALUES (?,?,?,?,?,?)",
                     (file, str(chat), str(thread or ""), int(msg), str(sender or ""),
                      at or time.time()))
+
+
+MONTAGE_FIELDS = ("status", "title", "caption", "error", "stock_msg", "done_at")
+
+
+def montage_add(url="", file_id="", note="", chat="", thread="", msg=0):
+    with connect() as con:
+        cur = con.execute("INSERT INTO montage (url, file_id, note, chat, thread, msg, created_at)"
+                          " VALUES (?,?,?,?,?,?,?)",
+                          (url, file_id, note, str(chat), str(thread or ""), int(msg or 0),
+                           time.time()))
+        return cur.lastrowid
+
+
+def montage_get(task_id):
+    with connect() as con:
+        return con.execute("SELECT * FROM montage WHERE id=?", (int(task_id),)).fetchone()
+
+
+def montage_set(task_id, **fields):
+    fields = {k: v for k, v in fields.items() if k in MONTAGE_FIELDS}
+    if not fields:
+        return
+    with connect() as con:
+        con.execute(f"UPDATE montage SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                    (*fields.values(), int(task_id)))
+
+
+def montage_twin(url, days=7):
+    """Тот же ролик уже ждёт, монтируется или смонтирован за `days` дней."""
+    with connect() as con:
+        return con.execute("SELECT * FROM montage WHERE url=? AND status IN "
+                           "('queued','running','done') AND created_at>? ORDER BY id DESC",
+                           (url, time.time() - days * 86400)).fetchone()
+
+
+def montage_unfinished(chat):
+    """Заказы этого чата, которые прервал перезапуск: их доделать."""
+    with connect() as con:
+        return con.execute("SELECT * FROM montage WHERE chat=? AND status IN "
+                           "('queued','running') ORDER BY id", (str(chat),)).fetchall()
 
 
 def stock_find(file):
