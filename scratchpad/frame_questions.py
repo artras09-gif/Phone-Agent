@@ -47,7 +47,7 @@ data = vision.describe_frame(b"png", topics="политика, история")
 prompt = prompts[-1][0]
 say("по_теме" in prompt and "политика, история" in prompt and "лента:" in prompt,
     "в вопросе есть темы пользователя и «лента»")
-say('"по_теме": false, "лента": true}' in prompt, "пример ответа показывает новые поля")
+say('"по_теме": false, "лента": true, "экран": "лента"}' in prompt, "пример ответа показывает новые поля")
 say(data.get("по_теме") is True and data.get("лента") is True, "ответы разобраны")
 say(prompts[-1][1].get("max_tokens", 0) >= 150, "запаса токенов хватает на лишние поля")
 

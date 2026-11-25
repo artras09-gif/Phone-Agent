@@ -5,6 +5,7 @@
 свайпы палят автоматизацию быстрее, чем что угодно другое.
 """
 import json
+import os
 import queue
 import random
 import re
@@ -893,6 +894,120 @@ def _unstick(state, package, log):
     return "перезапустил приложение"
 
 
+# ------------------------------------------------ ушли с ленты (2026-11-25)
+#
+# «Нужно переработать логику прогрева похожим образом с логикой сбора статы,
+# чтобы нейронка сама чинила: во время прогрева проваливается в такие
+# странички и застревает, думает, что это лента» — сетка «Интересного»,
+# профиль рекламодателя, открытый рекламный пост. Как у статистики
+# (`statnav`): дешёвые шаги по порядку, проверка результата моделью, а что
+# помогло на таком экране — запоминается и в следующий раз идёт первым.
+
+# Сколько кадров подряд «не лента», прежде чем возвращаться. Один — может
+# быть ошибкой модели на странном ролике; тогда только листаем без касаний.
+FEED_LOST_AFTER = 2
+# Шаги возврата: от дешёвого к надёжному. «модель» — escape: модель сама
+# выбирает, куда нажать.
+FEED_FIXES = ("назад", "назад×2", "ссылка", "перезапуск", "модель")
+
+
+def _feed_fixes_path():
+    return os.path.join(os.path.dirname(config.QUEUE_DIR), "analytics", "feed_fixes.json")
+
+
+def _feed_fixes():
+    try:
+        with open(_feed_fixes_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _remember_fix(key, step):
+    data = _feed_fixes()
+    row = data.get(key) if isinstance(data.get(key), dict) else {}
+    ok = int(row.get("ok", 0)) + 1 if row.get("step") == step else 1
+    data[key] = {"step": step, "ok": ok, "at": time.strftime("%Y-%m-%d")}
+    try:
+        os.makedirs(os.path.dirname(_feed_fixes_path()), exist_ok=True)
+        with open(_feed_fixes_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+
+
+def _in_feed_now(state, cfg):
+    """Снова ли лента — свежим снимком и вопросом модели. Дереву тут не
+    верим: на «Интересном» оно не снимается так же, как в ленте. Модели нет
+    — тогда уж дерево (`_off_feed`), лучше, чем ничего."""
+    abort.sleep(random.uniform(1.2, 2.0))      # экран доезжает после касания
+    state["rescues"] = state.get("rescues", 0) + 1
+    path, png = _grab(state, 950 + state["rescues"], live=True)
+    if path:
+        vision.drop_frame(path)
+    if png and not state.get("blind"):
+        shrink = 1 if state.get("frame_scaled") else config.VISION_SHRINK
+        try:
+            feed, kind = abort.call(vision.feed_check, png, shrink=shrink)
+        except vision.VisionError:
+            feed, kind = None, "другое"
+        if feed is not None:
+            if not feed:
+                state["screen_kind"] = kind
+            return feed
+    return not _off_feed(cfg, timeout=FEED_PROBE_TIMEOUT)
+
+
+def _fix_step(step, state, cfg, log):
+    """Один шаг возврата. False — шаг здесь неприменим (нет ссылки)."""
+    package = cfg["package"]
+    if step == "назад":
+        device.back()
+        return True
+    if step == "назад×2":
+        device.back()
+        human.pause(0.8, 1.3)
+        device.back()
+        return True
+    if step == "ссылка":
+        if not cfg.get("open_uri"):
+            return False
+        device.open_uri(cfg["open_uri"], package)
+        human.pause(2.0, 3.0)
+        return True
+    if step == "перезапуск":
+        device.stop_app(package)
+        human.pause(1.0, 2.0)
+        _open_feed(cfg, log)
+        return True
+    if step == "модель":
+        return _escape_now(state, f"вернуться в ленту {cfg.get('title') or ''}".strip(), log)
+    return False
+
+
+def _recover_feed(state, cfg, log):
+    """Ушли с ленты — вернуться. True — снова в ленте (проверено моделью)."""
+    kind = state.get("screen_kind") or "другое"
+    key = f"{cfg.get('title') or cfg['package']}:{kind}"
+    known = (_feed_fixes().get(key) or {}).get("step")
+    order = ([known] if known in FEED_FIXES else []) + [s for s in FEED_FIXES if s != known]
+    for step in order:
+        if abort.requested():
+            return False
+        if not _fix_step(step, state, cfg, log):
+            continue
+        if _in_feed_now(state, cfg):
+            _remember_fix(key, step)
+            state["not_feed_streak"] = 0
+            log.append(f"  ушёл из ленты («{kind}») — вернулся: {step}"
+                       + (" (как в прошлый раз)" if step == known else " (запомнил)"))
+            _trouble_over(state, log)
+            return True
+    log.append(f"  ушёл из ленты («{kind}») и не вернулся ни одним способом")
+    return False
+
+
 def _look_and_decide(state, app, index, taste, log):
     """Взглянуть на ролик, узнать тему и решить, смотреть или листать.
 
@@ -959,6 +1074,18 @@ def _look_and_decide(state, app, index, taste, log):
     # заглянуть в дерево раньше очередной проверки (см. цикл сессии).
     if data.get("лента") is False:
         state["not_feed_streak"] = state.get("not_feed_streak", 0) + 1
+        state["screen_kind"] = data.get("экран") or "другое"
+        # Модели верим без дерева (2026-11-25): «Интересное» с играющей
+        # плиткой дерево не отдаёт так же, как лента, и проверка по дереву
+        # называла его лентой — сессия листала сетку и профиль рекламодателя.
+        # Кадр не лента — в базу его не кладём, это не ролик.
+        vision.drop_frame(path)
+        if state["not_feed_streak"] >= FEED_LOST_AFTER:
+            return "не лента", None, None
+        # Первый раз — может, модель ошиблась на одном ролике. Но и касаться
+        # нельзя: лайк по сетке или по кнопке «Visit…» уводит ещё глубже.
+        log.append(f"  похоже, не лента («{state['screen_kind']}») — без касаний, листаю")
+        return "не лента?", None, None
     elif data.get("лента") is True:
         state["not_feed_streak"] = 0
 
@@ -1878,6 +2005,11 @@ def _plan_like(state, verdict, taste, watch, cfg, w, h, log):
         log.append("  лайк пропущен: кадр не сменился, "
                    "под тапом может быть не видео")
         return empty
+    # Модель только что видела «не ленту» — под пальцем может оказаться сетка
+    # или кнопка «Visit…» рекламы: так и проваливались в профиль (2026-11-25).
+    if state.get("not_feed_streak"):
+        log.append("  лайк пропущен: модель сомневается, что это лента")
+        return empty
 
     def do():
         done[0] = True
@@ -2302,6 +2434,21 @@ def browse(app="tiktok", duration=None, keep_open=False):
                                    % (cfg.get("title") or app), log)
                             break
                         state["blank_streak"] = 0
+                        _forget_frames(state)
+                        state["shown_at"] = time.time()
+                        continue
+
+                    if verdict in ("не лента?", "не лента"):
+                        # Ушли с ленты: сетка, профиль, открытый пост, сайт.
+                        # Ролик не считаем. Подозрение — только пролистать, без
+                        # касаний; второй раз подряд — возвращаемся.
+                        watched -= 1
+                        if verdict == "не лента":
+                            if not _recover_feed(state, cfg, log):
+                                _trouble(state, "ушёл из ленты на «%s» и не смог вернуться"
+                                         % state.get("screen_kind", "другое"), log)
+                        else:
+                            human.scroll_feed(w, h, "up", quick=True)
                         _forget_frames(state)
                         state["shown_at"] = time.time()
                         continue

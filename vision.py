@@ -1853,10 +1853,64 @@ BAN_AI_HINT = """.
   нейросетям"""
 AI_WORDS = ("нейро", "нейрос", "ии", "ai", "сгенер", "генерир", "искусствен")
 
+# Ловушки перечислены по живым снимкам 2026-11-25 («во время прогрева
+# проваливается вот в такие странички и думает, что это лента»): сетка
+# «Интересного» с играющей верхней плиткой, профиль рекламодателя с плашкой
+# «Visit Website», открытый рекламный пост с «Visit Instagram profile».
+# Во всех трёх свайп листает страницу, кадры меняются — и без вопроса модели
+# сессия принимала их за ленту.
 FEED_FIELD = """
-- лента: true, если на кадре лента коротких вертикальных видео во весь экран
-  (как TikTok, Reels, Shorts); false, если это главная страница приложения с
-  постами и кружками историй, профиль, поиск, магазин, чат или другое окно"""
+- лента: true, если на кадре лента коротких вертикальных видео: ОДНО видео на
+  весь экран и справа столбик кнопок (лайк, комментарии, поделиться), как в
+  TikTok, Reels, Shorts. Рекламная вставка внутри такой ленты — тоже true.
+  false — если это сетка из многих плиток (поиск, «Интересное»), профиль
+  с сеткой роликов, открытый отдельный пост или реклама без столбика кнопок
+  справа, страница с кнопкой «Visit Instagram profile» / «Visit Website» /
+  «Посетить профиль», сайт в браузере, главная с постами и кружками историй,
+  магазин, чат или другое окно
+- экран: одно слово — лента, сетка, профиль, пост, главная, сайт, окно"""
+
+# Тип экрана — для памяти возврата в ленту (`session._recover_feed`): что
+# помогло уйти с профиля, пробуется первым в следующий раз на профиле.
+SCREEN_KINDS = ("лента", "сетка", "профиль", "пост", "главная", "сайт", "окно")
+SCREEN_SYNONYMS = {"поиск": "сетка", "интересное": "сетка", "explore": "сетка",
+                   "плитки": "сетка", "страница": "профиль", "публикация": "пост",
+                   "реклама": "пост", "браузер": "сайт", "веб": "сайт",
+                   "диалог": "окно", "чат": "окно", "магазин": "окно", "ролик": "лента",
+                   "reels": "лента", "видео": "лента"}
+
+FEED_CHECK_PROMPT = """Это снимок экрана телефона. Ответь, что на нём.
+
+Поля ответа:""" + FEED_FIELD + """
+
+Пример ответа:
+{"лента": true, "экран": "лента"}"""
+
+
+def screen_kind(value):
+    """Ответ модели «экран» -> слово из SCREEN_KINDS или «другое»."""
+    word = re.sub(r"[^\w-]", " ", str(value or "").lower()).split()
+    word = word[0] if word else ""
+    word = SCREEN_SYNONYMS.get(word, word)
+    return word if word in SCREEN_KINDS else "другое"
+
+
+def _bool(value):
+    if isinstance(value, str) and value.strip().lower() in ("true", "false", "да", "нет"):
+        return value.strip().lower() in ("true", "да")
+    return value if isinstance(value, bool) else None
+
+
+def feed_check(png_bytes, shrink=None):
+    """Лента ли на снимке: (True | False | None, тип экрана). Короткий вопрос
+    модели — после попытки вернуться в ленту (`session._recover_feed`), где
+    дереву экрана верить нельзя: «Интересное» с играющей плиткой его тоже не
+    отдаёт, как и настоящая лента."""
+    text = ask(png_bytes, FEED_CHECK_PROMPT, max_tokens=60, temperature=0.0, shrink=shrink)
+    data = _json_from(text or "") or {}
+    if not isinstance(data, dict):
+        return None, "другое"
+    return _bool(data.get("лента")), screen_kind(data.get("экран"))
 
 CAPTION_BLOCK = """
 Под роликом автор написал:
@@ -1889,10 +1943,10 @@ def describe_frame(png_bytes, caption="", author="", music="", shrink=None,
     asked = frame_questions()
     if asked:
         extra_fields = FEED_FIELD
-        example_tail = ', "лента": true}'
+        example_tail = ', "лента": true, "экран": "лента"}'
         if topics:
             extra_fields = EXTRA_FIELDS.format(topics=topics) + extra_fields
-            example_tail = ', "по_теме": false, "лента": true}'
+            example_tail = ', "по_теме": false, "лента": true, "экран": "лента"}'
         if banned:
             low = banned.lower()
             hint = BAN_AI_HINT if any(w in low for w in AI_WORDS) else ""
@@ -1910,7 +1964,7 @@ def describe_frame(png_bytes, caption="", author="", music="", shrink=None,
     # Ответ короткий намеренно: генерация текста — самая дорогая часть
     # запроса, а пока модель думает, неинтересный ролик висит на экране.
     text = ask(png_bytes, prompt, system=CONTENT_SYSTEM,
-               max_tokens=170 if asked else 120, temperature=0.1, shrink=shrink)
+               max_tokens=185 if asked else 120, temperature=0.1, shrink=shrink)
     # Перезагрузка внутри ask() не помогла (или её придержал таймаут) —
     # честно говорим «не разобрал» вместо строки из «?» в теме и в базе.
     if looks_degenerate(text):
@@ -1956,6 +2010,10 @@ def describe_frame(png_bytes, caption="", author="", music="", shrink=None,
             data[key] = value
         else:
             data.pop(key, None)
+    if asked and "экран" in data:
+        data["экран"] = screen_kind(data["экран"])
+    else:
+        data.pop("экран", None)
     return data
 
 
