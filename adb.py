@@ -2,6 +2,7 @@
 import subprocess
 import time
 
+import abort
 import config
 
 
@@ -41,6 +42,9 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 def raw(*args, timeout=60, check=True, binary=False, _healed=False):
     """Выполнить adb-команду. binary=True — вернуть байты (для screencap)."""
+    # Внутри `abort.guarded()` после «Остановить» телефон больше не трогаем:
+    # бросаем `abort.Stopped` вместо касания (лента, 2026-11-25).
+    abort.check()
     try:
         p = subprocess.run(_base() + list(args), capture_output=True, timeout=timeout,
                            creationflags=NO_WINDOW)

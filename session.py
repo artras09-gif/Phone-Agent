@@ -943,9 +943,11 @@ def _look_and_decide(state, app, index, taste, log):
               else (config.VISION_SHRINK if config.DECIDE_FROM_SCREENCAP
                     else state.get("shrink")))
     try:
-        data = vision.describe_frame(png, caption, author, music,
-                                     shrink=shrink, topics=(taste or {}).get("тема", ""),
-                                     banned=(taste or {}).get("не_смотреть", ""))
+        # Через `abort.call`: «Остановить» не ждёт ответа модели (бывает и
+        # десятки секунд, когда облако тормозит).
+        data = abort.call(vision.describe_frame, png, caption, author, music,
+                          shrink=shrink, topics=(taste or {}).get("тема", ""),
+                          banned=(taste or {}).get("не_смотреть", ""))
     except vision.VisionError as e:
         state["blind"] = True
         log.append(f"  решения по теме отключены: {str(e)[:80]}")
@@ -2247,6 +2249,10 @@ def browse(app="tiktok", duration=None, keep_open=False):
                                       daemon=True)
             worker.start()
 
+        # «Остановить» обрывает круг на ближайшем обращении к телефону, а не
+        # в начале следующего ролика (`abort.guarded`). Снимается в `finally`
+        # до уборки: домой и блокировка после остановки должны пройти.
+        abort.guard()
         while time.time() < deadline:
             if abort.requested():
                 log.append("остановлено")
@@ -2527,6 +2533,12 @@ def browse(app="tiktok", duration=None, keep_open=False):
                 # ленту можно листать и вслепую.
                 log.append(f"  сбой adb, продолжаю: {str(e)[:70]}")
                 human.pause(1, 3)
+            except abort.Stopped:
+                # Нажали «Остановить» посреди ролика: лайк, ссылка, свайп —
+                # всё, что ещё было задумано на этом круге, не делаем.
+                log.append("остановлено")
+                break
+        abort.unguard()
 
         if worker and worker.is_alive():
             # Дать модели доработать очередь, но не держать сессию долго:
@@ -2551,6 +2563,7 @@ def browse(app="tiktok", duration=None, keep_open=False):
         return log.text()
 
     finally:
+        abort.unguard()             # уборке (домой, блокировка) телефон нужен
         try:
             if feed is not None:
                 feed.stop()

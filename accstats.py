@@ -804,6 +804,9 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
     cfg = NETS[net]
     say = log.append if log is not None else (lambda s: None)
     result = {"followers": None, "videos": [], "why": ""}
+    # «Остановить» обрывает съёмку на ближайшем касании (`abort.guarded`):
+    # раньше паузы обрывались, а шаги до конца сети шли вслепую, без ожиданий.
+    abort.guard()
     try:
         (_read_threads if net == "threads" else _read_profile)(net, cfg, result)
         if abort.requested():
@@ -843,7 +846,10 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
                 say(f"  {TITLES[net]}: {note}")
     except (adb.AdbError, RuntimeError) as e:
         result["why"] = str(e)[:120]
+    except abort.Stopped:
+        result["why"] = "остановлено"
     finally:
+        abort.unguard()             # закрыть приложение и уйти домой — уже можно
         device.finish_app(cfg["package"], log)
         try:
             device.go_home()
