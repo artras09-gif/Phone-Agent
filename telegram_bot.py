@@ -1109,7 +1109,7 @@ def _membership(update):
              chat_id=owner)
 
 
-def send(text, preview=True, chat_id=None, keyboard=False, thread=None):
+def send(text, preview=True, chat_id=None, keyboard=False, thread=None, html=False):
     """Отправить ответ. Возвращает True, если Telegram принял ВСЁ.
 
     Адрес выбирается по очереди: явный `chat_id` -> тот, кого сейчас
@@ -1139,6 +1139,10 @@ def send(text, preview=True, chat_id=None, keyboard=False, thread=None):
         topic = _thread_for(target, thread)
         if topic:
             params["message_thread_id"] = topic
+        if html:
+            # Разметка HTML (таблица статистики в <pre>). Такие сообщения
+            # короткие и на куски не режутся — тег не порвётся.
+            params["parse_mode"] = "HTML"
         # Клавиатуру вешаем на ПОСЛЕДНИЙ кусок: длинная подборка режется на
         # части, и приклей её к первому — кнопки оказались бы в середине.
         # В группе — не вешаем: она вылезла бы у всех участников.
@@ -1315,19 +1319,20 @@ def send_shots(chat_id=None, thread=None, fresh=False):
             pass
     sent = send_album(pics, chat_id=chat_id, thread=thread)
     SHOTS_WHY["why"] = "" if sent else "telegram"
-    numbers = accstats.numbers_text(os.path.dirname(items[0][0]))
-    if sent and numbers:
-        # «Нужно, чтобы бот дублировал цифрами в чате стату, которая на фото»
-        # (2026-10-29) — следом за альбомом, текстом.
-        send("📊 Просмотры" + stamp + "\n" + numbers, preview=False, chat_id=chat_id, thread=thread)
+    # «Нужно, чтобы бот дублировал цифрами в чате стату, которая на фото»
+    # (2026-10-29) — следом за альбомом; с 25.11 — таблицей.
+    table = accstats.numbers_table(os.path.dirname(items[0][0]), "📊 Просмотры" + stamp)
+    if sent and table:
+        send(table, preview=False, chat_id=chat_id, thread=thread, html=True)
     return sent
 
 
-def send_report(items, head, numbers=""):
+def send_report(items, head, numbers="", table=""):
     """Отчёт статистики (за вчера, неделю, месяц) — в темы статистики, а если
     они нигде не привязаны — владельцу. items — [(путь, подпись)], head —
     заголовок над первым снимком, numbers — те же цифры текстом (уходят
-    следом за альбомом). True — ушёл."""
+    следом за альбомом), table — они же таблицей HTML (`numbers_table`):
+    есть она — уходит она. True — ушёл."""
     pics = []
     for path, title in items:
         try:
@@ -1342,7 +1347,9 @@ def send_report(items, head, numbers=""):
     for chat, topic in destinations("stats") or [(owner, None)]:
         if pics:
             ok = send_album(pics, chat_id=chat, thread=topic)
-            if ok and numbers:
+            if ok and table:
+                send(table, preview=False, chat_id=chat, thread=topic, html=True)
+            elif ok and numbers:
                 send(head.splitlines()[0] + "\n" + numbers, preview=False,
                      chat_id=chat, thread=topic)
             sent = ok or sent

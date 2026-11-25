@@ -1223,14 +1223,15 @@ def _track_version(folder, net, log=None):
     return ver
 
 
-def numbers_text(folder, nets=None):
-    """Просмотры со снимков папки, по строке на сеть: «Instagram — 113».
-    Период в скобках — только у сети, у которой он не тот, что у остальных
-    (за вчера TikTok даёт позавчера); нет общего — у всех. Или ""."""
+NET_ORDER = ("reels", "tiktok", "shorts", "facebook", "threads")
+
+
+def _numbers(folder, nets=None):
+    """Разбор заметок папки для цифр: (заметки, [(сеть, просмотры, период)] с
+    числом, [(сеть, почему не снял)], [(сеть, почему числа нет)], общий период)."""
     said = _notes_in(folder)
     rows = [(net, said.get(SHOT_FILES[net] + "_views"), said.get(SHOT_FILES[net] + "_when") or "")
-            for net in ("reels", "tiktok", "shorts", "facebook", "threads")
-            if nets is None or net in nets]
+            for net in NET_ORDER if nets is None or net in nets]
     failed = [(net, said.get(SHOT_FILES[net] + "_why")) for net, views, _ in rows
               if not views and said.get(SHOT_FILES[net] + "_why")]
     missed = [(net, said.get(SHOT_FILES[net] + "_miss")) for net, views, _ in rows
@@ -1240,6 +1241,14 @@ def numbers_text(folder, nets=None):
     whens = [when for _, _, when in rows if when]
     top = max(set(whens), key=whens.count) if whens else ""
     common = top if whens.count(top) > 1 or len(set(whens)) == 1 else ""
+    return said, rows, failed, missed, common
+
+
+def numbers_text(folder, nets=None):
+    """Просмотры со снимков папки, по строке на сеть: «Instagram — 113».
+    Период в скобках — только у сети, у которой он не тот, что у остальных
+    (за вчера TikTok даёт позавчера); нет общего — у всех. Или ""."""
+    said, rows, failed, missed, common = _numbers(folder, nets)
     # Facebook — всегда с периодом и источником резервного расчёта; Threads —
     # всегда с периодом: дня у него нет, и «0» без «за 7 дней» читалось бы как вчера.
     return "\n".join([f"{TITLES[net]} — {views}"
@@ -1259,6 +1268,119 @@ def numbers_text(folder, nets=None):
                      + [f"ℹ {TITLES[net]} обновился: {said[SHOT_FILES[net] + '_upd']}"
                         for net in ("reels", "tiktok", "shorts", "facebook", "threads")
                         if (nets is None or net in nets) and said.get(SHOT_FILES[net] + "_upd")])
+
+
+# ------------------------------------------------- цифры таблицей (2026-11-25)
+#
+# «Нормальное форматирование, когда он присылает стату: табличка аккуратная с
+# ячейками для каждой соцсети, датой, на какое время эта стата актуальна».
+# Раньше (29.10) просили «просто Instagram — 100, TikTok — 200, без мусора» —
+# поэтому в таблице только сеть, число и день, за который оно; пояснения —
+# короткими строками под ней. Таблица — моноширинный блок Telegram (<pre>):
+# только так столбцы ровные и на телефоне, и на компьютере. Ширина — около 30
+# знаков: шире блок на телефоне переносится и ломает клетки.
+
+PERIOD_CELL = 10             # шире — период уходит строкой под таблицу
+
+
+def _short_period(when):
+    """Период для клетки: «02.11–08.11» -> «02-08.11» (тот же месяц); «всё
+    время; за период посчитаю…» -> «всё время». (клетка, остаток для строки
+    под таблицей)."""
+    when = str(when or "").strip()
+    m = re.fullmatch(r"(\d{2})\.(\d{2})[–-](\d{2})\.(\d{2})", when)
+    if m:
+        cell = (f"{m.group(1)}-{m.group(3)}.{m.group(2)}" if m.group(2) == m.group(4)
+                else f"{m.group(1)}.{m.group(2)}-{m.group(3)}.{m.group(4)}")
+        return cell, ""
+    head, _, rest = when.partition(";")
+    head = head.strip()
+    if len(head) <= PERIOD_CELL:
+        return head, rest.strip()
+    return "см. ниже", when
+
+
+def _grid(header, rows, right=()):
+    """Таблица рамкой из + - |: header и rows — списки клеток; right — номера
+    столбцов с числами (по правому краю). Рамка из обычных знаков, а не ┌─┐:
+    рамочных символов нет в части моноширинных шрифтов телефонов, и тогда
+    столбцы разъезжаются — ровно то, от чего таблица."""
+    widths = [max(len(str(r[i])) for r in [header] + rows) for i in range(len(header))]
+
+    def line(cells):
+        return "|" + "|".join(
+            " " + (str(c).rjust(w) if i in right else str(c).ljust(w)) + " "
+            for i, (c, w) in enumerate(zip(cells, widths))) + "|"
+
+    rule = "+" + "+".join("-" * (w + 2) for w in widths) + "+"
+    return "\n".join([rule, line(header), rule] + [line(r) for r in rows] + [rule])
+
+
+def _taken_at(folder, nets):
+    """Когда сняты снимки этих сетей — по времени файлов: datetime или None."""
+    stamps = []
+    for net in nets:
+        path = os.path.join(folder, f"{SHOT_FILES[net]}.png")
+        try:
+            stamps.append(os.path.getmtime(path))
+        except OSError:
+            pass
+    return dt.datetime.fromtimestamp(max(stamps)) if stamps else None
+
+
+def numbers_table(folder, head, nets=None):
+    """Те же цифры, что `numbers_text`, — таблицей для Telegram (HTML).
+    head — первая строка (заголовок отчёта). "" — цифр нет совсем."""
+    import html
+
+    said, rows, failed, missed, common = _numbers(folder, nets)
+    if not rows and not failed and not missed:
+        return ""
+    shown = [net for net, _, _ in rows] + [net for net, _ in failed + missed]
+    taken = _taken_at(folder, shown)
+    # «Для каждой соцсети дата в ячейке, чтобы было понятно» (2026-11-25):
+    # «7 дней» — это последние семь дней НА МОМЕНТ СНИМКА, так и пишем датами.
+    table, periods = [], {}
+    for net, views, when in rows:
+        days = re.fullmatch(r"(?:последние\s+)?(\d+)\s*дн\w*", when.strip(), re.I)
+        if days and taken:
+            last = taken.date()
+            first = last - dt.timedelta(days=int(days.group(1)) - 1)
+            cell, rest = _short_period(f"{first:%d.%m}–{last:%d.%m}")
+            rest = f"последние {days.group(1)} дн. на момент снимка"
+        else:
+            cell, rest = _short_period(when or common)
+        table.append([TITLES[net], views, cell or "-"])
+        if rest:
+            periods[net] = rest
+    planned = _short_period(common)[0] or "-"
+    table += [[TITLES[net], "нет", planned] for net, _ in failed + missed]
+    out = [f"<b>{html.escape(head)}</b>"]
+    if taken:
+        out.append(f"🕒 Актуально на {taken:%d.%m} {taken:%H:%M}")
+    out.append("<pre>" + html.escape(_grid(["Сеть", "Просм.", "Дата"], table, right=(1,)))
+               + "</pre>")
+    notes = []
+    for net, views, when in rows:
+        extra = [periods[net]] if net in periods else []
+        if net == "facebook" and said.get("facebook_source"):
+            extra.append(said["facebook_source"])
+        if net == "threads" and said.get("threads_daywhy") and "дн" in when:
+            extra.append(f"за день не прочитал: {said['threads_daywhy']}")
+        if said.get(SHOT_FILES[net] + "_how"):
+            extra.append(said[SHOT_FILES[net] + "_how"])
+        if extra:
+            notes.append(f"{TITLES[net]}: " + "; ".join(extra))
+        if said.get(SHOT_FILES[net] + "_odd"):
+            notes.append(f"⚠ {TITLES[net]}: {said[SHOT_FILES[net] + '_odd']}")
+    notes += [f"{TITLES[net]} — не снял: {why}" for net, why in failed]
+    notes += [f"{TITLES[net]} — числа нет, снимок в альбоме: {why}" for net, why in missed]
+    notes += [f"ℹ {TITLES[net]} обновился: {said[SHOT_FILES[net] + '_upd']}"
+              for net in NET_ORDER if (nets is None or net in nets)
+              and said.get(SHOT_FILES[net] + "_upd")]
+    if notes:
+        out.append("\n".join(html.escape(n) for n in notes))
+    return "\n".join(out)
 
 
 def _installed(package):
@@ -4471,7 +4593,8 @@ def report_run(kind, part="main", log=None):
         title += ("\nTikTok пришлю " + ("завтра" if when == now.date() + dt.timedelta(days=1)
                                          else f"{when:%d.%m}")
                   + ": он считает статистику с отставанием на два дня")
-    sent = telegram_bot.send_report(shots_in(folder, nets), title, numbers_text(folder, nets))
+    sent = telegram_bot.send_report(shots_in(folder, nets), title, numbers_text(folder, nets),
+                                    table=numbers_table(folder, title.splitlines()[0], nets))
     _report_log(kind, first, f"{part} {'sent' if sent else 'not sent'}")
     if log is not None:
         log.append(f"{title.splitlines()[0][2:]}: " + ("отправлено" if sent else

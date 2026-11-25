@@ -191,16 +191,50 @@ for name in ("youtube", "instagram", "tiktok"):
 bot.load_settings = lambda: {"token": "1:" + "A" * 35, "owner": "111"}
 bot.destinations = lambda role: []
 bot.send_album = lambda pics, chat_id=None, thread=None: sent.append(("album", len(pics), chat_id)) or True
-bot.send = lambda text, preview=True, chat_id=None, keyboard=False, thread=None: sent.append(("text", text, chat_id)) or True
+bot.send = lambda text, preview=True, chat_id=None, keyboard=False, thread=None, html=False: \
+    sent.append(("text", text, chat_id, html)) or True
 bot.send_report(accstats.shots_in(day), "📊 Статистика за вчера, 28.10", accstats.numbers_text(day))
 say([s[0] for s in sent] == ["album", "text"]
     and sent[1][1] == "📊 Статистика за вчера, 28.10\nInstagram — 113\nTikTok — 286 (за 27.10)\nYouTube — 60"
-    and sent[1][2] == "111", f"отчёт: альбом, потом\n{sent[1][1] if len(sent) > 1 else ''}")
+    and sent[1][2] == "111", f"отчёт без таблицы — как раньше, текстом\n{sent[1][1] if len(sent) > 1 else ''}")
+
+print("\n--- таблица (2026-11-25: «табличка с ячейками, датой, на какое время актуальна») ---")
+sent.clear()
+table = accstats.numbers_table(day, "📊 Статистика за вчера, 28.10")
+bot.send_report(accstats.shots_in(day), "📊 Статистика за вчера, 28.10", accstats.numbers_text(day),
+                table=table)
+say([s[0] for s in sent] == ["album", "text"] and sent[1][3] and sent[1][1] == table,
+    "отчёт: альбом, потом таблица (HTML)")
+grid = table.split("<pre>")[1].split("</pre>")[0].splitlines()
+say(len({len(line) for line in grid}) == 1 and len(grid[0]) <= 34,
+    f"все строки таблицы одной ширины ({len(grid[0])} знаков) — столбцы ровные")
+say("| Instagram |    113 | 28.10 |" in grid and "| TikTok    |    286 | 27.10 |" in grid,
+    "у каждой сети — свой день в ячейке (TikTok — позавчера)")
+say("<b>📊 Статистика за вчера, 28.10</b>" in table and "🕒 Актуально на" in table,
+    "заголовок и время, на которое цифры актуальны")
+say(all(ord(ch) < 0x2500 or ch in "—" for line in grid for ch in line),
+    "рамка из + - |, без ┌─┐: их нет в части шрифтов телефонов")
+week7 = folder_with({"instagram": ("950", "02.11–08.11"), "youtube": ("71", "7 дней")})
+open(os.path.join(week7, "youtube.png"), "wb").write(b"\x89PNG")
+os.utime(os.path.join(week7, "youtube.png"), (dt.datetime(2026, 11, 12, 9, 6).timestamp(),) * 2)
+table = accstats.numbers_table(week7, "📊 Неделя")
+say("| 02-08.11 |" in table and "| 06-12.11 |" in table and "последние 7 дн. на момент снимка" in table,
+    "«7 дней» — датами от момента снимка, с пояснением под таблицей")
+holes_t = accstats.numbers_table(holes, "📊 Вчера")
+say("| TikTok    |    нет | 29.10 |" in holes_t and "не снял: в меню профиля нет TikTok Studio" in holes_t,
+    "не снятая сеть — «нет» и дата отчёта в ячейке, причина под таблицей")
+long_fb = folder_with({"facebook": ("25", "всё время; за период посчитаю со следующего снимка")})
+t = accstats.numbers_table(long_fb, "📊 x")
+say("| всё время |" in t and "Facebook: за период посчитаю" in t, "длинный период — коротко в ячейке, остальное строкой")
+say("&lt;" in accstats.numbers_table(folder_with({"instagram": ("1", "<b>")}), "x"),
+    "текст из заметок экранируется — HTML не ломается")
+
 sent.clear()
 accstats.latest_shots = lambda: (accstats.shots_in(day), dt.date.today().isoformat())
 bot.send_shots(fresh=True)
-say([s[0] for s in sent] == ["album", "text"] and sent[1][1].startswith("📊 Просмотры\nInstagram — 113"),
-    "/stats: альбом, потом «📊 Просмотры»")
+say([s[0] for s in sent] == ["album", "text"] and sent[1][3]
+    and sent[1][1].startswith("<b>📊 Просмотры</b>") and "| Instagram |" in sent[1][1],
+    "/stats: альбом, потом таблица «📊 Просмотры»")
 
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)
