@@ -178,6 +178,7 @@ def run(phone, cfg=CFG):
     session.device.back = phone.back
     session.human.pause = lambda a, b: 0
     session._ensure_feed = lambda cfg, log, timeout=4: True
+    session._in_feed_now = lambda state, cfg: True
     session.ui.feed_caption = lambda nodes, screen=None, package=None: (
         "Куриные энчилады с сыром", "", "")
 

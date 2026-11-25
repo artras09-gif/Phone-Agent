@@ -1525,8 +1525,18 @@
         {
           "desc": "Number of likes",
           "clickable": true
+        },
+        {
+          "desc": " likes",
+          "clickable": true
+        },
+        {
+          "desc": " лайк",
+          "clickable": true
         }
       ],
+      "_like_count_note": "2026-11-25, английский TikTok: кнопка подписана «Like video. 233 likes» — старые «Number of likes» не совпадали, и ссылка не бралась («число лайков не прочиталось»). Не нашлось ни так — число читает модель (likes_by_vision).",
+      "likes_by_vision": true,
       "share_selectors": [
         {
           "desc": "Поделиться видео",
@@ -1574,8 +1584,17 @@
         {
           "contains": "Discover",
           "clickable": true
+        },
+        {
+          "desc_exact": "Search",
+          "clickable": true
+        },
+        {
+          "desc_exact": "Поиск",
+          "clickable": true
         }
       ],
+      "_discover_note": "2026-11-25: в английском TikTok нижней вкладки «Discover» нет (Home, Shop, +, Inbox, Profile) — к поиску ведёт значок «Search» вверху справа. Именно desc_exact: внизу у роликов бывает строка-подсказка «Search · …», она открыла бы поиск с чужим запросом.",
       "search_boxes": [
         {
           "contains": "Поиск"
@@ -1602,6 +1621,10 @@
         },
         {
           "desc": "You liked this video",
+          "clickable": true
+        },
+        {
+          "desc_exact": "Video liked",
           "clickable": true
         }
       ],
@@ -1900,6 +1923,8 @@
         }
       ],
       "search_uri": "instagram://explore",
+      "search_box_point": [0.44, 0.08],
+      "_search_box_point_note": "Строка поиска на «Интересном» (2026-11-25: «Search with Meta AI», центр 560x221 на 1280x2772). Нужна, когда верхняя плитка играет ролик и дерево не снимается. Не попала — модель находит строку сама и запоминает в analytics/link_fixes.json.",
       "comments_need_playing": false
     },
     "facebook": {

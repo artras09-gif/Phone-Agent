@@ -1542,26 +1542,177 @@ def _likes_by_vision(log):
     if not ok:
         log.append("  зрение недоступно — число лайков не прочитать")
         return None
+    # Две попытки на свежих снимках: первый кадр после двойного тапа бывает
+    # с сердцем во весь экран поверх числа (живьём 2026-11-25: один ролик
+    # из двух — «не прочиталось», следующий прочитался).
+    answer = ""
+    for attempt in range(2):
+        if attempt:
+            abort.sleep(random.uniform(0.8, 1.4))
+        try:
+            png = adb.exec_out("screencap -p", timeout=20)
+        except adb.AdbError:
+            continue
+        if not png or vision.looks_blank(png):
+            continue
+        try:
+            answer = abort.call(vision.ask, png, _LIKES_PROMPT, max_tokens=24, temperature=0)
+        except vision.VisionError as e:
+            log.append(f"  зрение не ответило про лайки: {e}")
+            continue
+        if vision.looks_degenerate(answer) or "нет" in (answer or "").lower()[:6]:
+            continue
+        likes = _parse_count(answer)
+        if likes:
+            log.append(f"  лайков по картинке: {likes} («{_clean(answer)[:24]}»)")
+            return likes
+    log.append(f"  модель не нашла числа лайков (ответ: «{_clean(answer or '')[:30]}») — "
+               "возможно, автор их скрыл")
+    return None
+
+
+def _link_fixes_path():
+    return os.path.join(os.path.dirname(config.QUEUE_DIR), "analytics", "link_fixes.json")
+
+
+def _link_fixes():
     try:
-        png = adb.exec_out("screencap -p", timeout=20)
-    except adb.AdbError:
-        return None
-    if not png or vision.looks_blank(png):
-        return None
+        with open(_link_fixes_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _remember_link_fix(key, value):
+    data = _link_fixes()
+    data[key] = {"value": value, "at": time.strftime("%Y-%m-%d")}
     try:
-        answer = vision.ask(png, _LIKES_PROMPT, max_tokens=24, temperature=0)
+        os.makedirs(os.path.dirname(_link_fixes_path()), exist_ok=True)
+        with open(_link_fixes_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+
+
+SEARCH_ASK = """Снимок экрана телефона, {w}x{h} пикселей, приложение {app}.
+Где СТРОКА ПОИСКА — поле, куда вводят текст для поиска (обычно вверху, со
+значком лупы, «Поиск» / «Search»)? Ответь JSON: {{"x": число, "y": число,
+"что": "как подписано"}} в пикселях этой картинки. Если строки поиска на
+экране нет — ответь {{"нет": true}}."""
+
+# Строка поиска — вверху экрана. Ниже этой доли точку модели не жмём: там
+# сетка роликов, и промах открыл бы чужой ролик или профиль.
+SEARCH_TOP_SHARE = 0.30
+
+
+SHARE_ASK = """Снимок экрана телефона, {w}x{h} пикселей: ролик в ленте {app}.
+Справа колонка кнопок. Где кнопка «ПОДЕЛИТЬСЯ» (Share; значок — изогнутая
+стрелка или бумажный самолётик)? Не «Сохранить», не «Remix», не комментарии.
+Ответь JSON: {{"x": число, "y": число, "что": "как подписано"}} в пикселях этой
+картинки. Если такой кнопки не видно — ответь {{"нет": true}}."""
+
+
+def _share_by_eye(cfg, key, w, h, log):
+    """Где «поделиться», когда её нет ни в дереве, ни в рецепте.
+
+    ((x, y), "память"|"модель") или (None, None). Сначала запомненное место
+    (проверка — открылся ли лист со ссылкой — в `_save_link`), потом модель.
+    Точку модели берём только в правой колонке: промах в середину экрана —
+    это тап по видео, а не по кнопке.
+    """
+    known = (_link_fixes().get(key) or {}).get("value")
+    if isinstance(known, list) and len(known) == 2:
+        return (int(known[0] * w), int(known[1] * h)), "память"
+    png, iw, ih = escape._full_shot()
+    way = escape.hands_ready(iw, ih) if png else None
+    if way is None:
+        log.append("  «поделиться» нет в дереве, а модель не может показать точку ({})"
+                   .format(escape.hands_why()))
+        return None, None
+    try:
+        raw = abort.call(vision.ask, png, SHARE_ASK.format(
+            w=iw, h=ih, app=cfg.get("title") or cfg.get("package")),
+            system=escape.SYSTEM, max_tokens=escape.ANSWER_TOKENS,
+            temperature=0.1, shrink=1, think=escape.THINK)
     except vision.VisionError as e:
-        log.append(f"  зрение не ответило про лайки: {e}")
-        return None
-    if vision.looks_degenerate(answer) or "нет" in (answer or "").lower()[:6]:
-        return None
-    likes = _parse_count(answer)
-    if likes:
-        log.append(f"  лайков по картинке: {likes} («{_clean(answer)[:24]}»)")
-    return likes
+        log.append(f"  модель не ответила, где «поделиться»: {e}")
+        return None, None
+    data = vision._json_from(raw or "")
+    got = None if isinstance(data, dict) and data.get("нет") else escape._point_of(raw)
+    if not got:
+        log.append("  модель не видит кнопки «поделиться»")
+        return None, None
+    ix, iy = escape._to_image(got[0], got[1], way, iw, ih)
+    x, y = ix * w / iw, iy * h / ih
+    if not (w * 0.75 <= x < w and h * 0.25 <= y < h * 0.92):
+        log.append("  модель показала «поделиться» не в правой колонке ({:.0f}, {:.0f}) — "
+                   "не жму".format(x, y))
+        return None, None
+    return (int(x), int(y)), "модель"
 
 
-def _read_clipboard(cfg, route, log):
+def _search_field_after_tap(x, y):
+    adb.tap(int(x), int(y))
+    human.pause(1.2, 2.0)
+    tree = ui.dump(retries=2, tolerant=True, timeout=10)
+    return ui.find_one(tree, cls="EditText") if tree else None
+
+
+def _search_by_eye(cfg, w, h, log):
+    """Найти строку поиска без разметки: запомненной точкой, потом моделью.
+
+    Возвращает поле ввода (узел EditText) или None. Жмём только в верхней
+    трети экрана и только если после тапа появилось поле ввода — иначе
+    «назад» и честное «не нашёл».
+    """
+    key = f"{cfg.get('package')}:строка поиска"
+    known = (_link_fixes().get(key) or {}).get("value")
+    if isinstance(known, list) and len(known) == 2:
+        field = _search_field_after_tap(known[0] * w, known[1] * h)
+        if field is not None:
+            log.append("  строку поиска нашёл по запомненной точке")
+            return field
+        device.back()
+        human.pause(0.6, 1.0)
+
+    png, iw, ih = escape._full_shot()
+    way = escape.hands_ready(iw, ih) if png else None
+    if way is None:
+        log.append("  модель не может показать точку ({}) — строку поиска не нашёл"
+                   .format(escape.hands_why()))
+        return None
+    try:
+        raw = abort.call(vision.ask, png, SEARCH_ASK.format(
+            w=iw, h=ih, app=cfg.get("title") or cfg.get("package")),
+            system=escape.SYSTEM, max_tokens=escape.ANSWER_TOKENS,
+            temperature=0.1, shrink=1, think=escape.THINK)
+    except vision.VisionError as e:
+        log.append(f"  модель не ответила, где строка поиска: {e}")
+        return None
+    data = vision._json_from(raw or "")
+    got = None if isinstance(data, dict) and data.get("нет") else escape._point_of(raw)
+    if not got:
+        log.append("  модель не видит строки поиска на экране")
+        return None
+    ix, iy = escape._to_image(got[0], got[1], way, iw, ih)
+    x, y = ix * w / iw, iy * h / ih
+    if not (0 <= x < w and 0 <= y < h * SEARCH_TOP_SHARE):
+        log.append("  модель показала строку поиска не вверху ({:.0f}, {:.0f}) — "
+                   "не жму".format(x, y))
+        return None
+    field = _search_field_after_tap(x, y)
+    if field is None:
+        log.append("  по точке модели поле ввода не открылось — откатываюсь")
+        device.back()
+        human.pause(0.6, 1.0)
+        return None
+    _remember_link_fix(key, [round(x / w, 3), round(y / h, 3)])
+    log.append("  строку поиска нашла модель ({:.0f}, {:.0f}) — запомнил".format(x, y))
+    return field
+
+
+def _read_clipboard(cfg, route, log, w=None, h=None):
     """Прочитать буфер обмена — единственным доступным здесь способом.
 
     С Android 10 буфер читает только приложение на переднем плане, а
@@ -1602,6 +1753,22 @@ def _read_clipboard(cfg, route, log):
     # вовсе, и в журнале это выглядело как «строки поиска не нашёл». Поэтому
     # последний шаг пути повторяется один раз. Повтор безопасен: если первый
     # тап всё-таки прошёл, мы уже на экране поиска, и там этой кнопки нет.
+    # Разметки нет вовсе — на экране что-то играет. Так у «Интересного»
+    # Instagram (2026-11-25): верхняя плитка сама проигрывает ролик, дерево
+    # не снимается, и агент застревал там «строки поиска не нашёл». Строка
+    # поиска стоит наверху всегда на одном месте — жмём по точке, а экран
+    # поиска уже статичен и снимается (проверено: EditText «Search with
+    # Meta AI», 35 узлов).
+    if box is None and field is None and not tree and w and h:
+        at = _point(cfg, "search_box_point", w, h)
+        if at:
+            log.append("  разметки нет (там играет ролик) — жму строку поиска по точке")
+            _tap_any(at)
+            human.pause(1.2, 2.0)
+            tree = ui.dump(retries=2, tolerant=True, timeout=10)
+            box = _pick(tree, cfg.get("search_boxes") or []) if tree else None
+            field = ui.find_one(tree, cls="EditText") if tree else None
+
     if box is None and field is None and route:
         log.append("  экран не сменился — повторяю переход к поиску")
         _tap_any(route[-1])
@@ -1609,6 +1776,12 @@ def _read_clipboard(cfg, route, log):
         tree = ui.dump(retries=2, tolerant=True, timeout=10)
         box = _pick(tree, cfg.get("search_boxes") or []) if tree else None
         field = ui.find_one(tree, cls="EditText") if tree else None
+
+    # Последняя ступень — как у статистики: модель смотрит на снимок и сама
+    # находит строку поиска. Найденное место запоминается, и в следующий раз
+    # оно идёт без модели.
+    if box is None and field is None and w and h:
+        field = _search_by_eye(cfg, w, h, log)
 
     if box is None and field is None:
         log.append("  строки поиска не нашёл — прочитать буфер нечем")
@@ -1652,6 +1825,19 @@ def _read_clipboard(cfg, route, log):
     return found.group(0) if found else ""
 
 
+def _feed_after_link(state, cfg, log):
+    """После захода за ссылкой — точно ли снова лента. Проверяет модель
+    (`_in_feed_now`); не лента — та же лесенка возврата, что и в прогреве.
+    Без модели остаётся проверка `_back_to_feed`: лучше, чем ничего."""
+    if state.get("blind"):
+        return True
+    if _in_feed_now(state, cfg):
+        return True
+    log.append("  после ссылки оказался не в ленте («{}») — возвращаюсь"
+               .format(state.get("screen_kind") or "другое"))
+    return _recover_feed(state, cfg, log)
+
+
 def _back_to_feed(cfg, home_at, log):
     """Вернуться из поиска в ленту.
 
@@ -1668,8 +1854,20 @@ def _back_to_feed(cfg, home_at, log):
         device.back()
         human.pause(0.6, 1.1)
 
+    # Заходили прямой ссылкой (у Instagram — «Интересное») — так же прямой
+    # ссылкой и возвращаемся. Пустому дереву тут не верим: на «Интересном»
+    # верхняя плитка играет ролик, дерево не снимается точь-в-точь как в
+    # ленте, и агент «возвращался» туда и дальше лайкал сетку (2026-11-25).
+    if cfg.get("search_uri") and cfg.get("open_uri"):
+        device.open_uri(cfg["open_uri"], cfg.get("package"))
+        human.pause(2.0, 3.0)
+        return _ensure_feed(cfg, log)
+
     blind = not (cfg.get("home_tabs") or [])
-    seen = cfg.get("feed_selected") if cfg.get("feed_no_tree") is False else None
+    # Выбранная вкладка ленты — признак для всех, у кого она задана: TikTok
+    # с ноября 2026 тоже отдаёт дерево на ходу, и без этой проверки агент
+    # четыре раза подряд жал «Home» (каждый раз — обновление ленты).
+    seen = cfg.get("feed_selected")
     for _ in range(4):
         tree = ui.dump(retries=1, tolerant=True, timeout=5)
         if not tree and not blind:
@@ -1844,17 +2042,35 @@ def _save_link(state, cfg, w, h, log, app):
     """
     by_point = bool(cfg.get("share_point"))
     if not (cfg.get("share_selectors") or by_point):
-        return False                        # для этой ленты не заведено
+        log.append("  ссылку не беру: для этой ленты не заведено, как её брать")
+        return False
     if state.get("same_frames"):
-        return False                        # под пальцем не видео, а окно
-    if _video_playing(state) is not True:
+        log.append("  ссылку не беру: кадр не сменился, под пальцем может быть окно")
+        return False
+    if state.get("not_feed_streak"):
+        log.append("  ссылку не беру: модель сомневается, что это лента")
+        return False
+    playing = _video_playing(state)
+    still_tree = None
+    if playing is False and not by_point:
+        # Кадр не меняется: фотопост TikTok («Photo», 2026-11-25) или
+        # стоп-кадр. Ставить на паузу нечего, зато дерево у такого поста
+        # снимается — и если в нём есть «поделиться», это пост ленты, а не
+        # окно поверх неё. Раньше тут молча сдавались: «ролик не играет».
+        still_tree = ui.dump(retries=1, tolerant=True, timeout=6) or []
+        if _pick(still_tree, cfg.get("share_selectors") or []) is None:
+            still_tree = None
+    if playing is not True and still_tree is None:
+        log.append("  ссылку не беру: " + ("ролик не играет, и кнопки «поделиться» нет"
+                                           if playing is False
+                                           else "снимок экрана не снялся"))
         return False
 
     # Пауза нужна только там, где без неё не снимается дерево. В Shorts и
     # Reels оно снимается на ходу, а лишняя пауза — лишний тап по видео,
     # который сам по себе может открыть что угодно.
     paused = False
-    if not by_point:
+    if not by_point and still_tree is None:
         for _ in range(2):
             _tap_video(state, w, h)
             if _video_playing(state) is False:
@@ -1864,7 +2080,7 @@ def _save_link(state, cfg, w, h, log, app):
             log.append("  хотел забрать ссылку, но пауза не сработала")
             return False
 
-    tree = ui.dump(retries=1, tolerant=True, timeout=6) or []
+    tree = still_tree or ui.dump(retries=1, tolerant=True, timeout=6) or []
     if not tree and not by_point:
         log.append("  дерево не снялось — ссылку не забрал")
         _resume_if_paused(state, w, h, log)
@@ -1895,6 +2111,13 @@ def _save_link(state, cfg, w, h, log, app):
     share_at = share if share is not None else _point(cfg, "share_point", w, h)
     route = ([discover] if discover is not None
              else _points(cfg, "search_points", w, h))
+    # Ни в дереве, ни в рецепте — кнопку ищет модель на снимке (у Shorts
+    # правой колонки в дереве нет, а колонка меняется с обновлениями:
+    # 2026-11-25 там уже Save/Share/Ask/Remix вместо лайк/дизлайк/…).
+    share_key = f"{cfg.get('package')}:поделиться"
+    share_by_eye = None
+    if share_at is None and route:
+        share_at, share_by_eye = _share_by_eye(cfg, share_key, w, h, log)
     if share_at is None or not route:
         log.append("  кнопок для ссылки нет — возвращаю ролик")
         _resume_if_paused(state, w, h, log)
@@ -1955,6 +2178,13 @@ def _save_link(state, cfg, w, h, log, app):
                    % ((link.desc or link.text or "")[:40]))
         link = None
 
+    if share_by_eye and link is not None:
+        if share_by_eye == "модель":
+            log.append("  «поделиться» нашла модель — запомнил место")
+        _remember_link_fix(share_key, [round(share_at[0] / w, 3), round(share_at[1] / h, 3)])
+    elif share_by_eye == "память" and link is None:
+        _remember_link_fix(share_key, None)      # место устарело — в следующий раз спросим
+
     if link is None:
         log.append("  лист «поделиться» не открылся — откатываюсь")
         device.back()
@@ -1966,8 +2196,9 @@ def _save_link(state, cfg, w, h, log, app):
     ui.tap_node(link)                       # адрес ушёл в буфер обмена
     human.pause(1.0, 1.6)
 
-    url = _read_clipboard(cfg, route, log)
+    url = _read_clipboard(cfg, route, log, w, h)
     _back_to_feed(cfg, home_at, log)
+    _feed_after_link(state, cfg, log)
     if not url:
         return False
 
