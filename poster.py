@@ -1030,6 +1030,11 @@ def _to_home(step, ctx, log_path, index):
     human.pause(2.5, 4.0)
     paused = tab_tapped = False
     reveals = wakes = 0
+    # Выходы на главную без дерева экрана (`home_uri`, `home_xy`) — по одному
+    # разу, по порядку; `how` — каким вышли, для отчёта.
+    exits = ([("uri", step["home_uri"])] if step.get("home_uri") else []) \
+        + ([("xy", step["home_xy"])] if step.get("home_xy") else [])
+    how = ""
     end = time.time() + step.get("timeout", 40)
     nodes = []
     while time.time() < end:
@@ -1052,7 +1057,7 @@ def _to_home(step, ctx, log_path, index):
             continue
         if ui.find_any(nodes, step["home"]) is not None:
             ctx["at_home"] = True
-            return f"{label}: открыта"
+            return f"{label}: открыта" + (f" ({how})" if how else "")
         if not nodes and step.get("pause_xy") and not paused:
             # Лента TikTok играет — дерево не снимается. Касание по ролику
             # ставит его на паузу, тогда кнопки видны (как в редакторе).
@@ -1082,6 +1087,25 @@ def _to_home(step, ctx, log_path, index):
             # Приложение открылось не на главной вкладке — жмём её.
             ui.tap_node(tab)
             tab_tapped = True
+            human.pause(1.5, 2.5)
+            continue
+        if exits:
+            # 25.11 вечером Instagram четыре раза подряд открылся сразу в ленте
+            # Reels (запуск с ярлыка, после полного закрытия): в играющей ленте
+            # дерево не снимается, вкладку «Дом» в нём не найти — публикация
+            # сдавалась. Живьём 27.11 из Reels на главную ведут и прямая ссылка
+            # instagram://mainfeed, и касание вкладки «Дом» по месту. Модель
+            # здесь не зовём нарочно: в ленте личного аккаунта под пальцем
+            # лайки и подписки.
+            kind, value = exits.pop(0)
+            if kind == "uri":
+                device.open_uri(value, package)       # ссылка — в само приложение
+                how = "вышел на главную по ссылке"
+            else:
+                _ensure_front(ctx, label)             # касание вслепую — только по нему
+                w, h = adb.screen_size()
+                adb.tap(int(w * value[0]), int(h * value[1]))
+                how = "вышел на главную вкладкой «Дом» по месту"
             human.pause(1.5, 2.5)
             continue
         time.sleep(0.8)

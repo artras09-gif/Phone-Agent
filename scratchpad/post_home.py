@@ -147,6 +147,63 @@ try:
 except poster.StepFailed as e:
     say("не дождался главной" in str(e), f"главной нет — ошибка: {str(e)[:60]}")
 
+print("\n--- Instagram открылся сразу в ленте Reels (25.11: четыре сбоя подряд) ---")
+uris = []
+device.open_uri = lambda uri, package=None: uris.append((uri, package))
+IG_ID = "com.instagram.android:id/"
+IG_HOME = [node(rid=IG_ID + "title_logo", desc="Главная лента Instagram", bounds=(330, 120, 750, 200)),
+           node(rid=IG_ID + "feed_tab", desc="Главная", bounds=(0, 2140, 216, 2260), clickable=True,
+                selected=True),
+           node(rid=IG_ID + "clips_tab", desc="Reels", bounds=(216, 2140, 432, 2260), clickable=True)]
+IG_REELS = [node(rid=IG_ID + "feed_tab", desc="Главная", bounds=(0, 2140, 216, 2260), clickable=True),
+            node(rid=IG_ID + "clips_tab", desc="Reels", bounds=(216, 2140, 432, 2260), clickable=True,
+                 selected=True)]
+igstep = dict(poster.load_recipes()["reels"]["steps"][0])
+say(igstep.get("home_uri") == "instagram://mainfeed" and igstep.get("home_xy") == [0.097, 0.919]
+    and igstep.get("timeout", 40) >= 60 and poster.load_recipes()["reels"].get("rev", 0) >= 11,
+    f"в маршруте Instagram — выход ссылкой и вкладкой «Дом», шагу 60 с, rev {poster.load_recipes()['reels'].get('rev')}")
+
+
+def ig_home(seq, **over):
+    """_to_home по шагу Instagram из recipes.json на заданной череде экранов."""
+    global screens
+    screens = iter(seq)
+    ui.dump = lambda **k: next(screens, seq[-1])
+    tapped.clear()
+    uris.clear()
+    ctx_ = {"package": "app"}
+    return poster._to_home(dict(igstep, **over), ctx_, log, 1), ctx_
+
+
+line, c = ig_home([[], IG_HOME])
+say(uris == [("instagram://mainfeed", "app")] and not tapped and c.get("at_home") and "по ссылке" in line,
+    f"лента Reels без дерева — на главную ссылкой, вслепую ничего не нажато: {line}")
+line, c = ig_home([[], [], IG_HOME])
+say(len(uris) == 1 and tapped == [(104, 2205)] and c.get("at_home") and "вкладкой «Дом»" in line,
+    f"ссылка не помогла — вкладка «Дом» по месту (104, 2205): {line}")
+line, c = ig_home([IG_REELS, IG_HOME])
+say(tapped == ["Главная"] and not uris and line.endswith("открыта"),
+    f"лента Reels С деревом — нажата вкладка «Главная» из дерева, ссылка не нужна: {line}")
+line, c = ig_home([IG_HOME])
+say(not tapped and not uris and line.endswith("открыта"), "открылся на главной — ни ссылки, ни касаний")
+try:
+    ig_home([[]], timeout=0.3)
+    say(False, "главной так и нет — должна быть ошибка")
+except poster.StepFailed as e:
+    say("не дождался главной" in str(e) and len(uris) == 1 and tapped == [(104, 2205)],
+        f"не помогло ничего — каждый выход по одному разу, потом честная ошибка: {uris}, {tapped}")
+adb.current_app = lambda: ("com.android.launcher", "")
+device.screen_state = lambda: "unlocked"
+try:
+    ig_home([[], [], IG_HOME])
+    say(False, "на экране не Instagram — касаться вслепую нельзя")
+except poster.StepFailed as e:
+    say(uris and not tapped and "Вслепую не нажимаю" in str(e),
+        f"на экране чужое — ссылка открыта, а касания по месту НЕТ: {str(e)[:70]}")
+adb.current_app = lambda: ("app", "")
+line, c = ig_home([[], IG_HOME], home_uri=None)
+say(not uris and tapped == [(104, 2205)], "без ссылки в маршруте — сразу вкладка «Дом» по месту")
+
 print("\n--- сбой — заново с главной; после финальной кнопки — никогда ---")
 for name in ("unlock", "ensure_awake", "keep_awake", "close_overlays", "cleanup_pushed", "remove_remote",
              "forget_pushed", "remember_pushed"):
