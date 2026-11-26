@@ -226,17 +226,38 @@ def layout_title(title, tpl):
     font = Font.get(os.path.join(tpl["dir"], t["font"]))
     parts = [p.split() for p in title.split("|") if p.strip()]
     glue = {w.lower() for w in t.get("glue", [])}
-    size = t["size"]
-    while True:
-        lines = [line for words in parts
-                 for line in _wrap(words, font, size, t["max_width"], glue)]
-        if len(lines) <= t["max_lines"] or size <= t["min_size"]:
+    # `prefer_lines` (с 26.11, крупный заголовок): сначала две ровные строки
+    # чуть мельче, и только если не влезли и на `min_size` — до `max_lines`
+    # крупнее. Иначе при кегле 64 вторая часть рвалась и внизу висел хвост
+    # «LA SALA».
+    for limit in [n for n in (t.get("prefer_lines"), t["max_lines"]) if n]:
+        size = t["size"]
+        while True:
+            lines = [line for words in parts
+                     for line in _wrap(words, font, size, t["max_width"], glue)]
+            if len(lines) <= limit or size <= t["min_size"]:
+                break
+            size -= 1
+        if len(lines) <= limit:
             break
-        size -= 1
     if len(lines) > t["max_lines"] and len(parts) > 1:
         # Перенос модели не влез — переносим целиком по ширине.
         return layout_title(" ".join(w for words in parts for w in words), tpl)
     return size, lines
+
+
+def hook_lines(title, size, lines, tpl):
+    """Сколько строк занимает крючок — часть заголовка до «|»: она вся
+    акцентным цветом. При кегле 64 (с 26.11) крючок бывает и в две строки,
+    и жёлтой была бы только первая половина фразы. Перенос модели не влез
+    и заголовок переложен целиком по ширине — акцент, как раньше, одна строка."""
+    parts = [p.split() for p in title.split("|") if p.strip()]
+    if len(parts) < 2:
+        return 1
+    t = tpl["title"]
+    font = Font.get(os.path.join(tpl["dir"], t["font"]))
+    first = _wrap(parts[0], font, size, t["max_width"], {w.lower() for w in t.get("glue", [])})
+    return len(first) if len(first) < len(lines) and lines[:len(first)] == first else 1
 
 
 def fit_video(src_w, src_h, tpl):
@@ -525,10 +546,11 @@ def render(src, title, tpl, out, tools, meta=None, cap_mb=None):
         texts.append(f"drawtext=fontfile={font_file(font)}:textfile={name}:expansion=none:"
                      f"fontsize={fsize}:fontcolor={_color(color)}:x={x}:y={y}:y_align=baseline")
 
-    accent = t.get("accent") == "first_line" and len(lines) > 1
+    accent = hook_lines(title, size, lines, tpl) if (t.get("accent") == "first_line"
+                                                     and len(lines) > 1) else 0
     bases = title_baselines(len(lines), size, title_top(vh, vy, tpl), tpl)
     for i, (line, base) in enumerate(zip(lines, bases)):
-        color = t["accent_color"] if accent and i == 0 else t["color"]
+        color = t["accent_color"] if i < accent else t["color"]
         draw(line, t["font"], size, color, "(w-text_w)/2", base)
     for line, base in zip(badge.get("lines", []), badge.get("baselines", [])):
         draw(line, badge["font"], badge["size"], badge["color"], badge["x"], base)
@@ -611,7 +633,7 @@ PROMPT = """Ты редактор канала «{channel}» — {about}. Пиш
 {source}
 {user_title}
 Нужно:
-1. title — заголовок поверх видео. Коротко и по фактам: кто и что сделал. Не длиннее {title_chars} знаков, без эмодзи, кавычек, хэштегов и точки в конце. {title_rule} Примеры заголовков канала:
+1. title — заголовок поверх видео. Его задача — остановить того, кто листает ленту, за секунду. Не сухой пересказ «кто что сделал» и не начало новостной заметки. Приёмы: начни с самой неожиданной детали или действия, а не с имени и должности; короткие слова и сильный глагол в настоящем времени; контраст, число или недосказанность, которую раскрывает видео. Интрига — да, обман — нет: всё в заголовке должно быть правдой по подписи или кадру, без «вы не поверите» и выдуманных подробностей. Строго не длиннее {title_chars} знаков — короче лучше. Обычными буквами (капсом на видео сделаем сами), без эмодзи, кавычек, хэштегов и точки в конце. {title_rule} Знак | — только место переноса строки на видео: без него заголовок должен читаться правильной фразой (нужна пауза — ставь запятую или двоеточие перед |). Примеры заголовков канала:
 {examples}
 2. caption — описание поста: {caption_style} Не длиннее {caption_chars} знаков.
 Не выдумывай фактов, которых нет в подписи или на кадре. Без ссылок, @упоминаний и призывов подписаться.
@@ -621,13 +643,16 @@ PROMPT = """Ты редактор канала «{channel}» — {about}. Пиш
 EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍]")
 
 
-def _clean_title(text, font):
+def _clean_title(text, font, upper=True):
+    """Заголовок без эмодзи, кавычек, хэштегов и точки. На видео — капсом
+    (`upper`), в тексте поста — обычными буквами, как написала модель."""
     text = EMOJI.sub("", str(text or ""))
     text = re.sub(r"#\w+", "", text)
     text = text.replace("«", "").replace("»", "").replace('"', "").replace("“", "").replace("”", "")
     text = re.sub(r"\s*\|\s*", " | ", text)
     text = re.sub(r"\s+", " ", text).strip().strip("|").strip().rstrip(".").strip()
-    text = text.upper()
+    if upper:
+        text = text.upper()
     return "".join(ch for ch in text if ch in " |" or font.has(ch))
 
 
@@ -635,28 +660,52 @@ def _utf16(text):
     return len(text.encode("utf-16-le")) // 2
 
 
-def _clean_caption(text, limit):
-    """Описание без ссылок и @упоминаний, в пределах `limit` знаков UTF-16
-    (так считает Threads — самый строгий из списка, 500)."""
+MAX_TAGS = 5
+
+
+def _clean_caption(text, limit, head=""):
+    """Текст поста: заголовок, описание и хэштеги — через пустую строку
+    (просьба 2026-11-26: «пустыми строками отделить заголовок, описание и
+    хэштеги, а он всё в одну кучу»). Хэштеги вынимаются из ответа модели, где
+    бы она их ни поставила: хвост из хэштегов уходит вниз целиком, а тег
+    посреди фразы («la #OTAN responde») остаётся в ней словом. Без ссылок и
+    @упоминаний, в пределах `limit` знаков UTF-16 (так считает Threads —
+    самый строгий из списка, 500); не влезает — укорачивается описание,
+    заголовок и хэштеги остаются."""
     text = re.sub(r"https?://\S+", "", str(text or ""))
     text = re.sub(r"(?<!\w)@[\w.]+", "", text)
-    text = re.sub(r"[ \t]+", " ", text).strip()
-    if _utf16(text) <= limit:
-        return text
-    tags = " ".join(re.findall(r"#\w+", text)[:4])
-    body = re.sub(r"#\w+", "", text).strip()
-    room = limit - (_utf16(tags) + 2 if tags else 0)
-    cut = body
+    tags, seen = [], set()
+    for tag in re.findall(r"#\w+", text):
+        if tag.lower() not in seen:
+            seen.add(tag.lower())
+            tags.append(tag)
+    tags = " ".join(tags[:MAX_TAGS])
+    tail = re.search(r"(?:\s*#\w+[,;]?)+[\s.]*$", text)
+    body = text[:tail.start()] if tail else text
+    body = re.sub(r"#(\w+)", r"\1", body)
+    body = "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in body.splitlines())
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    head = str(head or "").replace(" | ", " ").strip()
+    room = limit - sum(_utf16(p) + 2 for p in (head, tags) if p)
+    cut = body if room > 1 else ""
     while _utf16(cut) > room:
         stop = max(cut.rfind(". ", 0, len(cut) - 1), cut.rfind("! ", 0, len(cut) - 1),
                    cut.rfind("? ", 0, len(cut) - 1))
-        cut = cut[:stop + 1] if stop > 0 else cut[:room - 1].rstrip() + "…"
-    return (cut.strip() + ("\n\n" + tags if tags else "")).strip()
+        if stop > 0:
+            cut = cut[:stop + 1]
+            continue
+        cut = cut[:room - 1]
+        while _utf16(cut) > room - 1:              # эмодзи в UTF-16 — два знака
+            cut = cut[:-1]
+        cut = cut.rstrip() + "…"
+    return "\n\n".join(p for p in (head, cut.strip(), tags) if p)
 
 
 def write_texts(tpl, source, author="", frame=b"", user_title=""):
-    """(заголовок, описание) от модели. Свой заголовок человека не меняется.
+    """(заголовок на видео, текст поста) от модели; текст поста — заголовок,
+    описание и хэштеги через пустую строку. Свой заголовок человека не меняется.
     Модель не ответила за три попытки — MontageError с причиной."""
+    import postspec
     import vision
 
     tx = tpl["texts"]
@@ -692,9 +741,11 @@ def write_texts(tpl, source, author="", frame=b"", user_title=""):
         if not isinstance(data, dict):
             why = "ответила не по форме"
             continue
-        title = _clean_title(user_title or data.get("title"), font)
-        caption = _clean_caption(data.get("caption"), int(tx.get("caption_chars", 450)))
-        if title and caption:
+        raw = user_title or data.get("title")
+        title = _clean_title(raw, font)
+        caption = _clean_caption(data.get("caption"), postspec.LIMITS["threads"],
+                                 head=_clean_title(raw, font, upper=False))
+        if title and str(data.get("caption") or "").strip():
             return title, caption
         why = "пустой заголовок или описание"
     raise MontageError(f"модель не написала заголовок и описание ({why})")
@@ -813,7 +864,8 @@ def _make(row, work, say):
     if not stock:
         raise MontageError("«Запасы» не назначены — некуда класть готовое. Назови тему "
                            "«Запасы» и положи в неё что-нибудь — или /here запасы в ней.")
-    tpl = load_template(tb._saved().get("montage_template") or None)
+    # Тот же выбор, что видно в окне: выбранный шаблон удалили — основной.
+    tpl = load_template(tb.montage_templates()["montage_template"] or None)
     tools = linkfetch.ffmpeg_tools()
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work, exist_ok=True)

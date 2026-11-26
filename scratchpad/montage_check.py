@@ -15,6 +15,7 @@
   * отправка видео файлом кусками;
   * настоящий рендер, если на ПК есть ffmpeg.
 """
+import copy
 import json
 import os
 import shutil
@@ -65,6 +66,11 @@ font = montage.Font.get(os.path.join(tpl["dir"], tpl["title"]["font"]))
 say(all(font.has(c) for c in "ÁÉÍÓÚÑÜ¿¡áéíóúñü|"), "в Rubik Bold есть все буквы испанского")
 w = font.width("KIM JONG-UN RECIBE PERSONALMENTE", 40)
 say(780 < w < 820, f"ширина строки примера при кегле 40 — {w:.0f} px (на примере ~800)")
+# Логика переноса — на прежних мерках примеров (40/33, две строки): числа
+# сверены с ними. Нынешний шаблон крупнее — ниже, отдельно.
+big = tpl
+tpl = copy.deepcopy(big)
+tpl["title"].update(size=40, min_size=33, max_width=864, max_lines=2)
 size, lines = montage.layout_title("KIM JONG-UN RECIBE PERSONALMENTE A VLADIMIR PUTIN", tpl)
 say(lines == ["KIM JONG-UN RECIBE PERSONALMENTE", "A VLADIMIR PUTIN"] and size == 40,
     f"предлог «A» не висит в конце строки: {lines} @ {size}")
@@ -79,6 +85,22 @@ say(lines[0] != "PUTIN" and size == 33,
     f"неудачный перенос модели не ломает раскладку: {lines}")
 say(all(font.width(line, size) <= tpl["title"]["max_width"] for line in lines),
     "ни одна строка не шире 864 px")
+tpl = big
+size, lines = montage.layout_title("KIM JONG-UN ROMPE EL PROTOCOLO | Y RECIBE A PUTIN EN PERSONA", tpl)
+say(size >= 52 and len(lines) <= 3 and all(font.width(x, size) <= 960 for x in lines),
+    f"шаблон сейчас: заголовок в 45 знаков — крупно, до трёх строк: {lines} @ {size}")
+say(montage.hook_lines("KIM JONG-UN ROMPE EL PROTOCOLO | Y RECIBE A PUTIN EN PERSONA", size, lines, tpl) == 2,
+    "крючок в две строки — жёлтые обе")
+say(montage.hook_lines("KIM ROMPE EL PROTOCOLO | Y RECIBE A PUTIN", 64, ["KIM ROMPE EL PROTOCOLO", "Y RECIBE A PUTIN"],
+                       tpl) == 1 and montage.hook_lines("SIN CORTE", 64, ["SIN CORTE"], tpl) == 1,
+    "крючок в строку — жёлтая одна; без «|» — как раньше")
+size2, lines2 = montage.layout_title("SILENCIO INCÓMODO | Y ERDOGAN ABANDONA LA SALA", tpl)
+say(lines2 == ["SILENCIO INCÓMODO", "Y ERDOGAN ABANDONA LA SALA"] and 52 <= size2 < 64,
+    f"влезает в две строки чуть мельче — две, без хвоста «LA SALA»: {lines2} @ {size2}")
+size2, lines2 = montage.layout_title("PUTIN RECIBE PATATAS | DEL HUERTO", tpl)
+say(size2 == 64 and len(lines2) == 2, f"короткий — полным кеглем 64: {lines2} @ {size2}")
+bases = montage.title_baselines(len(lines), size, montage.title_top(1920, 0, tpl), tpl)
+say(bases[0] - size > 0, f"три строки над высоким роликом не уходят за верх кадра: {bases}")
 
 print("2. Ролик в кадре")
 say(montage.fit_video(1280, 720, tpl) == (1080, 608, 0, 682), "16:9 — во всю ширину, по центру 986")
@@ -135,6 +157,20 @@ long_caption = ("Primera frase del vídeo. " * 40) + "Más en https://x.com/a @a
 cap = montage._clean_caption(long_caption, 450)
 say(montage._utf16(cap) <= 450 and "https" not in cap and "@autor" not in cap and "#rusia" in cap,
     f"описание: ≤450 знаков UTF-16, без ссылок и @, хэштеги сохранены ({montage._utf16(cap)})")
+say(montage._clean_title("Kim rompe el protocolo | y recibe a Putin", font, upper=False)
+    == "Kim rompe el protocolo | y recibe a Putin", "для текста поста заголовок — обычными буквами")
+post = montage._clean_caption("Kim recibió a Putin en el aeropuerto. La #OTAN responde con dureza. "
+                              "#rusia #putin #corea #RUSIA", 500, head="Kim rompe el protocolo | y recibe a Putin")
+say(post == ("Kim rompe el protocolo y recibe a Putin\n\n"
+             "Kim recibió a Putin en el aeropuerto. La OTAN responde con dureza.\n\n"
+             "#OTAN #rusia #putin #corea"),
+    f"текст поста: заголовок / описание / хэштеги через пустую строку, без повторов:\n{post}")
+post = montage._clean_caption(long_caption, 500, head="Un titular de prueba")
+parts = post.split("\n\n")
+say(montage._utf16(post) <= 500 and parts[0] == "Un titular de prueba" and parts[-1].startswith("#rusia"),
+    f"длинное описание укорочено, заголовок и хэштеги на месте ({montage._utf16(post)} знаков)")
+post = montage._clean_caption("😀" * 600 + " #a", 500, head="T")
+say(montage._utf16(post) <= 500 and post.endswith("#a"), "описание из одних эмодзи — режется без зацикливания")
 
 print("4. Скачивание: причины по тексту ошибки")
 cases = {

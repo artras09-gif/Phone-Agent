@@ -708,6 +708,14 @@ pre.report{
           </label>
           <button class="btn" id="b-bs-link" style="align-self:flex-end">Добавить тему</button>
         </div>
+        <h2 style="margin:18px 0 6px">Шаблон монтажа</h2>
+        <p class="hint" style="margin:0 0 10px">По нему бот оформляет ролики из темы
+          «Монтаж» этого телефона. Новый шаблон — папка с template.json в
+          %LOCALAPPDATA%\PhoneAgent\templates: в списке он появится сам.</p>
+        <label class="field" style="width:260px">
+          Шаблон
+          <select id="bs-tpl"></select>
+        </label>
         <h2 style="margin:18px 0 6px">Статистика сама</h2>
         <p class="hint" style="margin:0 0 10px">В это время каждый день бот снимает
           статистику и шлёт её в тему статистики (не привязана — владельцу).
@@ -1118,7 +1126,12 @@ function renderBotSetup(setup, phone){
   }
   $("bs-time").value = setup.stats_time || "";
   bsKinds = setup.stats_kinds.slice();
+  const tpl = $("bs-tpl");
+  tpl.innerHTML = "";
+  for(const t of setup.montage_templates || []) tpl.append(new Option(t.name, t.id));
+  tpl.value = setup.montage_template || "";
   if(bsKeep){                            // тему добавили посреди правок — правки на место
+    if(bsKeep.tpl) tpl.value = bsKeep.tpl;
     for(const sel of box.querySelectorAll("select")){
       if(sel.dataset.job in bsKeep.jobs){
         sel.value = bsKeep.jobs[sel.dataset.job];
@@ -1145,6 +1158,7 @@ function renderBotSetup(setup, phone){
 }
 
 $("bs-time").addEventListener("input", bsMark);
+$("bs-tpl").addEventListener("change", bsMark);
 $("b-bs-link").addEventListener("click", async () => {
   const data = await send("bot-topic", {link: $("bs-link").value.trim(), name: $("bs-link-name").value.trim()});
   if(data && data.ok !== false){
@@ -1152,7 +1166,7 @@ $("b-bs-link").addEventListener("click", async () => {
     if(bsDirty){                         // перерисовать, не потеряв несохранённое
       const jobs = {};
       for(const sel of $("bs-jobs").querySelectorAll("select")) jobs[sel.dataset.job] = sel.value;
-      bsKeep = {jobs, time: $("bs-time").value, kinds: bsKinds.slice()};
+      bsKeep = {jobs, time: $("bs-time").value, kinds: bsKinds.slice(), tpl: $("bs-tpl").value};
       bsDirty = false;
     }
     bsSign = "";
@@ -1164,7 +1178,8 @@ $("b-bs").addEventListener("click", async () => {
     const [chat, topic] = sel.value ? sel.value.split("|") : ["", ""];
     jobs[sel.dataset.job] = {chat, topic};
   }
-  const data = await send("bot-setup", {jobs, stats_time: $("bs-time").value, stats_kinds: bsKinds});
+  const data = await send("bot-setup", {jobs, stats_time: $("bs-time").value, stats_kinds: bsKinds,
+                                        montage_template: $("bs-tpl").value});
   if(data && data.ok !== false){
     bsDirty = false; bsSign = "";
     $("bs-dirty").textContent = "";

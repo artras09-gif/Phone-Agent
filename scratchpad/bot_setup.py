@@ -164,5 +164,39 @@ say({"day", "week", "month"} <= kinds, f"включены все — все: {so
 bot.apply_setup({"stats_time": ""})
 say(accstats.reports_due(monday) == [] and bot.setup()["stats_time"] == "", "время пустое — сама не шлёт")
 
+print("\n--- шаблон монтажа: выпадающий список (26.11) ---")
+import montage  # noqa: E402
+
+s = bot.setup()
+say(s["montage_template"] == "rusorama" and {"id": "rusorama", "name": "Rusorama"} in s["montage_templates"],
+    f"по умолчанию — Rusorama: {s['montage_templates']}")
+mine = os.path.join(tmp, "templates", "second")
+os.makedirs(mine)
+with open(os.path.join(mine, "template.json"), "w", encoding="utf-8") as f:
+    json.dump({"name": "Второй канал", "title": {"font": "x.ttf"}}, f, ensure_ascii=False)
+broken = os.path.join(tmp, "templates", "broken")
+os.makedirs(broken)
+with open(os.path.join(broken, "template.json"), "w", encoding="utf-8") as f:
+    f.write("{не json")
+ids = [t["id"] for t in bot.setup()["montage_templates"]]
+say("second" in ids and "broken" not in ids, f"новая папка с template.json — сама в списке, битая — нет: {ids}")
+bot.apply_setup({"montage_template": "second", "stats_time": "11:00"})
+s = bot.setup()
+say(s["montage_template"] == "second" and bot._saved()["montage_template"] == "second"
+    and montage.load_template(bot._saved()["montage_template"])["name"] == "Второй канал",
+    "выбор сохранён, монтаж возьмёт именно его")
+try:
+    bot.apply_setup({"montage_template": "нет-такого", "stats_time": "13:00"})
+    refused = ""
+except ValueError as e:
+    refused = str(e)
+say("нет шаблона" in refused and bot.setup()["stats_time"] == "11:00" and bot._saved()["montage_template"] == "second",
+    f"неизвестный шаблон — отказ до любых правок: {refused}")
+bot.apply_setup({"stats_time": "12:00"})
+say(bot._saved()["montage_template"] == "second", "сохранение без поля шаблона выбор не сбрасывает")
+import shutil  # noqa: E402
+shutil.rmtree(mine)
+say(bot.setup()["montage_template"] == "rusorama", "выбранный шаблон удалили — в окне снова Rusorama")
+
 print("\nИТОГ:", "всё зелёное" if ok else "ЕСТЬ ПАДЕНИЯ")
 sys.exit(0 if ok else 1)

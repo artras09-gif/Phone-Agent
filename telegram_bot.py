@@ -1989,7 +1989,30 @@ def setup():
         jobs_out[job] = {"title": JOB_TITLES[job], "unbound": JOB_UNBOUND[job],
                          "chat": home[0] if home else "", "topic": str(home[1]) if home else ""}
     return {"groups": groups, "jobs": jobs_out, "order": list(JOBS),
-            "stats_time": daily_stats_time(), "stats_kinds": stats_kinds()}
+            "stats_time": daily_stats_time(), "stats_kinds": stats_kinds(),
+            **montage_templates()}
+
+
+def montage_templates():
+    """Шаблоны монтажа для списка в окне и выбранный (просьба 2026-11-26:
+    «вынести в выпадающий список, в будущем будут ещё шаблоны»). Новый
+    шаблон — папка с template.json в templates (`montage.templates`), в
+    списке он появляется сам. Выбор свой у каждого телефона: у телефона свой
+    канал и своё оформление."""
+    import montage
+
+    items = []
+    for name in montage.templates():
+        try:
+            title = montage.load_template(name).get("name") or name
+        except Exception:                          # битый template.json — не в списке
+            continue
+        items.append({"id": name, "name": title})
+    saved = _saved().get("montage_template") or ""
+    ids = [t["id"] for t in items]
+    current = saved if saved in ids else (montage.DEFAULT_TEMPLATE if montage.DEFAULT_TEMPLATE in ids
+                                          else (ids[0] if ids else ""))
+    return {"montage_templates": items, "montage_template": current}
 
 
 PLACEHOLDER = re.compile(r"^тема №\d+$")
@@ -2076,6 +2099,9 @@ def apply_setup(data):
     """Сохранить настройки из окна. Возвращает текст для человека или бросает
     ValueError с понятной причиной."""
     data = data or {}
+    template = str(data.get("montage_template") or "")
+    if template and template not in [t["id"] for t in montage_templates()["montage_templates"]]:
+        raise ValueError(f"нет шаблона монтажа «{template}»")      # до любых правок
     known = {g["id"]: g for g in _groups()}
     wanted = {}
     for job in JOBS:
@@ -2133,6 +2159,8 @@ def apply_setup(data):
         set_daily_stats_time(value)
     if "stats_kinds" in data:
         set_stats_kinds(data.get("stats_kinds"))
+    if template:
+        _remember(montage_template=template)
     _fix_names()
     if shelf_home("montage"):
         import montage
@@ -2216,7 +2244,7 @@ def _montage_hello():
 
     montage.start()
     try:
-        name = montage.load_template(_saved().get("montage_template") or None).get("name")
+        name = montage.load_template(montage_templates()["montage_template"] or None).get("name")
     except montage.MontageError as e:
         name = None
         warn = f"⚠ {e}."
