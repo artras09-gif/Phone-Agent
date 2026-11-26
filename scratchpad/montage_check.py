@@ -392,7 +392,7 @@ linkfetch.ffmpeg_tools = lambda: ("ffmpeg", "ffprobe")
 linkfetch.fetch = lambda url, outdir, say=None, probe=False: (
     os.path.join(outdir, "source.mp4"), {"description": "Kim Jong-un recibe a Putin", "uploader": "a"},
     ["обновил скачивалку (stable-py, 2026.11.23)"])
-montage.probe = lambda path, ffprobe: {"w": 1280, "h": 720, "duration": 12.0, "audio": True}
+montage.probe = lambda path, ffprobe, ffmpeg=None: {"w": 1280, "h": 720, "duration": 12.0, "audio": True}
 montage.frame_png = lambda *a: b""
 import scheduler  # noqa: E402
 scheduler.looks_like_video = lambda path: None
@@ -530,24 +530,36 @@ if not ff:
 else:
     fp = os.path.join(os.path.dirname(ff), "ffprobe.exe")
     fp = fp if os.path.exists(fp) else shutil.which("ffprobe")
-if ff and not fp:
-    # ffmpeg без ffprobe (на одном из ПК так и есть) — программа в этом случае
-    # скачает полный ffmpeg сама, а здесь проверять нечем.
-    print("  — ffprobe на ПК нет, пропускаю")
-elif ff:
+if ff:
     src = os.path.join(tmp, "src.mp4")
     subprocess.run([ff, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=25:d=2",
                     "-f", "lavfi", "-i", "sine=f=440:d=2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
                     "-c:a", "aac", "-shortest", src], check=True)
     out = os.path.join(tmp, "out.mp4")
+    # ffprobe не обязателен: 26.11 его не было, и монтаж не начался вовсе.
     info = montage.render(src, "KIM JONG-UN RECIBE PERSONALMENTE | A VLADIMIR PUTIN", tpl, out, (ff, fp))
-    meta = montage.probe(out, fp)
+    meta = montage.probe(out, fp, ff)
+    say(montage.probe(out, None, ff) == montage.probe(out, None, ff) and
+        montage.probe(out, None, ff)["w"] == 1080, "сведения о ролике и без ffprobe — по выводу ffmpeg")
+    turned = os.path.join(tmp, "turned.mp4")
+    subprocess.run([ff, "-v", "error", "-y", "-display_rotation", "90", "-i", src, "-c", "copy",
+                    turned], check=False)
+    if os.path.exists(turned):
+        got = montage.probe(turned, None, ff)
+        say((got["w"], got["h"]) == (360, 640), f"повёрнутый ролик — размер с поворотом: {got}")
+    wide_px = os.path.join(tmp, "sar.mp4")
+    subprocess.run([ff, "-v", "error", "-y", "-i", src, "-vf", "setsar=4/3", "-c:v", "libx264",
+                    "-an", wide_px], check=True)
+    got = montage.probe(wide_px, None, ff)
+    say((got["w"], got["h"]) == (853, 360) and not got["audio"],
+        f"широкий пиксель и ролик без звука: {got}")
     say(meta["w"] == 1080 and meta["h"] == 1920 and meta["audio"] and 1.8 < meta["duration"] < 2.3,
         f"вышло 1080x1920 со звуком, {meta['duration']:.1f} с")
     say(not os.path.exists(out + ".parts"), "рабочая папка рендера убрана")
-    kinds = subprocess.run([fp, "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0",
-                            out], capture_output=True, text=True).stdout.split()
-    say(sorted(kinds) == ["audio", "video"], f"в файле только видео и звук, без глав исходника: {kinds}")
+    if fp:
+        kinds = subprocess.run([fp, "-v", "error", "-show_entries", "stream=codec_type", "-of",
+                                "csv=p=0", out], capture_output=True, text=True).stdout.split()
+        say(sorted(kinds) == ["audio", "video"], f"в файле только видео и звук, без глав исходника: {kinds}")
 
 shutil.rmtree(tmp, ignore_errors=True)
 print("ВСЁ ХОРОШО" if ok else "ЕСТЬ ОШИБКИ")

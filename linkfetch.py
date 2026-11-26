@@ -155,6 +155,12 @@ def ensure(method, refresh=False):
     уже есть — работаем им: лучше старая скачивалка, чем никакой."""
     channel, kind = method.split("-")
     path = tool_path(method)
+    packed = os.path.join(config.BASE, "tools", "yt-dlp", FILES[kind])
+    if channel == "stable" and not os.path.exists(path) and os.path.exists(packed):
+        # Вшитый в программу yt-dlp — сразу, без сети. Свежий выпуск он
+        # всё равно сверит и докачает ниже, когда связь есть.
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        shutil.copyfile(packed, path)
     state = _state()
     tools = state.get("tools") or {}
     info = tools.get(method) or {}
@@ -230,19 +236,24 @@ def _env():
 # ------------------------------------------------------------------ ffmpeg
 
 def ffmpeg_tools():
-    """(ffmpeg, ffprobe). Нет на ПК — скачать сборку gyan.dev в montage/bin."""
+    """(ffmpeg, ffprobe или None). ffmpeg вшит в программу и разложен в
+    montage/bin/ffmpeg при запуске (`bundled.unpack`); ffprobe монтажу не
+    обязателен — без него сведения о ролике даёт сам ffmpeg (`montage.probe`).
+    Скачивание сборки gyan.dev — только если ffmpeg нет нигде (запуск из
+    исходников на чистом ПК)."""
+    packed = os.path.join(config.BASE, "tools", "ffmpeg", "ffmpeg.exe")    # вшитый
+    if os.path.exists(packed):
+        return packed, None
     own = os.path.join(BIN, "ffmpeg")
     ff, fp = os.path.join(own, "ffmpeg.exe"), os.path.join(own, "ffprobe.exe")
-    if os.path.exists(ff) and os.path.exists(fp):
-        return ff, fp
+    if os.path.exists(ff):
+        return ff, (fp if os.path.exists(fp) else None)
     import stream
 
     found = stream.ffmpeg_exe()
     if found:
         near = os.path.join(os.path.dirname(found), "ffprobe.exe")
-        probe = near if os.path.exists(near) else shutil.which("ffprobe")
-        if probe:
-            return found, probe
+        return found, (near if os.path.exists(near) else shutil.which("ffprobe"))
     os.makedirs(own, exist_ok=True)
     tmp = os.path.join(own, "ffmpeg.zip")
     try:
@@ -265,9 +276,9 @@ def ffmpeg_tools():
             os.remove(tmp)
         except OSError:
             pass
-    if not (os.path.exists(ff) and os.path.exists(fp)):
-        raise FetchError("tool", "в архиве ffmpeg не оказалось ffmpeg.exe и ffprobe.exe")
-    return ff, fp
+    if not os.path.exists(ff):
+        raise FetchError("tool", "в архиве ffmpeg не оказалось ffmpeg.exe")
+    return ff, (fp if os.path.exists(fp) else None)
 
 
 # ----------------------------------------------------------------- cookies

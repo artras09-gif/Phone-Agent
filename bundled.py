@@ -406,6 +406,29 @@ def unpack(base):
                 time.sleep(1.0 + attempt)
         else:
             complete = False        # старая копия, скорее всего, рабочая
+    unzip_ffmpeg(tools)
     if complete:
         with open(os.path.join(tools, ".build"), "w", encoding="utf-8") as f:
             f.write(stamp)
+
+
+def unzip_ffmpeg(tools):
+    """ffmpeg для монтажа вшит архивом (`build_exe.pack_ffmpeg`): после
+    раскладки — один раз достать ffmpeg.exe и убрать архив (36 МБ)."""
+    import zipfile
+    folder = os.path.join(tools, "ffmpeg")
+    packed = os.path.join(folder, "ffmpeg.zip")
+    if not os.path.exists(packed):
+        return
+    target = os.path.join(folder, "ffmpeg.exe")
+    for attempt in range(3):
+        try:
+            tmp = target + ".new"
+            with zipfile.ZipFile(packed) as z, z.open("ffmpeg.exe") as src, \
+                    open(tmp, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            os.replace(tmp, target)
+            os.remove(packed)
+            return
+        except (OSError, KeyError, zipfile.BadZipFile):
+            time.sleep(1.0 + attempt)          # антивирус держит свежий файл

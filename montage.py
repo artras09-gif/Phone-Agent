@@ -414,9 +414,41 @@ def _run(cmd, timeout, cwd=None):
     return res
 
 
-def probe(path, ffprobe):
+def _probe_ffmpeg(path, ffmpeg):
+    """То же, что `probe`, но по выводу самого ffmpeg — когда ffprobe нет.
+
+    26.11 монтаж на этом ПК не начался: ffmpeg был, ffprobe — нет, программа
+    пошла качать полный ffmpeg (100 МБ), а связи в ту минуту не было. Всё, что
+    нужно монтажу (размер, поворот, форма пикселя, длина, звук), ffmpeg и так
+    печатает в шапке `ffmpeg -i`."""
+    res = _run([ffmpeg, "-hide_banner", "-nostdin", "-i", path], 120)
+    text = res.stderr.decode("utf-8", "replace")
+    video = re.search(r"Stream #\S+.*?: Video: .*", text)
+    if not video:
+        raise MontageError("в файле нет видео")
+    size = re.search(r"\b(\d{2,5})x(\d{2,5})\b", video.group(0))
+    if not size:
+        raise MontageError("не понял размер кадра ролика")
+    w, h = int(size.group(1)), int(size.group(2))
+    sar = re.search(r"\[SAR (\d+):(\d+)", video.group(0))
+    if sar and int(sar.group(1)) and int(sar.group(2)):
+        w = round(w * int(sar.group(1)) / int(sar.group(2)))
+    turn = re.search(r"rotation of (-?[\d.]+) degrees|rotate\s*:\s*(-?\d+)", text)
+    rotation = int(float(turn.group(1) or turn.group(2))) if turn else 0
+    if abs(rotation) % 180 == 90:
+        w, h = h, w
+    dur = re.search(r"Duration: (\d+):(\d+):([\d.]+)", text)
+    duration = (int(dur.group(1)) * 3600 + int(dur.group(2)) * 60 + float(dur.group(3))) if dur else 0.0
+    return {"w": w, "h": h, "duration": duration, "audio": bool(re.search(r"Stream #\S+.*?: Audio:", text))}
+
+
+def probe(path, ffprobe, ffmpeg=None):
     """Ширина и высота КАК ПОКАЗЫВАЕТСЯ (с поворотом и формой пикселя),
-    длительность и есть ли звук."""
+    длительность и есть ли звук. Нет ffprobe — по выводу ffmpeg."""
+    if not ffprobe or not os.path.exists(ffprobe):
+        if not ffmpeg:
+            raise MontageError("нет ни ffprobe, ни ffmpeg — не понять, что за ролик")
+        return _probe_ffmpeg(path, ffmpeg)
     res = _run([ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", path], 120)
     try:
         data = json.loads(res.stdout.decode("utf-8", "replace") or "{}")
@@ -465,7 +497,7 @@ def render(src, title, tpl, out, tools, meta=None, cap_mb=None):
     пришлось бы экранировать в два слоя, а текст заголовка идёт файлом
     (`textfile`, без разбора `%`), чтобы кавычки и запятые не ломали фильтр."""
     ffmpeg, ffprobe = tools
-    meta = meta or probe(src, ffprobe)
+    meta = meta or probe(src, ffprobe, ffmpeg)
     width, height = tpl["size"]
     fps = int(tpl.get("fps", 30))
     crop = detect_content(src, ffmpeg, meta) if tpl["video"].get("crop_bars", True) else None
@@ -806,7 +838,7 @@ def _make(row, work, say):
     if why:
         raise MontageError(f"скачалось не видео: {why}")
 
-    meta = probe(path, tools[1])
+    meta = probe(path, tools[1], tools[0])
     frame = b"" if source.strip() else frame_png(path, tools[0], meta)
     title, caption = write_texts(tpl, source, author, frame, user_title)
     jobs.montage_set(row["id"], title=title, caption=caption)

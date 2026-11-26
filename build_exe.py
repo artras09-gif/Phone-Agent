@@ -69,6 +69,96 @@ def find_tool(name):
     return None
 
 
+# Монтаж (montage.py) — ffmpeg и yt-dlp. 26.11 монтаж не начался: ffmpeg на
+# ПК был без ffprobe, программа пошла его докачивать, а связи не было.
+# Теперь оба вшиты: ffmpeg — zip-архивом (96 МБ -> 36 МБ; голым .exe он
+# распаковывался бы во временную папку при КАЖДОМ запуске, и антивирус
+# проверял бы его каждый раз), yt-dlp — как есть (3 МБ). Откуда берутся, по
+# порядку: из прошлого релиза (сборка на GitHub кладёт их в env/tools), с
+# этого ПК, и только если нет нигде — с сайтов, со сверкой контрольной суммы.
+FFMPEG_ZIP_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/"
+
+
+def _fetch(url, dest):
+    import hashlib
+    import urllib.request
+    digest = hashlib.sha256()
+    req = urllib.request.Request(url, headers={"User-Agent": "PhoneAgent-build"})
+    with urllib.request.urlopen(req, timeout=600) as r, open(dest, "wb") as f:
+        while True:
+            chunk = r.read(1 << 20)
+            if not chunk:
+                break
+            digest.update(chunk)
+            f.write(chunk)
+    return digest.hexdigest()
+
+
+def _text(url):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "PhoneAgent-build"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.read().decode("utf-8", "replace")
+
+
+def pack_ffmpeg(work):
+    """tools/ffmpeg/ffmpeg.zip с одним ffmpeg.exe. Путь к zip или None."""
+    for root in TOOL_ROOTS:
+        ready = os.path.join(root, "ffmpeg", "ffmpeg.zip")
+        if os.path.exists(ready):
+            return ready
+    found = next((os.path.join(r, "ffmpeg", "ffmpeg.exe") for r in TOOL_ROOTS
+                  if os.path.exists(os.path.join(r, "ffmpeg", "ffmpeg.exe"))), None)
+    if found is None:
+        sys.path.insert(0, SRC)
+        try:
+            import stream
+            found = stream.ffmpeg_exe()
+        except Exception:
+            found = None
+    os.makedirs(os.path.join(work, "ffmpeg"), exist_ok=True)
+    out = os.path.join(work, "ffmpeg", "ffmpeg.zip")
+    if found is None:
+        print("  ffmpeg на этом ПК нет — беру сборку gyan.dev...")
+        whole = os.path.join(work, "ffmpeg-full.zip")
+        try:
+            want = _text(FFMPEG_ZIP_URL + ".sha256").split()[0].lower()
+            if _fetch(FFMPEG_ZIP_URL, whole) != want:
+                raise OSError("контрольная сумма не сошлась")
+            with zipfile.ZipFile(whole) as z:
+                name = next(n for n in z.namelist() if n.endswith("/bin/ffmpeg.exe"))
+                found = os.path.join(work, "ffmpeg.exe")
+                with z.open(name) as src, open(found, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+        except (OSError, StopIteration, zipfile.BadZipFile, IndexError) as e:
+            print(f"  [!] ffmpeg не достал ({e}) — монтаж будет докачивать его сам")
+            return None
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+        z.write(found, "ffmpeg.exe")
+    return out
+
+
+def pack_ytdlp(work):
+    """tools/yt-dlp/yt-dlp — сам код yt-dlp одним файлом. Путь или None."""
+    for root in TOOL_ROOTS:
+        ready = os.path.join(root, "yt-dlp", "yt-dlp")
+        if os.path.exists(ready):
+            return ready
+    os.makedirs(os.path.join(work, "yt-dlp"), exist_ok=True)
+    out = os.path.join(work, "yt-dlp", "yt-dlp")
+    try:
+        sums = _text(YTDLP_URL + "SHA2-256SUMS")
+        want = next(line.split()[0].lower() for line in sums.splitlines()
+                    if line.split()[-1:] == ["yt-dlp"])
+        if _fetch(YTDLP_URL + "yt-dlp", out) != want:
+            raise OSError("контрольная сумма не сошлась")
+        return out
+    except (OSError, StopIteration) as e:
+        print(f"  [!] yt-dlp не достал ({e}) — монтаж скачает его сам при первой ссылке")
+        return None
+
+
 def data(src, dest):
     # Абсолютный путь обязателен: относительный PyInstaller считает от папки
     # со spec-файлом, а она у нас во временной.
@@ -202,6 +292,15 @@ def run_pyinstaller():
                 extra += data(os.path.join(folder, entry), "tools/telegram-bot-api")
     else:
         print("  [!] нет telegram-bot-api.exe — бот будет брать видео только до 20 МБ")
+
+    packs = os.path.join(WORK, "packs")
+    zipped = pack_ffmpeg(packs)
+    if zipped:
+        extra += data(zipped, "tools/ffmpeg")
+        print(f"  ffmpeg для монтажа: {os.path.getsize(zipped) // 2 ** 20} МБ в архиве")
+    ytdlp = pack_ytdlp(packs)
+    if ytdlp:
+        extra += data(ytdlp, "tools/yt-dlp")
 
     scrcpy = find_tool("scrcpy")
     if scrcpy:
