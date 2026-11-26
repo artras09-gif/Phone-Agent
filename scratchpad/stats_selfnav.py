@@ -355,5 +355,61 @@ statnav.explore("reels", PKG2, W, H, [], max_steps=5)
 offers = sum(bool(re.search(r"^\[\d+\] «Просмотры профиля»", p, re.M)) for p in menus if "«Меню»" in p)
 say(offers == 1, f"«Просмотры профиля» на том же экране предложена один раз, а не каждый круг ({offers})")
 
+print("12. Дошла до статистики «за 7 дней» — модель сама выбирает вчера")
+# Живьём 25.11: модель дошла до статистики TikTok, но принесла «18–24 нояб,
+# 104K» — период по умолчанию. Теперь там же выбирает один день.
+import datetime as dt  # noqa: E402
+yday = dt.date.today() - dt.timedelta(days=1)
+MON = ["янв", "февр", "мар", "апр", "мая", "июн", "июл", "авг", "сент", "окт", "нояб", "дек"]
+one = f"{yday.day} {MON[yday.month - 1]} - {yday.day} {MON[yday.month - 1]}"
+day_scr = {"screen": "stats7"}
+DAYS = {"stats7": [node("7 дней", 300), node("Обзор", 150)],
+        "chips": [node("Вчера", 500), node("28 дней", 650)],
+        "stats1": [node("Вчера", 300), node("Обзор", 150)]}
+ui.dump = lambda *a, **k: list(DAYS[day_scr["screen"]])
+ui.tap_node = lambda n: day_scr.__setitem__("screen", {("stats7", "7 дней"): "chips",
+                                                     ("chips", "Вчера"): "stats1"}.get(
+    (day_scr["screen"], n.text), day_scr["screen"]))
+escape.hands_ready = lambda iw, ih, say=None: None
+asked_day = {"nav": 0}
+
+
+def day_ask(png, prompt, **kw):
+    if "Цель:" in prompt:
+        asked_day["nav"] += 1
+        if day_scr["screen"] == "stats1":
+            return '{"готово": true}'
+        want = "7 дней" if day_scr["screen"] == "stats7" else "Вчера"
+        for line in prompt.splitlines():
+            m = re.match(r"\[(\d+)\] «(.+?)»", line)
+            if m and m.group(2) == want:
+                return f'{{"кнопка": {m.group(1)}}}'
+        return '{"иначе": "back"}'
+    period = one if day_scr["screen"] == "stats1" else "18 нояб - 24 нояб"
+    return f'{{"статистика": true, "выбор_периода": true, "период": "{period}", "просмотры": "13K"}}'
+
+
+vision.ask = day_ask
+shots = os.path.join(tmp, "dayshots")
+os.makedirs(shots, exist_ok=True)
+
+
+def day_snap():
+    path = os.path.join(shots, f"tiktok_day_{day_scr['screen']}.png")
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG" + day_scr["screen"].encode())
+    return path
+
+
+got = statnav.pick_day("tiktok", PKG2, day_snap, accstats._day_accept, "вчера", ver="36.7.4", log=[])
+say(got and got["period"] == one and got["views"] == "13K", f"выбран вчерашний день: {got}")
+say(accstats._period_when(got["period"]) == f"{yday:%d.%m}", "в отчёте — дата вчерашнего дня")
+day_scr["screen"] = "stats7"
+asked_day["nav"] = 0
+got = statnav.pick_day("tiktok", PKG2, day_snap, accstats._day_accept, "вчера", ver="36.7.4", log=[])
+say(got and asked_day["nav"] == 0 and "запомненному" in got["how"], "второй раз — по памяти, без модели")
+say(not accstats._day_accept("18 нояб - 24 нояб") and accstats._day_accept("Yesterday"),
+    "«за 7 дней» за день не принимается, «Yesterday» — да")
+
 print("ВСЁ ХОРОШО" if ok else "ЕСТЬ ОШИБКИ")
 sys.exit(0 if ok else 1)

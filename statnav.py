@@ -350,12 +350,13 @@ def _point_ok(nodes, x, y, w, h, what):
     return True, ""
 
 
-def explore(net, package, w, h, log=None, max_steps=None, keep=None):
+def explore(net, package, w, h, log=None, max_steps=None, keep=None, goal=None):
     """Модель ищет дорогу к статистике: (путь, "") если модель сказала
     «готово», иначе (None, почему). Почему "down" — модель не отвечает:
     это сбой связи, а не «статистики нет». Проверку «это правда
-    статистика» делает вызывающий — по снимку."""
-    app, goal = GOALS[net]
+    статистика» делает вызывающий — по снимку. goal — своя цель вместо
+    «дойти до статистики» (выбор дня, `pick_day`)."""
+    app, goal = GOALS[net][0], goal or GOALS[net][1]
     steps, history = [], []
     tapped = {}                # экран -> что на нём уже жали (не ходить по кругу)
     for n in range(1, (max_steps or config.STATS_NAV_STEPS) + 1):
@@ -541,4 +542,64 @@ def find_stats(net, package, snap, start, ver="", log=None):
         pass
     _say(log, f"  [путь] {app}: нашёл за {len(steps)} шаг(а), {time.time() - started:.0f} с — "
               "запомнил, в следующий раз без модели")
+    return got
+
+
+# ------------------------------------------------------------ выбор дня
+#
+# Дошла до статистики — но на ней период, открытый по умолчанию (обычно
+# «7 дней»: живьём 25.11 модель принесла «18–24 нояб, 104K» вместо вчера).
+# Тогда вторая цель на том же экране: выбрать ОДИН день — вчера (или
+# позавчера: TikTok досчитывает день с опозданием). Путь к нему запоминается
+# отдельно от пути к статистике и повторяется без модели.
+
+DAY_GOAL = ("на ЭТОМ экране статистики выбрать период ровно в ОДИН день — {day} "
+            "(«Вчера» / Yesterday, или этот день в календаре: «Другое» / Custom → "
+            "день → «Применить»). Цель достигнута, когда вверху показан только этот день")
+
+
+def pick_day(net, package, snap, accept, day, ver="", log=None):
+    """Выбрать на открытой статистике один день. accept(период) -> True,
+    если подпись периода — нужный день. {"path", "period", "views", "how"}
+    или None (тогда остаётся то, что было)."""
+    if not (config.STATS_SELF_NAV and vision.available()[0]):
+        return None
+    app = GOALS[net][0]
+    w, h = adb.screen_size()
+    key = net + "|day"
+    routes = load_routes()
+    route = routes.get(key) or {}
+    gold = os.path.join(_golden_dir(net, ver), "день")
+
+    def check(how):
+        path = snap()
+        if not path:
+            return None
+        seen = look(path, app, net)
+        if seen.get("статистика") and seen.get("просмотры") and accept(seen.get("период", "")):
+            return {"path": path, "period": seen["период"], "views": seen["просмотры"], "how": how}
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return None
+
+    if route.get("steps") and replay(route["steps"], w, h, keep=gold):
+        got = check("день выбран по запомненному пути")
+        if got:
+            return got
+    _say(log, f"  [путь] {app}: на статистике не тот период — модель выбирает {day}")
+    steps, why = explore(net, package, w, h, log, max_steps=8, keep=gold,
+                         goal=DAY_GOAL.format(day=day))
+    if steps is None:
+        _say(log, f"  [путь] {app}: день выбрать не вышло ({why or 'модель не дошла'})")
+        return None
+    got = check("день выбрала модель")
+    if not got:
+        _say(log, f"  [путь] {app}: модель сказала «готово», но на снимке не {day}")
+        return None
+    routes = load_routes()
+    routes[key] = {"steps": steps, "ver": ver, "learned": dt.date.today().isoformat(), "ok": 0}
+    _save_routes(routes)
+    _say(log, f"  [путь] {app}: день выбран за {len(steps)} шаг(а) — запомнил")
     return got

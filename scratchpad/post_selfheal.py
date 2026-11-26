@@ -206,6 +206,8 @@ def fake_ask(png, prompt, **kw):
 vision.ask = fake_ask
 vision.available = lambda: (True, "test")
 escape._screencap = lambda: b"\x89PNG" + b"0" * 100
+escape._full_shot = lambda: (b"\x89PNG" + b"0" * 100, W, H)
+escape.hands_ready = lambda iw, ih, say=None: None       # «руки» — в разделе 7
 accstats._app_version = lambda package: "20.25"
 gstep = {"op": "tap", "any": [{"text": "Добавить из галереи"}], "desc": "«Добавить из галереи»",
          "timeout": 10}
@@ -242,6 +244,40 @@ try:
 except poster.StepFailed:
     pass
 say(asked["n"] == 0, "шаг 7 при nav_until=3 — без модели-проводника")
+
+print("7. Кнопки нет в дереве — модель жмёт по точке, но не финальную")
+# Экран-веб-страница: кнопки «Shorts» в дереве нет, есть только финальная
+# «Далее» (share_button) — её модель не получает ни списком, ни точкой.
+web = {"screen": "web", "taps": []}
+SCREENS["web"] = [node("Далее", 2000, rid="share_button")]
+SCREENS["gallery"] = [node("Добавить из галереи", 1600)]
+escape.hands_ready = lambda iw, ih, say=None: "pixels"
+
+
+def tap_point(x, y):
+    web["taps"].append((x, y))
+    if phone["screen"] == "web" and 700 <= y <= 900:
+        phone["screen"] = "gallery"
+
+
+adb.tap = tap_point
+answers = iter(['{"кнопка": 0, "точка": {"x": 500, "y": 2100, "что": "кнопка внизу"}}',
+                '{"кнопка": 0, "точка": {"x": 540, "y": 800, "что": "вкладка Shorts"}}'])
+prompts = []
+vision.ask = lambda png, prompt, **kw: (prompts.append(prompt), next(answers))[1]
+postnav._save_routes({})
+phone.update(screen="web", taps=[])
+gctx2 = dict(gctx, target="tiktok")
+line = poster.run_step(gstep, gctx2, log_path, 3)
+said = gctx2.pop("helper", [])
+print("   " + "\n   ".join(said))
+say(phone["screen"] == "gallery" and phone["taps"][-1] == "Добавить из галереи",
+    "дошёл по точке и нажал кнопку шага")
+say(not any(y >= 2000 for _, y in web["taps"]), "по финальной «Далее» (share_button) точкой не нажал")
+say("«Далее»" not in prompts[0] and "пикселях снимка" in prompts[0],
+    "финальной кнопки нет в списке, точку назвать можно")
+route = postnav.load_routes().get("tiktok|«Добавить из галереи»", {})
+say(any(st.get("point") for st in route.get("steps", [])), f"точка запомнена ({route.get('steps')})")
 
 poster.time.time = real_time
 print("ВСЁ ХОРОШО" if ok else "ЕСТЬ ОШИБКИ")

@@ -655,6 +655,14 @@ def serve(notify=None, watch=False, record=False, should_stop=None):
         except Exception as e:
             jobs.log_event("error", f"аналитика аккаунтов: {e}")
 
+        try:
+            import routecheck
+
+            if routecheck.due(now):
+                routecheck.run(runlog.Log("пробная публикация"))
+        except Exception as e:
+            jobs.log_event("error", f"пробная публикация: {e}")
+
         for said in maybe_day_stats(now):
             if notify:
                 notify(said)

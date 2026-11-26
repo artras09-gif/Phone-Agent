@@ -772,11 +772,28 @@ def _restart_for(net, cfg, allowed=()):
 
 def _period_when(period):
     """Период с экрана — в «18.11» / «12.11–18.11»; не дата — как написан."""
+    if str(period or "").strip().lower().rstrip(".") in YESTERDAY_WORDS:
+        return f"{dt.date.today() - dt.timedelta(days=1):%d.%m}"
     shown = _range_of(period or "")
     return _span(*shown) if shown else (period or "")
 
 
-def _self_nav(net, cfg, folder, log=None):
+YESTERDAY_WORDS = ("вчера", "yesterday", "ayer")
+
+
+def _day_accept(period, today=None):
+    """Подпись периода — ровно один день, вчера или позавчера (TikTok
+    досчитывает день с опозданием)."""
+    if str(period or "").strip().lower().rstrip(".") in YESTERDAY_WORDS:
+        return True
+    shown = _range_of(period or "")
+    if not shown or shown[0] != shown[1]:
+        return False
+    today = today or dt.date.today()
+    return 1 <= (today - shown[1]).days <= 2
+
+
+def _self_nav(net, cfg, folder, log=None, days=None):
     """Жёсткий маршрут сломался — запомненный путь или модель (`statnav`).
     Путь к снимку или None."""
     import statnav
@@ -793,6 +810,19 @@ def _self_nav(net, cfg, folder, log=None):
         _note(folder, name + "_navfail", f"маршрут сломался ({broke}); путь к статистике не нашёл: "
                                           + (statnav.LAST.get("why") or "причина в журнале"))
         return None
+    if days == 1 and not _day_accept(got["period"]):
+        # Дошла, но период по умолчанию (7 дней) — выбрать вчера там же.
+        yesterday = dt.date.today() - dt.timedelta(days=1)
+        better = statnav.pick_day(
+            net, package, snap=lambda: _snap(folder, name + "_day", package),
+            accept=_day_accept, day=f"вчера, {yesterday:%d.%m}",
+            ver=_notes_in(folder).get(name + "_ver", ""), log=log)
+        if better:
+            try:
+                os.remove(got["path"])
+            except OSError:
+                pass
+            got = dict(better, how=f"{got['how']}, {better['how']}")
     path = os.path.join(folder, name + ".png")
     os.replace(got["path"], path)
     # Число маршрута с запасного экрана (за 7 дней) больше не годится.
@@ -847,7 +877,7 @@ def collect(net, log=None, shots=False, days=None, folder=None, tiles=True):
                 result["shot"] = None
                 say(f"  {TITLES[net]}: снимок статистики не вышел — {str(e)[:80]}")
             if not abort.requested() and _route_broke(net, folder, result.get("shot")):
-                got = _self_nav(net, cfg, folder, log)
+                got = _self_nav(net, cfg, folder, log, days)
                 if got:
                     result["shot"] = got
             _remember_stat_account(net, folder)

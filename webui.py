@@ -389,6 +389,17 @@ class Keeper:
         except Exception as e:
             self.runner.log(f"аналитика аккаунтов: {type(e).__name__}: {e}")
 
+        # Утренняя пробная публикация (без финальной кнопки) — после всего
+        # остального и только на свободном телефоне.
+        try:
+            import routecheck
+
+            if not self.runner.busy() and routecheck.due(now):
+                self.runner.start("пробная публикация",
+                                  lambda: routecheck.run(runlog.Log("пробная публикация")))
+        except Exception as e:
+            self.runner.log(f"пробная публикация: {type(e).__name__}: {e}")
+
 
 # ---------------------------------------------------------- состояние
 

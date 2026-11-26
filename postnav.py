@@ -40,8 +40,14 @@ ASK = """Снимок экрана телефона, приложение {app}.
 Кнопки на экране:
 {menu}{tried}
 Ответь ТОЛЬКО JSON без пояснений:
-{{"кнопка": номер кнопки из списка, которая ведёт к цели, или 0,
+{{"кнопка": номер кнопки из списка, которая ведёт к цели, или 0,{point}
  "иначе": "back" | "swipe" | "wait" — если ни одна кнопка не ведёт к цели}}"""
+
+# «Руки» — как в статистике (`statnav.NAV_POINT`): на экране-веб-странице
+# кнопок в дереве нет, и выбрать из списка нечего (25.11, TikTok Studio).
+POINT = """
+ "точка": {{"x": число, "y": число, "что": "что это"}} — только если нужный элемент ВИДЕН
+   на снимке, но его НЕТ в списке кнопок; координаты в пикселях снимка {iw}x{ih},"""
 
 
 def _say(log, line):
@@ -122,6 +128,28 @@ def menu(nodes, w, h, limit=12, final=()):
     return out[:limit]
 
 
+def point_ok(nodes, x, y, w, h, what, final=()):
+    """Можно ли жать по точке модели на пути к посту: не системные полосы, не
+    запретное в описании, под пальцем — не финальная кнопка маршрута, не
+    запретная подпись, не поле текста и не переключатель. (да/нет, почему)."""
+    if not (h * 0.04 < y < h * 0.95 and 0 <= x <= w):
+        return False, "точка вне приложения"
+    if forbidden(what):
+        return False, f"«{what}» — запрещено"
+    node, _ = escape._node_at(nodes, x, y, w, h)
+    if node is None:
+        return True, ""
+    banned = {id(n) for sel in final for n in ui.find(nodes or [], **sel)}
+    label = escape._label_of(node)
+    if id(node) in banned or "share" in node.rid.lower():
+        return False, "под точкой — финальная кнопка поста"
+    if label and forbidden(label):
+        return False, f"под точкой «{label}» — запрещено"
+    if "EditText" in node.cls or any(t in node.cls.lower() for t in statnav.TOGGLES):
+        return False, "под точкой поле текста или переключатель"
+    return True, ""
+
+
 def _version(package):
     try:
         import accstats
@@ -162,6 +190,7 @@ def reach(target, package, label, selectors, goal, app="", log=None, final=()):
         return None
     _say(log, f"  путь: «{label}» не нашёлся — модель ищет дорогу к нему")
     steps, history = [], []
+    tapped = {}                # экран -> что на нём уже жали (не ходить по кругу)
     for n in range(1, config.POST_NAV_STEPS + 1):
         if abort.requested():
             return None
@@ -190,17 +219,25 @@ def reach(target, package, label, selectors, goal, app="", log=None, final=()):
                 pass
             _say(log, f"  путь: «{label}» нашёлся за {len(steps)} нажат. — запомнил")
             return node
-        png = escape._screencap()
+        png, iw, ih = escape._full_shot()
         if not png:
             human.pause(1, 2)
             continue
         statnav._keep_tree(gold, f"шаг{n}", nodes, w, h)
-        items = menu(nodes, w, h, final=final)
-        tried = ("\nУже пробовали: " + "; ".join(history[-4:]) + ".") if history else ""
+        done_here = tapped.setdefault(statnav._screen_key(nodes), set())
+        items = [it for it in menu(nodes, w, h, final=final)
+                 if escape._label_of(it) + str(it.bounds) not in done_here]
+        if done_here:
+            history.append("на этом экране уже пробовали: " + ", ".join(
+                sorted(x.split("(")[0] or "значок" for x in done_here))[:120])
+        hands = escape.hands_ready(iw, ih) if config.ESCAPE_HANDS else None
+        tried = ("\nУже пробовали: " + "; ".join(history[-5:]) + ".") if history else ""
         try:
             raw = vision.ask(png, ASK.format(app=app or package, target=goal,
+                                             point=POINT.format(iw=iw, ih=ih) if hands else "",
                                              menu=escape._describe_menu(items, w, h), tried=tried),
-                             max_tokens=escape.ANSWER_TOKENS, temperature=0.1, think=True)
+                             max_tokens=escape.ANSWER_TOKENS, temperature=0.1, think=True,
+                             shrink=1 if hands else None)
         except Exception as e:
             _say(log, f"  путь: модель не ответила — {str(e)[:80]}")
             return None
@@ -212,6 +249,7 @@ def reach(target, package, label, selectors, goal, app="", log=None, final=()):
             button = 0
         if 1 <= button <= len(items):
             pick = items[button - 1]
+            done_here.add(escape._label_of(pick) + str(pick.bounds))
             sig = statnav.signature(pick, w, h)
             sig["tree"] = f"шаг{n}"
             steps.append(sig)
@@ -220,6 +258,27 @@ def reach(target, package, label, selectors, goal, app="", log=None, final=()):
             ui.tap_node(pick)
             human.pause(1.5, 2.5)
             continue
+        spot = answer.get("точка")
+        if hands and isinstance(spot, dict):
+            try:
+                px, py = escape._to_image(float(spot.get("x")), float(spot.get("y")), hands, iw, ih)
+            except (TypeError, ValueError):
+                px = py = None
+            if px is not None:
+                x, y = int(px * w / iw), int(py * h / ih)
+                what = str(spot.get("что") or "").strip()[:60]
+                fine, why = point_ok(nodes, x, y, w, h, what, final)
+                if not fine:
+                    history.append(f"точку «{what}» не нажал: {why}")
+                    continue
+                done_here.add(f"точка {what}({x // 40},{y // 40})")
+                steps.append({"point": [round(x / w, 3), round(y / h, 3)], "что": what,
+                              "tree": f"шаг{n}"})
+                history.append(f"нажали точку «{what}»")
+                _say(log, f"  путь: жму по точке «{what}»")
+                adb.tap(x, y)
+                human.pause(1.8, 2.8)
+                continue
         other = str(answer.get("иначе") or "").lower().strip()
         if other in ("back", "назад"):
             device.back()
