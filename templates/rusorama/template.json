@@ -1,6 +1,6 @@
 {
   "name": "Rusorama",
-  "about": "Снят 25.11.2026 с двух примеров: чёрный кадр 9:16, сверху заголовок капсом (Rubik Bold, первая строка жёлтая), в середине ролик во всю ширину, снизу глобус и подпись канала. Координаты — в кадре 1080x1920. 26.11 заголовок крупнее (кегль 40 → 64, до 3 строк) и короче (75 → 45 знаков): «чтобы текст был больше и более цепляющий».",
+  "about": "Снят 25.11.2026 с двух примеров: чёрный кадр 9:16, сверху заголовок капсом (Rubik Bold, первая строка жёлтая), в середине ролик во всю ширину, снизу глобус и подпись канала. Координаты — в кадре 1080x1920. 26.11 заголовок крупнее (кегль 40 → 64, до 3 строк) и короче (75 → 45 знаков): «чтобы текст был больше и более цепляющий». 27.11 заголовок — образ, а не констатация, описание — мысль вокруг ролика, а не пересказ: «хотелось бы что-то абстрактное, чтобы было интересно прочитать».",
   "size": [1080, 1920],
   "fps": 30,
   "background": "#000000",
@@ -42,13 +42,20 @@
     "language": "испанский (español)",
     "title_chars": 45,
     "examples": [
-      "Kim rompe el protocolo | y recibe a Putin en persona",
-      "Novias rodean a Putin, | y todas quieren una selfie",
-      "Le cortan el micrófono | en pleno discurso",
-      "Tres segundos de silencio | que lo dijeron todo"
+      "Amistad a las tres | de la madrugada",
+      "Diplomacia | con sabor a patata",
+      "Tres segundos de silencio | que lo dijeron todo",
+      "Le cortan el micrófono | en pleno discurso"
     ],
     "title_rule": "Раздели заголовок на две части знаком | там, где пауза по смыслу: первая часть — крючок (самое неожиданное, резкое или громкое в ролике), вторая — развязка.",
-    "caption_style": "1–3 коротких предложения своими словами (не переписывай исходную подпись): что происходит в ролике и почему это важно, затем 3–5 хэштегов по теме в конце. Не пиши о самом канале и не повторяй заголовок.",
+    "caption_style": "НЕ пересказ ролика: зритель его и так видит. Это мысль вокруг ролика, ради которой хочется дочитать: неожиданное наблюдение, обобщение, ирония, второй смысл, вечный сюжет за сегодняшним событием. 2–3 коротких предложения, живым языком, как умный человек в соцсетях, а не как новостное агентство. Можно опереться на общеизвестный контекст, но без цифр, дат и подробностей, которых нет в разборе и подписи: лучше мысль, чем рискованный факт. Без оскорблений и агитации. Не описывай само видео («en el video», «aparecen», «imágenes», «montaje») и не пиши канцелярские выводы («es una señal», «refuerza», «demuestra»). Не пиши о самом канале и не повторяй заголовок.",
+    "caption_examples": [
+      "Pueden pasar horas sin moverse, aguantar la lluvia y a mil turistas con el móvil. Contra el sol de julio, en cambio, ninguna tradición trae armadura.",
+      "En diplomacia, cada gesto se mide al milímetro. Por eso, cuando alguien rompe el protocolo, el mensaje suele importar más que el saludo."
+    ],
+    "avoid": ["en el video", "en este video", "en el vídeo", "en este vídeo", "aparece", "aparecen",
+              "imágenes", "montaje", "es una señal", "refuerza", "demuestra",
+              "no es lo que parece", "nadie esperaba"],
     "caption_chars": 450
   }
 }

@@ -716,6 +716,17 @@ pre.report{
           Шаблон
           <select id="bs-tpl"></select>
         </label>
+        <label class="field" style="max-width:640px;margin-top:10px">
+          О чём канал — модель пишет заголовок и описание с оглядкой на это
+          <textarea id="bs-about" rows="3" style="resize:vertical"></textarea>
+        </label>
+        <p class="hint" style="margin:8px 0 6px">Память шаблона: принятое — текст, который
+          вышел в публикацию, и заголовок, выбранный кнопкой; отвергнутое — «🔄 Другой текст»
+          и заменённый заголовок. Хранится по 30 последних, модель видит 5 последних каждого вида.</p>
+        <div class="row" style="align-items:center">
+          <span class="hint" id="bs-mem" style="margin:0"></span>
+          <button class="btn" id="b-bs-forget">Очистить память</button>
+        </div>
         <h2 style="margin:18px 0 6px">Статистика сама</h2>
         <p class="hint" style="margin:0 0 10px">В это время каждый день бот снимает
           статистику и шлёт её в тему статистики (не привязана — владельцу).
@@ -1069,7 +1080,7 @@ function renderBot(s){
    правки помечают карточку «изменено», и до сохранения её не перерисовываем. */
 const BS_KINDS = [["day", "за вчера — каждый день"], ["week", "за неделю — по понедельникам"],
                   ["month", "за месяц — 1-го"]];
-let bsSign = "", bsDirty = false, bsKinds = [], bsPhone = null, bsKeep = null;
+let bsSign = "", bsDirty = false, bsKinds = [], bsPhone = null, bsKeep = null, bsTemplates = [];
 
 function bsMark(){
   bsDirty = true;
@@ -1130,8 +1141,12 @@ function renderBotSetup(setup, phone){
   tpl.innerHTML = "";
   for(const t of setup.montage_templates || []) tpl.append(new Option(t.name, t.id));
   tpl.value = setup.montage_template || "";
+  bsTemplates = setup.montage_templates || [];
+  bsShowTpl();
   if(bsKeep){                            // тему добавили посреди правок — правки на место
     if(bsKeep.tpl) tpl.value = bsKeep.tpl;
+    bsShowTpl();
+    $("bs-about").value = bsKeep.about;
     for(const sel of box.querySelectorAll("select")){
       if(sel.dataset.job in bsKeep.jobs){
         sel.value = bsKeep.jobs[sel.dataset.job];
@@ -1157,8 +1172,28 @@ function renderBotSetup(setup, phone){
   }
 }
 
+/* Память шаблона монтажа (27.11): «О чём канал» и счётчик — выбранного в списке. */
+function bsShowTpl(){
+  const t = bsTemplates.find(x => x.id === $("bs-tpl").value);
+  $("bs-about").value = t ? t.about : "";
+  $("bs-mem").textContent = t ? `принято ${t.accepted} · отклонено ${t.rejected}` : "";
+  $("b-bs-forget").disabled = !t || !(t.accepted || t.rejected);
+}
+
 $("bs-time").addEventListener("input", bsMark);
-$("bs-tpl").addEventListener("change", bsMark);
+$("bs-tpl").addEventListener("change", () => { bsShowTpl(); bsMark(); });
+$("bs-about").addEventListener("input", bsMark);
+$("b-bs-forget").addEventListener("click", async () => {
+  const t = bsTemplates.find(x => x.id === $("bs-tpl").value);
+  if(!t || !confirm(`Очистить память шаблона «${t.name}»? Принятое (${t.accepted}) и ` +
+                    `отклонённое (${t.rejected}) сотрутся, «О чём канал» останется.`)) return;
+  const data = await send("montage-forget", {template: t.id});
+  if(data && data.ok !== false){
+    t.accepted = t.rejected = 0;
+    $("bs-mem").textContent = "принято 0 · отклонено 0";
+    $("b-bs-forget").disabled = true;
+  }
+});
 $("b-bs-link").addEventListener("click", async () => {
   const data = await send("bot-topic", {link: $("bs-link").value.trim(), name: $("bs-link-name").value.trim()});
   if(data && data.ok !== false){
@@ -1166,7 +1201,8 @@ $("b-bs-link").addEventListener("click", async () => {
     if(bsDirty){                         // перерисовать, не потеряв несохранённое
       const jobs = {};
       for(const sel of $("bs-jobs").querySelectorAll("select")) jobs[sel.dataset.job] = sel.value;
-      bsKeep = {jobs, time: $("bs-time").value, kinds: bsKinds.slice(), tpl: $("bs-tpl").value};
+      bsKeep = {jobs, time: $("bs-time").value, kinds: bsKinds.slice(), tpl: $("bs-tpl").value,
+                about: $("bs-about").value};
       bsDirty = false;
     }
     bsSign = "";
@@ -1179,7 +1215,8 @@ $("b-bs").addEventListener("click", async () => {
     jobs[sel.dataset.job] = {chat, topic};
   }
   const data = await send("bot-setup", {jobs, stats_time: $("bs-time").value, stats_kinds: bsKinds,
-                                        montage_template: $("bs-tpl").value});
+                                        montage_template: $("bs-tpl").value,
+                                        montage_about: $("bs-about").value});
   if(data && data.ok !== false){
     bsDirty = false; bsSign = "";
     $("bs-dirty").textContent = "";

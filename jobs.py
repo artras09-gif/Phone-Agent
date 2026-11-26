@@ -132,6 +132,14 @@ MIGRATIONS = {
              ("went", "TEXT DEFAULT ''")],
     "events": [("device", "TEXT DEFAULT ''")],
     "links": [("sent", "REAL DEFAULT 0")],
+    # Кнопки под «✅ готово» (2026-11-27, «оставь возможность перегенерировать,
+    # если мне не заходит»): variants — другие заголовки от модели (JSON),
+    # pick — заголовок, выбранный кнопкой для перемонтажа ('' — пишет модель).
+    "montage": [("variants", "TEXT DEFAULT ''"), ("pick", "TEXT DEFAULT ''"),
+                # Память шаблона (27.11): каким шаблоном, о чём ролик, и
+                # file_unique_id готового видео — по нему узнаём его в публикации.
+                ("tpl", "TEXT DEFAULT ''"), ("theme", "TEXT DEFAULT ''"),
+                ("out_file", "TEXT DEFAULT ''")],
 }
 
 # Чей это телефон. Пустая строка — «до разделения» и «телефон один»: такие
@@ -352,7 +360,8 @@ def stock_add(file, chat, thread, msg, sender="", at=None):
                      at or time.time()))
 
 
-MONTAGE_FIELDS = ("status", "title", "caption", "error", "stock_msg", "done_at")
+MONTAGE_FIELDS = ("status", "title", "caption", "error", "stock_msg", "done_at",
+                  "variants", "pick", "tpl", "theme", "out_file")
 
 
 def montage_add(url="", file_id="", note="", chat="", thread="", msg=0):
@@ -384,6 +393,15 @@ def montage_twin(url, days=7):
         return con.execute("SELECT * FROM montage WHERE url=? AND status IN "
                            "('queued','running','done') AND created_at>? ORDER BY id DESC",
                            (url, time.time() - days * 86400)).fetchone()
+
+
+def montage_by_file(file):
+    """Заказ, чьё готовое видео — этот файл (file_unique_id): у пересылки он тот же."""
+    if not file:
+        return None
+    with connect() as con:
+        return con.execute("SELECT * FROM montage WHERE out_file=? ORDER BY id DESC",
+                           (file,)).fetchone()
 
 
 def montage_unfinished(chat):

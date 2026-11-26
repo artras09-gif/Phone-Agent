@@ -168,7 +168,9 @@ print("\n--- шаблон монтажа: выпадающий список (26.
 import montage  # noqa: E402
 
 s = bot.setup()
-say(s["montage_template"] == "rusorama" and {"id": "rusorama", "name": "Rusorama"} in s["montage_templates"],
+say(s["montage_template"] == "rusorama"
+    and {"id": "rusorama", "name": "Rusorama"} in [{"id": t["id"], "name": t["name"]}
+                                                  for t in s["montage_templates"]],
     f"по умолчанию — Rusorama: {s['montage_templates']}")
 mine = os.path.join(tmp, "templates", "second")
 os.makedirs(mine)
@@ -194,6 +196,33 @@ say("нет шаблона" in refused and bot.setup()["stats_time"] == "11:00" 
     f"неизвестный шаблон — отказ до любых правок: {refused}")
 bot.apply_setup({"stats_time": "12:00"})
 say(bot._saved()["montage_template"] == "second", "сохранение без поля шаблона выбор не сбрасывает")
+
+print("\n--- память шаблона в окне (27.11): о чём канал, счётчик, очистка ---")
+import webui  # noqa: E402
+montage.remember("rusorama", "accepted", "Uno | dos", "Texto aceptado")
+montage.remember("rusorama", "rejected", "Tres", "Texto rechazado")
+items = {t["id"]: t for t in bot.setup()["montage_templates"]}
+say(items["rusorama"]["accepted"] == 1 and items["rusorama"]["rejected"] == 1
+    and items["rusorama"]["about"].startswith("канал о политике")
+    and items["second"]["accepted"] == 0 and items["second"]["about"] == "",
+    "у каждого шаблона своя память; «О чём канал» по умолчанию — из шаблона")
+bot.apply_setup({"montage_template": "second", "montage_about": "Канал про кино"})
+items = {t["id"]: t for t in bot.setup()["montage_templates"]}
+say(items["second"]["about"] == "Канал про кино" and items["rusorama"]["about"].startswith("канал о политике"),
+    "«О чём канал» сохраняется выбранному шаблону и не трогает другой")
+bot.apply_setup({"stats_time": "12:00"})
+say(montage.memory("second")["about"] == "Канал про кино", "сохранение без поля «О чём канал» его не стирает")
+forget = webui.COMMANDS["montage-forget"]
+res = forget({"template": "rusorama"})
+mem = montage.memory("rusorama")
+say(res.get("ok") and not mem["accepted"] and not mem["rejected"],
+    f"«Очистить память» из окна: {res.get('message')}")
+say(forget({"template": "нет-такого"}).get("ok") is False, "чужое имя шаблона — отказ")
+say(("montage-forget" in webui.HUB_COMMANDS) == ("bot-setup" in webui.HUB_COMMANDS),
+    "очистка идёт туда же, куда сохранение настроек бота (к службе телефона)")
+page = open(os.path.join(os.path.dirname(HERE), "webui.html"), encoding="utf-8").read()
+say(all(s in page for s in ('id="bs-about"', 'id="b-bs-forget"', "montage_about:", '"montage-forget"')),
+    "в окне — поле «О чём канал», кнопка очистки, оба уходят в программу")
 import shutil  # noqa: E402
 shutil.rmtree(mine)
 say(bot.setup()["montage_template"] == "rusorama", "выбранный шаблон удалили — в окне снова Rusorama")

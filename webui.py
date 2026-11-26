@@ -1566,6 +1566,19 @@ def _cmd_bot_setup(body):
     return {"ok": True, "message": message, "setup": telegram_bot.setup()}
 
 
+@command("montage-forget")
+def _cmd_montage_forget(body):
+    """«Очистить память» шаблона монтажа: принятое и отвергнутое."""
+    import montage
+    import telegram_bot
+
+    name = str(body.get("template") or "")
+    if name not in [t["id"] for t in telegram_bot.montage_templates()["montage_templates"]]:
+        return {"ok": False, "error": f"нет шаблона монтажа «{name}»"}
+    montage.forget(name)
+    return {"ok": True, "message": "память шаблона очищена — «О чём канал» осталось"}
+
+
 @command("bot-topic")
 def _cmd_bot_topic(body):
     """Тема группы по ссылке — чтобы выбрать её в окне, даже если бот в ней

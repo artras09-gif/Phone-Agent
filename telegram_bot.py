@@ -842,6 +842,10 @@ def shelve(job, ok_all):
     src = jobs.tg_source(job)
     if not src or not load_settings()["token"]:
         return ""
+    if ok_all:
+        import montage
+
+        montage.on_published(src.get("file"), job["caption"])   # память шаблона: принято
     stock, archive = shelf_home("stock"), shelf_home("archive")
     if not stock and not archive:
         return _shelf_hint(src) if ok_all else ""
@@ -1109,7 +1113,8 @@ def _membership(update):
              chat_id=owner)
 
 
-def send(text, preview=True, chat_id=None, keyboard=False, thread=None, html=False):
+def send(text, preview=True, chat_id=None, keyboard=False, thread=None, html=False,
+         markup=None):
     """Отправить ответ. Возвращает True, если Telegram принял ВСЁ.
 
     Адрес выбирается по очереди: явный `chat_id` -> тот, кого сейчас
@@ -1123,6 +1128,8 @@ def send(text, preview=True, chat_id=None, keyboard=False, thread=None, html=Fal
     `preview=False` гасит развёртку ссылок: в подборке из десяти адресов
     Telegram иначе пытается развернуть первый и растягивает сообщение на
     экран, а нужен список.
+
+    `markup` — кнопки под сообщением (JSON inline_keyboard), на последнем куске.
     """
     cfg = load_settings()
     target = chat_id or current_chat() or cfg["owner"]
@@ -1148,6 +1155,8 @@ def send(text, preview=True, chat_id=None, keyboard=False, thread=None, html=Fal
         # В группе — не вешаем: она вылезла бы у всех участников.
         if keyboard and n == len(chunks) - 1 and not (in_group() and str(target) == str(current_chat())):
             params["reply_markup"] = KEYBOARD
+        if markup and n == len(chunks) - 1:
+            params["reply_markup"] = markup
         res = _call("sendMessage", params, timeout=20)
         ok = ok and bool(res.get("ok"))
     return ok
@@ -2004,10 +2013,13 @@ def montage_templates():
     items = []
     for name in montage.templates():
         try:
-            title = montage.load_template(name).get("name") or name
+            tpl = montage.load_template(name)
         except Exception:                          # битый template.json — не в списке
             continue
-        items.append({"id": name, "name": title})
+        mem = montage.memory(name)                 # память шаблона (27.11)
+        items.append({"id": name, "name": tpl.get("name") or name,
+                      "about": mem["about"] or str(tpl.get("texts", {}).get("about") or ""),
+                      "accepted": len(mem["accepted"]), "rejected": len(mem["rejected"])})
     saved = _saved().get("montage_template") or ""
     ids = [t["id"] for t in items]
     current = saved if saved in ids else (montage.DEFAULT_TEMPLATE if montage.DEFAULT_TEMPLATE in ids
@@ -2161,6 +2173,10 @@ def apply_setup(data):
         set_stats_kinds(data.get("stats_kinds"))
     if template:
         _remember(montage_template=template)
+        if "montage_about" in data:
+            import montage
+
+            montage.set_about(template, data.get("montage_about"))
     _fix_names()
     if shelf_home("montage"):
         import montage
@@ -3057,6 +3073,14 @@ def _handle_callback(cq):
         return
     if data.startswith("s:"):
         _stats_button(cq, data, chat_id, message_id, group, thread)
+        return
+    if data.startswith("m:"):
+        # Под «✅ готово» монтажа: другой текст или другой заголовок.
+        import montage
+
+        _call("answerCallbackQuery", {"callback_query_id": cq.get("id", ""),
+                                      "text": montage.on_button(data, chat_id, message_id)},
+              timeout=10)
         return
     home = role_home("posts")
     _REPLY.role = "posts"
