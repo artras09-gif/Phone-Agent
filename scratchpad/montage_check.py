@@ -821,6 +821,21 @@ if ff:
     say((bw, bh) == (1440, 808), f"раскадровка 4x4 по 360 px — одной картинкой: {bw}x{bh}")
     one = montage.storyboard(src, ff, {"w": 640, "h": 360, "duration": 0})
     say(one[:4] == b"\x89PNG", "длина неизвестна — всё равно картинка, а не пустота")
+    # 27.11: «ffmpeg не уложился в 5 мин» на раскадровке ронял весь монтаж.
+    keep = montage.BOARD_FRAME_SEC
+    montage.BOARD_FRAME_SEC = 0.001
+    try:
+        stuck = montage.storyboard(src, ff, montage.probe(src, None, ff))
+        say(stuck == b"", "каждый кадр раскадровки завис — пусто, но без исключения: монтаж идёт дальше")
+    except Exception as e:
+        say(False, f"зависшая раскадровка уронила монтаж: {e}")
+    montage.BOARD_FRAME_SEC = keep
+    try:
+        montage._run([ff, "-v", "error", "-f", "lavfi", "-i", "testsrc2=d=600", "-f", "null", "-"],
+                     1, step="проба")
+        say(False, "таймаут не сработал")
+    except montage.MontageError as e:
+        say("(проба)" in str(e) and "завис" in str(e), f"в ошибке видно, какой шаг завис: «{e}»")
     out = os.path.join(tmp, "out.mp4")
     # ffprobe не обязателен: 26.11 его не было, и монтаж не начался вовсе.
     info = montage.render(src, "KIM JONG-UN RECIBE PERSONALMENTE | A VLADIMIR PUTIN", tpl, out, (ff, fp))

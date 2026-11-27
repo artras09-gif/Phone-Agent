@@ -327,7 +327,7 @@ def _gray_frames(path, ffmpeg, meta, count=7):
         res = _run([ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{at:.2f}", "-i", path,
                     "-frames:v", "1", "-vf",
                     f"scale={meta['w']}:{meta['h']},setsar=1,scale={PROBE_W}:{sh},format=gray",
-                    "-f", "rawvideo", "-"], 120)
+                    "-f", "rawvideo", "-"], 120, step="поиск полей ролика")
         if len(res.stdout) == PROBE_W * sh:
             frames.append(res.stdout)
     return sh, frames
@@ -425,12 +425,23 @@ def title_baselines(count, size, video_top, tpl):
 
 # -------------------------------------------------------------------- ffmpeg
 
-def _run(cmd, timeout, cwd=None):
+def _run(cmd, timeout, cwd=None, step=""):
+    # stdin закрыт всегда (и `-nostdin`): ffmpeg без него читает «клавиши» из
+    # унаследованного stdin, а у службы телефона это труба от окна. 27.11
+    # монтаж падал «ffmpeg не уложился в 5 мин» и на лёгких роликах.
+    if (cmd and len(cmd) > 1 and "-nostdin" not in cmd
+            and "ffmpeg" in os.path.basename(str(cmd[0])).lower()):
+        cmd = [cmd[0], "-nostdin"] + list(cmd[1:])
     try:
         res = subprocess.run(cmd, capture_output=True, timeout=timeout, cwd=cwd,
+                             stdin=subprocess.DEVNULL,
                              creationflags=LOW_PRIORITY | NO_WINDOW)
     except subprocess.TimeoutExpired as e:
-        raise MontageError(f"ffmpeg не уложился в {timeout // 60} мин") from e
+        said = (e.stderr or b"").decode("utf-8", "replace").strip().splitlines()[-2:]
+        what = f" ({step})" if step else ""
+        tail = f": {' / '.join(said)}" if said else ""
+        limit = f"{timeout // 60} мин" if timeout >= 60 else f"{timeout} с"
+        raise MontageError(f"ffmpeg завис{what} — не уложился в {limit}{tail}") from e
     except OSError as e:
         raise MontageError(f"ffmpeg не запустился: {e}") from e
     return res
@@ -512,16 +523,63 @@ def storyboard(path, ffmpeg, meta):
     динамичной нарезке даёт сотню склеек и ничего не выбирает.
     Не вышло (ролик короче сетки) — один кадр из середины."""
     duration = meta.get("duration") or 0
-    rate = f"{BOARD_FRAMES}/{duration:.2f}" if duration > 1 else "4"
-    res = _run([ffmpeg, "-hide_banner", "-loglevel", "error", "-i", path, "-an", "-vf",
-                f"fps={rate},scale=360:-2,tile=4x4", "-frames:v", "1",
-                "-f", "image2pipe", "-c:v", "png", "-"], 300)
-    if res.stdout[:4] == b"\x89PNG":
-        return res.stdout
+    # Кадры — по одному, быстрым переходом к месту (`-ss` до `-i`), а не
+    # фильтром fps по всему ролику: тот декодировал ролик целиком, и 27.11
+    # раскадровка падала «ffmpeg не уложился в 5 мин» — и монтаж вместе с
+    # ней. Так время не зависит ни от длины, ни от тяжести исходника.
+    try:
+        board = _board_by_frames(path, ffmpeg, duration) if duration > 1 else b""
+    except MontageError:
+        board = b""
+    if board:
+        return board
+    # Не вышло — один кадр из середины; не вышел и он — пусто: текст тогда
+    # пишется по подписи, а монтаж из-за раскадровки не падает.
     at = max(0.0, duration * 0.4)
-    res = _run([ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{at:.2f}", "-i", path,
-                "-frames:v", "1", "-vf", "scale=720:-2", "-f", "image2pipe", "-c:v", "png", "-"], 120)
+    try:
+        res = _run([ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{at:.2f}", "-i", path,
+                    "-frames:v", "1", "-vf", "scale=720:-2", "-f", "image2pipe", "-c:v", "png", "-"],
+                   BOARD_FRAME_SEC, step="кадр для модели")
+    except MontageError:
+        return b""
     return res.stdout if res.stdout[:4] == b"\x89PNG" else b""
+
+
+BOARD_FRAME_SEC = 40              # на один кадр раскадровки
+BOARD_TOTAL_SEC = 180             # на всю раскадровку
+
+
+def _board_by_frames(path, ffmpeg, duration):
+    """Сетка 4x4 из кадров, снятых по одному. b"" — набралось меньше четырёх."""
+    import tempfile
+
+    tmp = tempfile.mkdtemp(prefix="pa_board_")
+    try:
+        got, deadline = 0, time.time() + BOARD_TOTAL_SEC
+        for i in range(BOARD_FRAMES):
+            if time.time() > deadline:
+                break
+            at = duration * (i + 0.5) / BOARD_FRAMES
+            name = os.path.join(tmp, f"f{got:02d}.png")
+            try:
+                _run([ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{at:.2f}", "-i", path,
+                      "-frames:v", "1", "-an", "-vf", "scale=360:-2,setsar=1", "-y", name],
+                     BOARD_FRAME_SEC, step="кадр раскадровки")
+            except MontageError:
+                continue
+            if os.path.exists(name) and os.path.getsize(name) > 0:
+                got += 1
+        if got < 4:
+            return b""
+        rows = (got + 3) // 4
+        for k in range(got, rows * 4):        # добить ряд последним кадром
+            shutil.copyfile(os.path.join(tmp, f"f{got - 1:02d}.png"), os.path.join(tmp, f"f{k:02d}.png"))
+        res = _run([ffmpeg, "-hide_banner", "-loglevel", "error", "-framerate", "1",
+                    "-i", os.path.join(tmp, "f%02d.png"), "-vf", f"tile=4x{rows}", "-frames:v", "1",
+                    "-f", "image2pipe", "-c:v", "png", "-"], BOARD_FRAME_SEC, step="сетка раскадровки")
+        return res.stdout if res.stdout[:4] == b"\x89PNG" else b""
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _color(value):
@@ -539,7 +597,10 @@ def render(src, title, tpl, out, tools, meta=None, cap_mb=None):
     meta = meta or probe(src, ffprobe, ffmpeg)
     width, height = tpl["size"]
     fps = int(tpl.get("fps", 30))
-    crop = detect_content(src, ffmpeg, meta) if tpl["video"].get("crop_bars", True) else None
+    try:
+        crop = detect_content(src, ffmpeg, meta) if tpl["video"].get("crop_bars", True) else None
+    except MontageError:
+        crop = None                 # поля не нашлись — монтируем без обрезки, а не падаем
     cw, ch = (crop[0], crop[1]) if crop else (meta["w"], meta["h"])
     vw, vh, vx, vy = fit_video(cw, ch, tpl)
     size, lines = layout_title(title, tpl)
@@ -634,7 +695,7 @@ def render(src, title, tpl, out, tools, meta=None, cap_mb=None):
               "-profile:v", "high", "-r", str(fps)] + rate
            + ["-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-shortest",
               os.path.abspath(out)])
-    res = _run(cmd, max(600, int(meta["duration"] * 30)), cwd=work)
+    res = _run(cmd, max(600, int(meta["duration"] * 30)), cwd=work, step="рендер")
     if res.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) < 1024:
         tail = res.stderr.decode("utf-8", "replace").strip().splitlines()[-3:]
         raise MontageError("ffmpeg не смонтировал: " + (" / ".join(tail) or f"код {res.returncode}"))
