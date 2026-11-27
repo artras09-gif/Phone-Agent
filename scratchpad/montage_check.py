@@ -98,7 +98,10 @@ size2, lines2 = montage.layout_title("SILENCIO INCÓMODO | Y ERDOGAN ABANDONA LA
 say(lines2 == ["SILENCIO INCÓMODO", "Y ERDOGAN ABANDONA LA SALA"] and 52 <= size2 < 64,
     f"влезает в две строки чуть мельче — две, без хвоста «LA SALA»: {lines2} @ {size2}")
 size2, lines2 = montage.layout_title("PUTIN RECIBE PATATAS | DEL HUERTO", tpl)
-say(size2 == 64 and len(lines2) == 2, f"короткий — полным кеглем 64: {lines2} @ {size2}")
+say(size2 == 79 and len(lines2) == 2, f"в 33 знака — две строки чуть мельче 84: {lines2} @ {size2}")
+size2, lines2 = montage.layout_title("PUTIN | ENTRE NOVIAS", tpl)
+say(tpl["title"]["size"] == 84 and size2 == 84 and lines2 == ["PUTIN", "ENTRE NOVIAS"],
+    f"2–3 слова (27.11) — полным кеглем 84, крючок и развязка строками: {lines2} @ {size2}")
 bases = montage.title_baselines(len(lines), size, montage.title_top(1920, 0, tpl), tpl)
 say(bases[0] - size > 0, f"три строки над высоким роликом не уходят за верх кадра: {bases}")
 
@@ -157,6 +160,16 @@ long_caption = ("Primera frase del vídeo. " * 40) + "Más en https://x.com/a @a
 cap = montage._clean_caption(long_caption, 450)
 say(montage._utf16(cap) <= 450 and "https" not in cap and "@autor" not in cap and "#rusia" in cap,
     f"описание: ≤450 знаков UTF-16, без ссылок и @, хэштеги сохранены ({montage._utf16(cap)})")
+long_q = "Una frase larga del texto. " * 30 + "Final.\n👀 ¿Y tú qué harías en su lugar?"
+cap = montage._clean_caption(long_q, 500, head="👰 PUTIN ENTRE NOVIAS", max_tags=0)
+say(montage._utf16(cap) <= 500 and cap.endswith("Una frase larga del texto.\n👀 ¿Y tú qué harías en su lugar?")
+    and cap.startswith("👰 PUTIN ENTRE NOVIAS\n\nUna frase"),
+    f"длинное описание с вопросом — режется середина, вопрос в конце остаётся ({montage._utf16(cap)})")
+cap = montage._clean_caption("Uno. " * 150 + "🤔 ¿Seguro?", 300)
+say(montage._utf16(cap) <= 300 and cap.endswith("Uno. 🤔 ¿Seguro?"),
+    "вопрос в той же строке — тоже остаётся, через пробел")
+cap = montage._clean_caption("Detrás está la firma @autor_x, especialista en esto.", 500, max_tags=0)
+say(cap == "Detrás está la firma, especialista en esto.", f"ник вырезан вместе с пробелом перед ним: {cap}")
 say(montage._clean_title("Kim rompe el protocolo | y recibe a Putin", font, upper=False)
     == "Kim rompe el protocolo | y recibe a Putin", "для текста поста заголовок — обычными буквами")
 post = montage._clean_caption("Kim recibió a Putin en el aeropuerto. La #OTAN responde con dureza. "
@@ -201,25 +214,43 @@ saved_vision = (vision.ask, vision.ask_text)
 vision.ask, vision.ask_text = fake_ask, fake_ask_text
 LOOK_OK = {"kind": "нарезка/сравнение", "people": ["Трамп", "Си Цзиньпин"],
            "theme": "сравнение ВВС четырёх держав", "sure": "high", "unclear": ""}
-GOOD = {"variants": ["Quién manda en el cielo | se decide en tierra", "Cuatro gallos | y un solo cielo",
+GOOD = {"variants": ["Quién manda | en el cielo", "Cuatro gallos | y un solo cielo",
                      "Alas de acero, | egos de titanio", "Cuatro gallos y un solo cielo"],
-        "title": "Quién manda en el cielo | se decide en tierra",
+        "title": "Quién manda | en el cielo", "title_emoji": "✈️",
         "caption": "Cada uno presume de sus alas, pero la verdadera pelea no está en el aire.",
         "hashtags": ["#Aviación", "Geopolítica", "#China"],
         "title_ru": "Кто правит в небе | решается на земле",
         "caption_ru": "Каждый красуется своими крыльями, но настоящая схватка идёт не в воздухе."}
 answers.update(look=LOOK_OK, write=[dict(GOOD)])
 out = montage.write_texts(tpl, "", "", b"PNG", "")
-say(out["title"] == "QUIÉN MANDA EN EL CIELO | SE DECIDE EN TIERRA", f"заголовок от модели: {out['title']}")
+say(out["title"] == "QUIÉN MANDA | EN EL CIELO", f"заголовок от модели: {out['title']}")
 say(asked[0][0] == "look" and asked[0][2].get("shrink") == 1 and "Подписи у ролика нет" in asked[0][1],
     "сначала — разбор раскадровки в полный размер (не ужатый кадр)")
 say("сравнение ВВС четырёх держав" in asked[1][1] and '"sure"' not in asked[1][1]
-    and "Pueden pasar horas" in asked[1][1] and "мысль вокруг ролика" in asked[1][1],
-    "текст пишется по разбору, с образцами описаний-мыслей из шаблона")
-say(out["caption"] == ("Quién manda en el cielo se decide en tierra\n\n"
+    and "En septiembre de 2016" in asked[1][1] and "¿Qué opinas?" in asked[1][1]
+    and "Только 2–3 слова" in asked[1][1] and "не длиннее 28 знаков" in asked[1][1],
+    "текст пишется по разбору, по правилам и образцам из промпта человека (27.11)")
+say("Правила канала:\nЧувствительная лексика" in asked[1][1] and "equipo militar" in asked[1][1]
+    and "Никакой искусственной цензуры" in asked[1][1],
+    "правила чувствительной лексики — в запросе модели")
+say("хэштегов в посте у канала нет" in asked[1][1] and "один уместный тематический эмодзи" in asked[1][1],
+    "модели сказано: без хэштегов, эмодзи к заголовку — отдельным полем")
+say(out["caption"] == ("✈️ QUIÉN MANDA EN EL CIELO\n\n"
+                       "Cada uno presume de sus alas, pero la verdadera pelea no está en el aire."),
+    f"пост: заголовок капсом с эмодзи, хэштеги модели выброшены:\n{out['caption']}")
+answers.update(look=LOOK_OK, write=[dict(GOOD, title_emoji="avión 🔥🔥🔥🔥🔥")])
+say(montage.write_texts(tpl, "", "", b"PNG", "")["caption"].startswith("QUIÉN MANDA"),
+    "вместо эмодзи прислала слова — заголовок без эмодзи, а не с мусором")
+tagged = copy.deepcopy(tpl)
+tagged["texts"].update(hashtags=5, title_emoji=False, post_title_upper=False, rules="")
+asked.clear()
+answers.update(look=LOOK_OK, write=[dict(GOOD)])
+out = montage.write_texts(tagged, "", "", b"PNG", "")
+say(out["caption"] == ("Quién manda en el cielo\n\n"
                        "Cada uno presume de sus alas, pero la verdadera pelea no está en el aire.\n\n"
-                       "#Aviación #Geopolítica #China"),
-    f"хэштеги — отдельным полем и вниз блоком, «#» дописан сам:\n{out['caption']}")
+                       "#Aviación #Geopolítica #China")
+    and "Правила канала" not in asked[1][1] and "3–5 хэштегов" in asked[1][1],
+    f"шаблон с хэштегами — отдельным полем и вниз блоком, «#» дописан сам:\n{out['caption']}")
 say(out["variants"] == ["Cuatro gallos | y un solo cielo", "Alas de acero, | egos de titanio"],
     f"другие заголовки — без выбранного и без повторов: {out['variants']}")
 say(out["title_ru"] == "Кто правит в небе решается на земле" and out["caption_ru"].startswith("Каждый"),
@@ -268,8 +299,51 @@ out = montage.write_texts(tpl, "Putin llega a Pekín", "", b"", "Mi titular | pr
 say(out["title"] == "MI TITULAR | PROPIO" and out["variants"] == []
     and not [a for a in asked if a[0] == "look"],
     "свой заголовок человека — как есть, без вариантов; без раскадровки — без разбора")
-say("не зашёл" in asked[-1][1] and "TÍTULO VIEJO" in asked[-1][1],
-    "«Другой текст»: модели показан отвергнутый вариант")
+say("не зашёл" in asked[-1][1] and "«Título viejo» / «descripción vieja»" in asked[-1][1],
+    "«Всё заново»: модели показан отвергнутый вариант")
+
+# Переделка кнопкой (27.11): только заголовок, только описание — по прошлому разбору.
+OLD_POST = "👰 PUTIN ENTRE NOVIAS\n\nEran modelos, no novias.\n🤔 ¿Te imaginas algo así?"
+FACTS = "Разбор по кадрам: {\"theme\": \"Путин и невесты на Красной площади\"}"
+asked.clear()
+answers.update(write=[dict(GOOD, caption="Otra cosa que no debe usarse.", hashtags=["#x"])])
+out = montage.write_texts(tpl, "", rejected=("PUTIN | ENTRE NOVIAS", OLD_POST), redo="title",
+                          facts=FACTS, keep="Eran modelos, no novias.\n🤔 ¿Te imaginas algo así?")
+say(not [a for a in asked if a[0] == "look"] and "Путин и невесты" in asked[-1][1],
+    "«Заголовок»: разбор ролика — из прошлого раза, раскадровку заново не смотрит")
+say("Нужен только новый заголовок" in asked[-1][1] and "«👰 PUTIN ENTRE NOVIAS»" in asked[-1][1]
+    and "«Eran modelos, no novias. 🤔 ¿Te imaginas algo así?»" in asked[-1][1],
+    "«Заголовок»: модели сказано, что описание остаётся, и какой заголовок не зашёл")
+say(out["caption"] == ("✈️ QUIÉN MANDA EN EL CIELO\n\n"
+                       "Eran modelos, no novias.\n🤔 ¿Te imaginas algo así?")
+    and out["title"] == "QUIÉN MANDA | EN EL CIELO" and out["facts"] == FACTS,
+    f"«Заголовок»: новый заголовок, описание прежнее слово в слово:\n{out['caption']}")
+asked.clear()
+answers.update(write=[dict(GOOD, title="Otro título", title_emoji="🔥")])
+out = montage.write_texts(tpl, "", user_title="PUTIN | ENTRE NOVIAS",
+                          rejected=("PUTIN | ENTRE NOVIAS", OLD_POST), redo="caption", facts=FACTS,
+                          keep="👰 PUTIN ENTRE NOVIAS")
+say("Прошлое описание человеку не зашло" in asked[-1][1] and "Заголовок уже выбран: «PUTIN | ENTRE NOVIAS»"
+    in asked[-1][1] and "по-другому построенный вопрос в конце" in asked[-1][1],
+    "«Описание»: заголовок оставить, прошлое описание показано как не зашедшее")
+say(out["caption"] == ("👰 PUTIN ENTRE NOVIAS\n\n"
+                       "Cada uno presume de sus alas, pero la verdadera pelea no está en el aire.")
+    and out["title"] == "PUTIN | ENTRE NOVIAS",
+    f"«Описание»: первая строка поста — прежняя (с тем же эмодзи), описание новое:\n{out['caption']}")
+asked.clear()
+longer = "Primera idea larga sobre el tema del vídeo. " * 14 + "¿Y tú qué harías?"
+answers.update(write=[dict(GOOD, caption=longer), dict(GOOD)])
+out = montage.write_texts(tpl, "", facts=FACTS)
+say(len([a for a in asked if a[0] == "write"]) == 2 and "длиннее, чем помещается" in asked[-1][1]
+    and "вопрос в конце оставь" in asked[-1][1] and out["caption"].endswith("en el aire."),
+    "описание не влезает в пост (обрезка съела бы вопрос) — один раз просит сократить")
+asked.clear()
+answers.update(write=[dict(GOOD, title="Cuatro siluetas | y sus escuadrones"), dict(GOOD)])
+out = montage.write_texts(tpl, "", facts=FACTS)
+say(len([a for a in asked if a[0] == "write"]) == 2
+    and "заголовок «Cuatro siluetas y sus escuadrones» длиннее 28 знаков" in asked[-1][1]
+    and out["title"] == "QUIÉN MANDA | EN EL CIELO",
+    "заголовок длиннее нормы шаблона (2–3 слова, 28 знаков) — один раз просит короче")
 REAL_WRITE = montage.write_texts
 vision.ask, vision.ask_text = saved_vision
 
@@ -537,14 +611,17 @@ scheduler.looks_like_video = lambda path: None
 texts = {}
 
 
-def fake_texts(tpl_, source, author="", board=b"", user_title="", rejected=None):
-    texts.update(source=source, user_title=user_title, rejected=rejected, board=board)
+def fake_texts(tpl_, source, author="", board=b"", user_title="", rejected=None, redo="all",
+               facts=None, keep=""):
+    texts.update(source=source, user_title=user_title, rejected=rejected, board=board, redo=redo,
+                 facts=facts, keep=keep)
     if texts.pop("fail", None):
         raise montage.MontageError("модель не написала заголовок и описание (тест)")
-    return {"title": user_title or "KIM JONG-UN RECIBE | A PUTIN",
-            "caption": "Kim recibe a Putin. #rusia",
+    return {"title": user_title or texts.get("next_title") or "KIM JONG-UN RECIBE | A PUTIN",
+            "caption": texts.get("next_caption") or "Kim recibe a Putin. #rusia",
             "variants": ["Otra idea | distinta", "Tercera | vía"],
-            "title_ru": "Ким встречает Путина", "caption_ru": "Ким встречает Путина."}
+            "title_ru": "Ким встречает Путина", "caption_ru": "Ким встречает Путина.",
+            "theme": "" if facts else "встреча Кима и Путина", "facts": facts or "РАЗБОР-1"}
 
 
 montage.write_texts = fake_texts
@@ -582,11 +659,15 @@ say(any("обновил скачивалку" in s for s in sent) and any(s.star
 say(renders[-1][1] is None, "свой сервер Bot API — без потолка размера")
 say(texts["board"] == b"PNG", "модели дана раскадровка ролика")
 done = next(s for s in sent if s.startswith("✅ #1"))
-say("1. Otra idea distinta" in done and "По-русски:" in done and "Ким встречает Путина." in done,
-    f"в «готово» — другие заголовки и перевод:\n{done}")
+say("Otra idea" not in done and "По-русски:" in done and "Ким встречает Путина." in done,
+    f"в «готово» — заголовок и перевод, без списка других заголовков:\n{done}")
 keys = json.loads(next(m for t, m in marks if t == done))["inline_keyboard"]
-say([b["callback_data"] for row_ in keys for b in row_] == ["m:1:1", "m:1:2", "m:1"],
-    "под «готово» — кнопки: два других заголовка и «Другой текст»")
+say([[(b["text"], b["callback_data"]) for b in row_] for row_ in keys]
+    == [[("✅ Одобрить", "m:1:ok")], [("🔄 Заголовок", "m:1:t"), ("🔄 Описание", "m:1:c")],
+        [("🔄 Всё заново", "m:1")]],
+    f"под «готово» — «Одобрить», «Заголовок», «Описание», «Всё заново»: {keys}")
+say(jobs.montage_get(1)["facts"] == "РАЗБОР-1" and jobs.montage_get(1)["theme"] == "встреча Кима и Путина",
+    "разбор ролика сохранён в заказе — для нового описания без скачивания")
 
 print("7б. Видео файлом из Telegram — главный путь, пока ссылки не готовы")
 uploads.clear()
@@ -678,6 +759,127 @@ row = jobs.montage_get(1)
 say(texts["user_title"] == "Tercera | vía" and texts["rejected"] is None and row["pick"] == ""
     and row["title"] == "Tercera | vía", "перемонтаж с выбранным заголовком, описание к нему")
 say(press("m:1:9") == "этого варианта уже нет", "устаревшая кнопка варианта — подсказка, а не сбой")
+say(press("m:1:zz") == "не понял кнопку", "чужой код кнопки — подсказка, а не переделка")
+
+print("7в+. Кнопки 27.11: одобрить, новый заголовок, новое описание")
+mem_snap = open(montage._memory_path("rusorama"), encoding="utf-8").read()
+tid = jobs.montage_add(url="https://www.instagram.com/reel/BTN/", chat=GROUP, thread=str(MONT))
+texts.clear()
+texts.update(next_title="KIM | Y PUTIN",
+             next_caption="🧐 KIM Y PUTIN\n\nDescripción primera.\n🤔 ¿Tú qué harías?")
+montage.process(tid)
+first = jobs.montage_get(tid)
+say(first["status"] == "done" and first["facts"] == "РАЗБОР-1" and first["redo"] == "",
+    "новый заказ готов, разбор сохранён")
+
+uploads.clear()
+renders.clear()
+sent.clear()
+note = press(f"m:{tid}:c")
+row = jobs.montage_get(tid)
+mem = montage.memory("rusorama")
+say(note == "пишу новое описание" and row["status"] == "queued" and row["redo"] == "caption",
+    f"«🔄 Описание» — заказ в очереди на новое описание: {note}")
+say(any(s.startswith(f"🔄 #{tid}: пишу новое описание — поменяю подпись") for s in sent),
+    "в теме сказано: подпись поменяю, ролик тот же")
+say(mem["rejected"][-1]["title"] == "🧐 KIM Y PUTIN" and mem["rejected"][-1].get("what") == "caption"
+    and mem["rejected"][-1]["caption"] == "Descripción primera.\n🤔 ¿Tú qué harías?",
+    f"в отвергнутое — описание, с пометкой «только описание»: {mem['rejected'][-1]}")
+say("- описание к заголовку «🧐 KIM Y PUTIN»: Descripción primera. 🤔 ¿Tú qué harías?"
+    in montage._taste(mem), "модель видит: не зашло именно описание, заголовок был хорош")
+texts["next_caption"] = "🧐 KIM Y PUTIN\n\nDescripción segunda.\n🙃 ¿Y si fuera al revés?"
+api.clear()
+sent.clear()
+marks.clear()
+montage.process(tid)
+row = jobs.montage_get(tid)
+edits = [p for m, p in api if m == "editMessageCaption"]
+say(texts["redo"] == "caption" and texts["facts"] == "РАЗБОР-1" and texts["keep"] == "🧐 KIM Y PUTIN"
+    and texts["user_title"] == "KIM | Y PUTIN" and texts["rejected"] == (first["title"], first["caption"]),
+    "новое описание — по прошлому разбору, заголовок и первая строка поста — прежние")
+say(edits == [{"chat_id": GROUP, "message_id": first["stock_msg"], "caption": texts["next_caption"]}],
+    f"подпись поменяна у того же видео в запасах: {edits}")
+say(not uploads and not renders and not [m for m, _ in api if m == "deleteMessage"],
+    "без скачивания, перемонтажа и новой загрузки")
+say(row["status"] == "done" and row["stock_msg"] == first["stock_msg"] and row["redo"] == ""
+    and row["caption"] == texts["next_caption"], "в заказе — новое описание, видео то же")
+say(any(s.startswith(f"✅ #{tid}") and "Описание у видео в запасах заменил" in s for s in sent)
+    and marks and f"m:{tid}:ok" in (marks[-1][1] or ""), "«готово» с теми же четырьмя кнопками")
+
+real_call = telegram_bot._call
+telegram_bot._call = lambda method, params=None, **k: (
+    {"ok": False, "description": "Bad Request: message to edit not found"}
+    if method == "editMessageCaption" else real_call(method, params, **k))
+press(f"m:{tid}:c")
+sent.clear()
+marks.clear()
+montage.process(tid)
+telegram_bot._call = real_call
+row = jobs.montage_get(tid)
+say(row["status"] == "done" and row["caption"] == texts["next_caption"] and row["redo"] == ""
+    and any("не переделал" in s and "подпись у видео" in s and "всё осталось как было" in s for s in sent)
+    and marks and f"m:{tid}:c" in (marks[-1][1] or ""),
+    "видео в запасах уже нет (опубликовали) — честная ошибка, описание прежнее, кнопки снова")
+
+before = jobs.montage_get(tid)
+texts.update(next_title="NUEVO | TÍTULO", next_caption="🆕 NUEVO TÍTULO\n\nDescripción segunda.")
+sent.clear()
+note = press(f"m:{tid}:t")
+mem = montage.memory("rusorama")
+say(note == "перемонтирую" and jobs.montage_get(tid)["redo"] == "title"
+    and any("новый заголовок и перемонтирую — описание оставлю" in s for s in sent),
+    "«🔄 Заголовок» — перемонтаж с новым заголовком, описание остаётся")
+say(mem["rejected"][-1]["title"] == "🧐 Kim y putin" and not mem["rejected"][-1].get("what"),
+    f"в отвергнутое — заголовок: {mem['rejected'][-1]}")
+api.clear()
+montage.process(tid)
+row = jobs.montage_get(tid)
+say(texts["redo"] == "title" and texts["user_title"] == "" and texts["board"] == b""
+    and texts["facts"] == "РАЗБОР-1" and texts["keep"] == "Descripción segunda.\n🙃 ¿Y si fuera al revés?",
+    f"новый заголовок пишется по прошлому разбору, к прежнему описанию: {texts['keep']!r}")
+say(renders and renders[-1][0] == "NUEVO | TÍTULO" and row["title"] == "NUEVO | TÍTULO"
+    and row["stock_msg"] not in (0, before["stock_msg"])
+    and ("deleteMessage", before["stock_msg"]) in [(m, p.get("message_id")) for m, p in api],
+    "перемонтировано с новым заголовком, прежнее видео в запасах заменено")
+
+approved = jobs.montage_get(tid)
+started.clear()
+sent.clear()
+api.clear()
+note = press(f"m:{tid}:ok")
+mem = montage.memory("rusorama")
+say(note == "одобрено — запомнил как удачное" and jobs.montage_get(tid)["status"] == "done"
+    and not started and not sent and any(m == "editMessageReplyMarkup" for m, _ in api),
+    "«✅ Одобрить» — всплывашка, кнопки убраны, ничего не переделывается")
+say((mem["accepted"][-1]["title"], mem["accepted"][-1]["caption"])
+    == ("🆕 NUEVO TÍTULO", "Descripción segunda."),
+    f"одобренное — в принятое памяти шаблона: {mem['accepted'][-1]}")
+
+jobs.montage_set(tid, facts="")
+sent.clear()
+press(f"m:{tid}:c")
+say(any("пишу новое описание и перемонтирую с тем же заголовком" in s for s in sent),
+    "заказ до 27.11 (без сохранённого разбора) — описание через перемонтаж, честно сказано")
+uploads.clear()
+montage.process(tid)
+row = jobs.montage_get(tid)
+say(texts["redo"] == "caption" and texts["user_title"] == approved["title"] and texts["board"] == b"PNG"
+    and texts["keep"] == "🆕 NUEVO TÍTULO" and uploads and row["facts"] == "РАЗБОР-1",
+    "…ролик смотрится заново, заголовок прежний, разбор теперь сохранён")
+with open(montage._memory_path("rusorama"), "w", encoding="utf-8") as f:
+    f.write(mem_snap)
+
+montage.remember("t2", "rejected", "Uno | dos", "Texto A", what="caption")
+montage.remember("t2", "accepted", "UNO | DOS", "Texto B")
+mem = montage.memory("t2")
+say([(e["title"], e["caption"]) for e in mem["rejected"]] == [("Uno dos", "Texto A")]
+    and [(e["title"], e["caption"]) for e in mem["accepted"]] == [("Uno dos", "Texto B")],
+    "отвергнутое описание остаётся, когда тот же заголовок приняли с другим описанием")
+montage.remember("t2", "accepted", "Uno dos", "Texto B")
+montage.remember("t2", "rejected", "UNO DOS")
+mem = montage.memory("t2")
+say(not mem["accepted"] and [(e["title"], e["caption"]) for e in mem["rejected"]] == [("Uno dos", "Texto A")],
+    f"отвергли сам заголовок — он уходит из принятого целиком: {mem}")
 
 before = jobs.montage_get(1)
 press("m:1")
@@ -713,8 +915,10 @@ telegram_bot.shelve(job, True)
 mem = montage.memory("rusorama")
 say([(e["title"], e["caption"]) for e in mem["accepted"]]
     == [("Tercera vía", "Texto que el humano corrigió antes de publicar.")]
-    and [e["title"] for e in mem["rejected"]] == ["Putin en pekín"],
-    f"видео монтажа вышло — принят текст, КАК ОПУБЛИКОВАН (правленый, без хэштегов): {mem['accepted']}")
+    and [(e["title"], e["caption"]) for e in mem["rejected"]]
+    == [("Putin en pekín", "Kim recibe a Putin. #rusia"), ("Tercera vía", "Kim recibe a Putin. #rusia")],
+    f"видео монтажа вышло — принят текст, КАК ОПУБЛИКОВАН (правленый, без хэштегов); "
+    f"отвергнутое прежнее описание под тем же заголовком осталось: {mem['accepted']}")
 telegram_bot.shelve(dict(job, tg=json.dumps({"file": "CHUZHOE", "chat": GROUP, "msg": 6})), True)
 say(len(montage.memory("rusorama")["accepted"]) == 1, "чужое видео (не из монтажа) память не трогает")
 
@@ -731,7 +935,7 @@ say("О канале: канал о политике" in prompt and "Что че
 telegram_bot.apply_setup({"montage_template": "rusorama",
                           "montage_about": "Ironía sobre la diplomacia mundial, sin tomar partido"})
 item = next(t for t in telegram_bot.montage_templates()["montage_templates"] if t["id"] == "rusorama")
-say(item["about"].startswith("Ironía") and item["accepted"] == 1 and item["rejected"] == 1,
+say(item["about"].startswith("Ironía") and item["accepted"] == 1 and item["rejected"] == 2,
     f"окно: «О чём канал» сохраняется, счётчик принятого и отвергнутого: {item}")
 asked.clear()
 answers.update(write=[dict(GOOD)])

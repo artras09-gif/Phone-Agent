@@ -729,22 +729,33 @@ WRITE = """Ты редактор канала «{channel}». Пишешь на �
 Что в ролике:
 {facts}
 {user_title}{rejected}
-{taste}
+{taste}{rules}
 Нужно:
 1. title — заголовок поверх видео. Не констатация факта («X сделал Y», «X и Y на одном экране»), а образ или обобщение, которое схватывает идею ролика: игра слов, метафора, контраст, неожиданный угол, чуть с юмором — чтобы хотелось досмотреть. Интрига конкретная: не «не то, чем кажется» и не «никто не ожидал». По смыслу — правда, без выдуманных подробностей. Строго не длиннее {title_chars} знаков, обычными буквами (капсом на видео сделаем сами), без эмодзи, кавычек, хэштегов и точки в конце. {title_rule} Знак | — только место переноса строки на видео: без него заголовок читается правильной фразой. Примеры стиля канала (стиль, не темы):
 {examples}
 Сначала придумай 5 вариантов (variants), потом выбери лучший (title): самый образный, точный по смыслу и короткий.
-2. caption — описание поста: {caption_style} Не длиннее {caption_chars} знаков, без хэштегов. Примеры:
+{emoji}2. caption — описание поста: {caption_style} Не длиннее {caption_chars} знаков, без хэштегов. Примеры:
 {caption_examples}
-3. hashtags — 3–5 хэштегов по теме.
+3. hashtags — {hashtags}
 4. title_ru и caption_ru — перевод title и caption на русский (для проверки, в пост не идёт).
 Без ссылок, @упоминаний и призывов подписаться.
 
-Ответ — только JSON: {{"variants": ["..."], "title": "...", "caption": "...", "hashtags": ["#..."], "title_ru": "...", "caption_ru": "..."}}"""
+Ответ — только JSON: {{"variants": ["..."], "title": "...", "title_emoji": "...", "caption": "...", "hashtags": ["#..."], "title_ru": "...", "caption_ru": "..."}}"""
+
+# Переделка кнопкой под «✅ готово» (27.11): что не зашло и что оставить.
+REDO_TEXT = {
+    "all": "Прошлый вариант человеку не зашёл — напиши заметно по-другому: другой образ, другая "
+           "мысль, другое построение фразы. Прошлый: «{title}» / «{caption}»\n",
+    "title": "Описание уже есть, его не меняем: «{caption}». Нужен только новый заголовок к нему "
+             "(caption верни пустым). Прошлый заголовок человеку не зашёл: «{title}» — придумай с "
+             "нуля, а не замени в нём слово: другой образ и другое построение.\n",
+    "caption": "Прошлое описание человеку не зашло — напиши заметно по-другому: другая мысль, другой "
+               "крючок, другое начало и по-другому построенный вопрос в конце. Прошлое: «{caption}»\n",
+}
 
 CAPTION_STYLE = ("не пересказ ролика, а мысль вокруг него: наблюдение, обобщение, ирония, "
                  "второй смысл. 2–3 коротких предложения живым языком.")
-MAX_VARIANTS = 3                  # других заголовков в «✅ готово» — кнопками
+MAX_VARIANTS = 3                  # другие заголовки — для старых кнопок «1. …» под «готово»
 
 EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍]")
 
@@ -769,23 +780,24 @@ def _utf16(text):
 MAX_TAGS = 5
 
 
-def _clean_caption(text, limit, head=""):
+def _clean_caption(text, limit, head="", max_tags=MAX_TAGS):
     """Текст поста: заголовок, описание и хэштеги — через пустую строку
     (просьба 2026-11-26: «пустыми строками отделить заголовок, описание и
     хэштеги, а он всё в одну кучу»). Хэштеги вынимаются из ответа модели, где
     бы она их ни поставила: хвост из хэштегов уходит вниз целиком, а тег
-    посреди фразы («la #OTAN responde») остаётся в ней словом. Без ссылок и
-    @упоминаний, в пределах `limit` знаков UTF-16 (так считает Threads —
-    самый строгий из списка, 500); не влезает — укорачивается описание,
-    заголовок и хэштеги остаются."""
+    посреди фразы («la #OTAN responde») остаётся в ней словом. `max_tags`=0 —
+    без хэштегов совсем. Без ссылок и @упоминаний, в пределах `limit` знаков
+    UTF-16 (так считает Threads — самый строгий из списка, 500); не влезает —
+    укорачивается описание, заголовок и хэштеги остаются."""
     text = re.sub(r"https?://\S+", "", str(text or ""))
-    text = re.sub(r"(?<!\w)@[\w.]+", "", text)
+    # С пробелом перед ником: «la firma @autor, especialista» → «la firma, especialista».
+    text = re.sub(r"[ \t]*(?<!\w)@[\w.]+", "", text)
     tags, seen = [], set()
     for tag in re.findall(r"#\w+", text):
         if tag.lower() not in seen:
             seen.add(tag.lower())
             tags.append(tag)
-    tags = " ".join(tags[:MAX_TAGS])
+    tags = " ".join(tags[:max_tags])
     tail = re.search(r"(?:\s*#\w+[,;]?)+[\s.]*$", text)
     body = text[:tail.start()] if tail else text
     body = re.sub(r"#(\w+)", r"\1", body)
@@ -793,18 +805,31 @@ def _clean_caption(text, limit, head=""):
     body = re.sub(r"\n{3,}", "\n\n", body).strip()
     head = str(head or "").replace(" | ", " ").strip()
     room = limit - sum(_utf16(p) + 2 for p in (head, tags) if p)
+    # Вопрос в конце поста (27.11: пост кончается вопросом к читателю) при
+    # обрезке остаётся — сокращается то, что перед ним.
+    ask, glue = "", ""
+    if _utf16(body) > room and body.endswith("?") and "¿" in body:
+        start = mark = body.rfind("¿")
+        while start > 0 and (body[start - 1] in " \t\n" or EMOJI.match(body[start - 1])):
+            start -= 1
+        if 0 < start and _utf16(body[start:].strip()) < room // 2:
+            glue = "\n" if "\n" in body[start:mark] else " "
+            ask, body = body[start:].strip(), body[:start].rstrip()
+            room -= _utf16(ask) + 1
     cut = body if room > 1 else ""
     while _utf16(cut) > room:
-        stop = max(cut.rfind(". ", 0, len(cut) - 1), cut.rfind("! ", 0, len(cut) - 1),
-                   cut.rfind("? ", 0, len(cut) - 1))
-        if stop > 0:
-            cut = cut[:stop + 1]
+        ends = [m.end() for m in re.finditer(r"[.!?…](?=\s)", cut[:-1])]
+        if ends:
+            cut = cut[:ends[-1]]
             continue
         cut = cut[:room - 1]
         while _utf16(cut) > room - 1:              # эмодзи в UTF-16 — два знака
             cut = cut[:-1]
         cut = cut.rstrip() + "…"
-    return "\n\n".join(p for p in (head, cut.strip(), tags) if p)
+    cut = cut.strip()
+    if ask:
+        cut = f"{cut}{glue}{ask}" if cut else ask
+    return "\n\n".join(p for p in (head, cut, tags) if p)
 
 
 def _model_json(ask, pauses):
@@ -841,9 +866,10 @@ def _avoided(text, words):
 # ---------------------------------------------------------- память шаблона
 #
 # Просьба 2026-11-27: у каждого шаблона свой контекст описаний — о чём канал,
-# что человек принял и что отверг. Принятое — текст, который вышел в
-# публикацию, и заголовок, выбранный кнопкой; отвергнутое — «🔄 Другой текст»
-# и заголовок, замененный кнопкой. Хранится до MEMORY_KEEP записей каждого
+# что человек принял и что отверг. Принятое — «✅ Одобрить», текст, который
+# вышел в публикацию, и заголовок, выбранный старой кнопкой; отвергнутое — то,
+# что переделали кнопками «Заголовок», «Описание», «Всё заново». Правила канала
+# (шаблон) память не трогает. Хранится до MEMORY_KEEP записей каждого
 # вида, старые выпадают (скользящее окно — выбор человека: без выжимки);
 # модель видит последние MEMORY_SHOW. Файл — в данных программы, а не в
 # шаблоне: встроенный шаблон лежит внутри exe, и память общая на все телефоны.
@@ -889,28 +915,61 @@ def _post_parts(title, caption):
     while parts and re.fullmatch(r"(#\w+[\s,;]*)+", parts[-1]):
         parts.pop()
     plain = _plain(title)
-    if parts and _plain(parts[0]).lower() == plain.lower():
+    if parts and _key(parts[0]) == _key(title):
         return parts[0], "\n".join(parts[1:])
-    # Заголовок с видео — капсом; в память — обычными буквами.
-    return (plain[:1] + plain[1:].lower() if plain.isupper() else plain), "\n".join(parts)
+    # Заголовок с видео — капсом; в память — обычными буквами (с эмодзи впереди
+    # заглавная — первая буква, а не эмодзи).
+    if plain.isupper():
+        low = plain.lower()
+        at = next((i for i, ch in enumerate(low) if ch.isalpha()), 0)
+        plain = low[:at] + low[at:at + 1].upper() + low[at + 1:]
+    return plain, "\n".join(parts)
 
 
-def remember(tpl_id, kind, title, caption="", theme=""):
+def _key(title):
+    """Заголовок для сравнения: без «|», эмодзи и регистра («👰 PUTIN ENTRE
+    NOVIAS» в посте и «PUTIN | ENTRE NOVIAS» на видео — один заголовок)."""
+    return _plain(EMOJI.sub("", str(title or ""))).lower()
+
+
+def _head_rest(title, caption):
+    """Первый абзац поста, если это заголовок, и всё остальное — описание с
+    хэштегами, как есть."""
+    caption = str(caption or "").strip()
+    head, _, rest = caption.partition("\n\n")
+    if _key(head) == _key(title):
+        return head, rest.strip()
+    return "", caption
+
+
+def remember(tpl_id, kind, title, caption="", theme="", what=""):
     """Записать принятое (`kind`="accepted") или отвергнутое ("rejected").
-    Тот же заголовок в другом списке убирается: последнее слово человека."""
-    if not tpl_id or not _plain(title):
+    `what`="caption" — не зашло только описание (заголовок к нему был хорош).
+
+    Та же запись в другом списке убирается: последнее слово человека. «Та
+    же» — тот же заголовок и то же описание (или у одной из них описания нет):
+    отвергнутое описание под заголовком, который потом приняли с другим
+    описанием, остаётся в отвергнутом."""
+    if not tpl_id or not _key(title):
         return
     head, body = _post_parts(title, caption)
     entry = {"title": head, "caption": body[:600], "theme": str(theme or "")[:200],
              "at": time.strftime("%Y-%m-%d")}
-    key = _plain(head).lower()
+    if what:
+        entry["what"] = what
+    key, text = _key(head), " ".join(entry["caption"].split())
+
+    def same(e):
+        other = " ".join(str(e.get("caption") or "").split())
+        return _key(e["title"]) == key and (not text or not other or other == text)
+
     with _MEMORY_LOCK:
         mem = memory(tpl_id)
-        same = [e for e in mem[kind] if _plain(e["title"]).lower() == key]
-        if same and not entry["caption"]:             # тот же заголовок без описания —
-            entry["caption"] = same[-1].get("caption", "")    # описание прежней записи
+        twins = [e for e in mem[kind] if same(e)]
+        if twins and not entry["caption"]:            # тот же заголовок без описания —
+            entry["caption"] = twins[-1].get("caption", "")   # описание прежней записи
         for other in ("accepted", "rejected"):
-            mem[other] = [e for e in mem[other] if _plain(e["title"]).lower() != key]
+            mem[other] = [e for e in mem[other] if not same(e)]
         mem[kind] = (mem[kind] + [entry])[-MEMORY_KEEP:]
         _memory_save(tpl_id, mem)
 
@@ -944,7 +1003,9 @@ def _taste(mem):
     def line(e):
         text = f"- «{e['title']}»"
         if e.get("caption"):
-            text += " — " + " ".join(str(e["caption"]).split())[:300]
+            caption = " ".join(str(e["caption"]).split())[:300]
+            text = (f"- описание к заголовку «{e['title']}»: {caption}" if e.get("what") == "caption"
+                    else f"{text} — {caption}")
         if e.get("theme"):
             text += f" (ролик: {e['theme']})"
         return text
@@ -974,60 +1035,81 @@ def on_published(file, caption):
         print(f"[монтаж] память шаблона: {type(e).__name__}: {e}", flush=True)
 
 
-def write_texts(tpl, source, author="", board=b"", user_title="", rejected=None):
+def write_texts(tpl, source, author="", board=b"", user_title="", rejected=None, redo="all",
+                facts=None, keep=""):
     """Заголовок и текст поста от модели — словарь: title (на видео, капсом),
     caption (заголовок, описание и хэштеги через пустую строку), variants
-    (другие заголовки), title_ru и caption_ru (перевод для человека).
+    (другие заголовки), title_ru и caption_ru (перевод для человека), theme и
+    facts (что модель знала о ролике — для переделки без скачивания).
 
     Шаг 1 — разбор раскадровки `board` (что за ролик и в чём его идея), шаг 2 —
     текст по разбору и подписи автора. Модель не уверена, что поняла ролик,
     а ни подписи, ни своего заголовка нет — MontageError с просьбой подсказать:
-    выдуманный заголовок хуже вопроса. `rejected` — (заголовок, описание),
-    которые человек отверг кнопкой: новые должны быть другими."""
+    выдуманный заголовок хуже вопроса. `facts` — готовый разбор и подпись из
+    прошлого монтажа: тогда шаг 1 не нужен.
+
+    `rejected` — (заголовок, текст поста), которые человек отверг кнопкой, и
+    `redo` — что именно: "all" — всё, "title" — только заголовок (описание
+    `keep` остаётся), "caption" — только описание (заголовок — `user_title`,
+    первая строка поста `keep` остаётся)."""
     import postspec
     import vision
 
     tx = tpl["texts"]
     font = Font.get(os.path.join(tpl["dir"], tpl["title"]["font"]))
     source = source.strip()
-    known = bool(source or user_title)
-    if not known and not board:
-        raise MontageError("у ролика нет ни подписи, ни кадра — не из чего писать заголовок")
     look = None
-    if board:
-        hint = (f"Подпись автора ролика: «{source[:1500]}»" if source else "Подписи у ролика нет.")
-        look, why = _model_json(lambda: vision.ask(
-            board, LOOK.format(source=hint), max_tokens=900, temperature=0.2, timeout=180,
-            shrink=1), (0,) if known else TEXT_PAUSES)
-        if look is None and not known:
-            raise MontageError(f"модель не разобрала ролик ({why})")
-    if look and not known and str(look.get("sure", "")).strip().lower() == "low":
-        unclear = str(look.get("unclear") or "").strip()
-        raise MontageError("по кадрам не понял, о чём ролик" + (f" ({unclear})" if unclear else "")
-                           + ", а подписи у него нет. Пришли ссылку ещё раз и рядом свой "
-                           "заголовок — или видео файлом с парой слов в подписи: по ним напишу.")
-    facts = []
-    if look:
-        facts.append("Разбор по кадрам: " + json.dumps(
-            {k: v for k, v in look.items() if k not in ("sure", "unclear")}, ensure_ascii=False))
-    if source:
-        facts.append(f"Подпись автора ролика{f' ({author})' if author else ''}: «{source[:2500]}»")
+    if facts is None:
+        known = bool(source or user_title)
+        if not known and not board:
+            raise MontageError("у ролика нет ни подписи, ни кадра — не из чего писать заголовок")
+        if board:
+            hint = (f"Подпись автора ролика: «{source[:1500]}»" if source else "Подписи у ролика нет.")
+            look, why = _model_json(lambda: vision.ask(
+                board, LOOK.format(source=hint), max_tokens=900, temperature=0.2, timeout=180,
+                shrink=1), (0,) if known else TEXT_PAUSES)
+            if look is None and not known:
+                raise MontageError(f"модель не разобрала ролик ({why})")
+        if look and not known and str(look.get("sure", "")).strip().lower() == "low":
+            unclear = str(look.get("unclear") or "").strip()
+            raise MontageError("по кадрам не понял, о чём ролик" + (f" ({unclear})" if unclear else "")
+                               + ", а подписи у него нет. Пришли ссылку ещё раз и рядом свой "
+                               "заголовок — или видео файлом с парой слов в подписи: по ним напишу.")
+        lines = []
+        if look:
+            lines.append("Разбор по кадрам: " + json.dumps(
+                {k: v for k, v in look.items() if k not in ("sure", "unclear")}, ensure_ascii=False))
+        if source:
+            lines.append(f"Подпись автора ролика{f' ({author})' if author else ''}: «{source[:2500]}»")
+        facts = "\n".join(lines)
+    redo = redo if redo in REDO_TEXT else "all"
+    if rejected:
+        old_head, old_body = _post_parts(*rejected)
+        rejected = REDO_TEXT[redo].format(title=old_head, caption=" ".join(old_body.split()))
+    tags_max = int(tx.get("hashtags", MAX_TAGS))
+    emoji = bool(tx.get("title_emoji"))
+    rules = tx.get("rules") or ""
+    rules = ("\n".join(rules) if isinstance(rules, list) else str(rules)).strip()
     mem = memory(tpl["id"])
     prompt = WRITE.format(
         channel=tpl.get("name", tpl["id"]), about=mem["about"] or tx.get("about", ""),
-        taste=_taste(mem),
-        language=tx.get("language", "español"), facts="\n".join(facts),
-        user_title=(f"Заголовок уже дан человеком: «{user_title}». Оставь его как есть "
+        taste=_taste(mem), rules=(f"Правила канала:\n{rules}\n" if rules else ""),
+        language=tx.get("language", "español"), facts=facts,
+        user_title=(f"Заголовок уже выбран: «{user_title}». Оставь его как есть "
                     f"(title — он же, variants — пустой список), напиши к нему описание.\n"
                     if user_title else ""),
-        rejected=("Прошлый вариант человеку не зашёл — напиши заметно по-другому: другой "
-                  "образ, другая мысль, другое построение фразы. Прошлый: «{}» / «{}»\n".format(*rejected)
-                  if rejected else ""),
+        rejected=rejected or "",
         title_chars=tx.get("title_chars", 70), title_rule=tx.get("title_rule", ""),
         examples="\n".join(f"- {e}" for e in tx.get("examples", [])),
+        emoji=("   title_emoji — один уместный тематический эмодзи к заголовку: он встанет перед "
+               "заголовком в тексте поста (на видео его не будет); не подобрать — пусто.\n"
+               if emoji else "   title_emoji — пусто.\n"),
         caption_style=tx.get("caption_style", CAPTION_STYLE),
         caption_examples="\n".join(f"- {e}" for e in tx.get("caption_examples", [])) or "-",
-        caption_chars=tx.get("caption_chars", 450))
+        caption_chars=tx.get("caption_chars", 450),
+        hashtags=(f"{min(3, tags_max)}–{tags_max} хэштегов по теме." if tags_max
+                  else "пустой список: хэштегов в посте у канала нет."))
+    limit = postspec.LIMITS["threads"]
     extra, why = "", ""
     for attempt in (1, 2):
         data, why = _model_json(lambda: vision.ask_text(prompt + extra, 1500, 0.8, 120),
@@ -1036,22 +1118,40 @@ def write_texts(tpl, source, author="", board=b"", user_title="", rejected=None)
             break
         raw = user_title or str(data.get("title") or "")
         title = _clean_title(raw, font)
-        body = str(data.get("caption") or "").strip()
+        body = keep if redo == "title" else str(data.get("caption") or "").strip()
         if not title or not body:
             why = "пустой заголовок или описание"
             continue
-        # Обороты, которых в канале быть не должно («en el video», «es una
-        # señal»): один раз просим переписать, второй раз — берём как есть.
-        found = _avoided(f"{raw}\n{body}", tx.get("avoid", []))
-        if found and attempt == 1:
-            extra = ("\n\nВ прошлом ответе были обороты, которых быть не должно: "
-                     + ", ".join(f"«{w}»" for w in found) + ". Перепиши без них.")
-            continue
-        tags = data.get("hashtags") or []
+        sign = str(data.get("title_emoji") or "").strip() if emoji else ""
+        sign = sign if len(sign) <= 8 and re.fullmatch(f"(?:{EMOJI.pattern})+", sign) else ""
+        if redo == "caption" and keep:
+            head = keep                               # первая строка поста — как была
+        else:
+            head = _clean_title(raw, font, upper=bool(tx.get("post_title_upper")))
+            head = f"{sign} {head}" if sign and head else head
+        tags = [] if redo == "title" else data.get("hashtags") or []
         tags = tags.split() if isinstance(tags, str) else tags
         tags = ["#" + re.sub(r"\W", "", str(t)) for t in tags if re.sub(r"\W", "", str(t))]
-        caption = _clean_caption(body + "\n" + " ".join(tags), postspec.LIMITS["threads"],
-                                 head=_clean_title(raw, font, upper=False))
+        tags = tags[:tags_max]
+        # Обороты, которых в канале быть не должно («en el video», «es una
+        # señal»), и описание длиннее, чем влезет в пост (обрезка съела бы
+        # вопрос в конце): один раз просим переписать, второй раз — берём как есть.
+        wrong = []
+        found = _avoided(raw if redo == "title" else f"{raw}\n{body}", tx.get("avoid", []))
+        if found:
+            wrong.append("были обороты, которых быть не должно: "
+                         + ", ".join(f"«{w}»" for w in found) + ". Перепиши без них")
+        most = int(tx.get("title_chars", 70))
+        if not user_title and _utf16(_plain(title)) > most:
+            wrong.append(f"заголовок «{_plain(raw)}» длиннее {most} знаков. Короче")
+        room = limit - _utf16(head.replace(" | ", " ")) - 2 - (_utf16(" ".join(tags)) + 2 if tags else 0)
+        if redo != "title" and _utf16(body) > room:
+            wrong.append(f"описание длиннее, чем помещается в пост: {_utf16(body)} знаков из "
+                         f"{room}. Сократи, вопрос в конце оставь")
+        if wrong and attempt == 1:
+            extra = "\n\nВ прошлом ответе " + "; ".join(wrong) + "."
+            continue
+        caption = _clean_caption(body + "\n" + " ".join(tags), limit, head=head, max_tags=tags_max)
         variants, seen = [], {_plain(raw).lower()}
         for v in ([] if user_title else data.get("variants") or []):
             v = _clean_title(v, font, upper=False)
@@ -1060,7 +1160,7 @@ def write_texts(tpl, source, author="", board=b"", user_title="", rejected=None)
                 variants.append(v)
         return {"title": title, "caption": caption, "variants": variants[:MAX_VARIANTS],
                 "title_ru": _plain(data.get("title_ru")), "caption_ru": _plain(data.get("caption_ru")),
-                "theme": str((look or {}).get("theme") or "")[:200]}
+                "theme": str((look or {}).get("theme") or "")[:200], "facts": facts}
     raise MontageError(f"модель не написала заголовок и описание ({why})")
 
 
@@ -1162,41 +1262,51 @@ def process(task_id):
             error = f"{type(e).__name__}: {e}"
             text = "ошибка монтажа: " + error
         jobs.montage_set(task_id, status="done" if redo else "failed", error=error[:500],
-                         done_at=time.time())
+                         done_at=time.time(), redo="")
         if redo:
-            _say_buttons(row, f"❌ #{task_id}: не переделал — {text}\nПрежнее видео в запасах "
-                         "осталось.", _buttons(task_id, _stored_variants(row)))
+            _say_buttons(row, f"❌ #{task_id}: не переделал — {text}\nВ запасах всё осталось "
+                         "как было.", _buttons(task_id))
         else:
             say(f"❌ #{task_id}: {text}")
         return
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    _say_buttons(row, done_text(task_id, stock, title, texts, note),
-                 _buttons(task_id, texts["variants"]))
+    _say_buttons(row, done_text(task_id, stock, title, texts, note), _buttons(task_id))
 
 
 def done_text(task_id, stock, title, texts, note=""):
-    """«✅ готово»: заголовок на видео, другие заголовки (они же кнопки) и
-    перевод на русский — пост на испанском, а проверить его надо сразу."""
+    """«✅ готово»: заголовок на видео и перевод на русский — пост на
+    испанском, а проверить его надо сразу."""
     lines = [f"✅ #{task_id} в «{stock}»: {_plain(title)}"]
     if note:
         lines.append(note)
-    if texts.get("variants"):
-        lines += ["", "Другие заголовки — кнопкой ниже перемонтирую с ним:"]
-        lines += [f"{i}. {_plain(v)}" for i, v in enumerate(texts["variants"], 1)]
     ru = [s for s in (texts.get("title_ru"), texts.get("caption_ru")) if s]
     if ru:
         lines += ["", "По-русски:"] + ru
     return "\n".join(lines)
 
 
-def _buttons(task_id, variants):
-    """Под «✅ готово»: «другой текст» (модель пишет заново) и по кнопке на
-    каждый другой заголовок. Номер варианта — в коде кнопки: в 64 байта
-    callback_data сам заголовок не влезает."""
-    rows = [[{"text": f"{i}. {_plain(v)}"[:60], "callback_data": f"m:{task_id}:{i}"}]
-            for i, v in enumerate(variants, 1)]
-    rows.append([{"text": "🔄 Другой текст", "callback_data": f"m:{task_id}"}])
+# Кнопки под «✅ готово» (просьба 2026-11-27: «одобрить кнопкой либо
+# перегенерировать — заголовок, описание или полностью»). Код — в
+# callback_data: «m:7:ok», «m:7:t», «m:7:c», «m:7» — всё заново. «m:7:2» —
+# кнопки другого заголовка под прежними «готово»: они работают и дальше.
+REDO_SAY = {
+    "title": "пишу новый заголовок и перемонтирую — описание оставлю, прежнее видео в запасах "
+             "заменю.",
+    "caption": "пишу новое описание — поменяю подпись у видео в запасах, ролик тот же.",
+    "caption_slow": "пишу новое описание и перемонтирую с тем же заголовком — прежнее видео в "
+                    "запасах заменю.",
+    "all": "перемонтирую с другим заголовком и описанием — прежнее видео в запасах заменю.",
+}
+
+
+def _buttons(task_id):
+    def button(text, code=""):
+        return {"text": text, "callback_data": f"m:{task_id}{code}"}
+
+    rows = [[button("✅ Одобрить", ":ok")],
+            [button("🔄 Заголовок", ":t"), button("🔄 Описание", ":c")],
+            [button("🔄 Всё заново")]]
     return json.dumps({"inline_keyboard": rows}, ensure_ascii=False)
 
 
@@ -1215,17 +1325,19 @@ def _say_buttons(row, text, markup):
 
 
 def on_button(data, chat_id, message_id):
-    """Кнопка под «✅ готово» (просьба 2026-11-27: «оставь возможность
-    перегенерировать, если мне не заходит»). «m:7» — модель пишет заголовок и
-    описание заново, «m:7:2» — перемонтаж со вторым из других заголовков.
-    Видео в запасах заменяется новым. Возвращает всплывающую подсказку."""
+    """Кнопка под «✅ готово». «Одобрить» — заголовок и описание в принятое
+    памяти шаблона; «Заголовок», «Описание», «Всё заново» — не зашедшее в
+    отвергнутое и переделка: видео в запасах заменяется новым, а новое
+    описание встаёт подписью к тому же видео. Возвращает всплывающую подсказку."""
     import telegram_bot as tb
 
     try:
         parts = data.split(":")
         task_id = int(parts[1])
-        pick = int(parts[2]) if len(parts) > 2 else 0
+        code = parts[2] if len(parts) > 2 else ""
     except (IndexError, ValueError):
+        return "не понял кнопку"
+    if code not in ("", "ok", "t", "c") and not code.isdigit():
         return "не понял кнопку"
     row = jobs.montage_get(task_id)
     if not row or str(row["chat"]) != str(chat_id):
@@ -1235,35 +1347,62 @@ def on_button(data, chat_id, message_id):
     if row["status"] != "done" or not row["stock_msg"]:
         return "этот ролик не смонтирован — пришли ссылку ещё раз"
     title = ""
-    if pick:
+    if code.isdigit():
         variants = _stored_variants(row)
-        if not 0 < pick <= len(variants):
+        if not 0 < int(code) <= len(variants):
             return "этого варианта уже нет"
-        title = variants[pick - 1]
-    # Память шаблона: заменённый заголовок (или весь текст) — отвергнут,
-    # выбранный кнопкой — принят.
+        title = variants[int(code) - 1]
+    redo = {"t": "title", "c": "caption"}.get(code, "all")
+    # Память шаблона: одобренное — принято; заменённый заголовок, описание
+    # или весь текст — отвергнуты; выбранный кнопкой заголовок — принят.
     if row["tpl"]:
         try:
-            if title:
+            if code == "ok":
+                remember(row["tpl"], "accepted", row["title"], row["caption"], row["theme"])
+            elif title or redo == "title":
                 old = _post_parts(row["title"], row["caption"])[0]       # без описания
                 remember(row["tpl"], "rejected", old, theme=row["theme"])
-                remember(row["tpl"], "accepted", title, theme=row["theme"])
+                if title:
+                    remember(row["tpl"], "accepted", title, theme=row["theme"])
             else:
-                remember(row["tpl"], "rejected", row["title"], row["caption"], row["theme"])
+                remember(row["tpl"], "rejected", row["title"], row["caption"], row["theme"],
+                         what="caption" if redo == "caption" else "")
         except OSError as e:
             print(f"[монтаж] память шаблона: {e}", flush=True)
-    jobs.montage_set(task_id, status="queued", pick=title, error="")
-    # Кнопки убираем, чтобы второе нажатие не заказало перемонтаж дважды.
+    # Кнопки убираем: второе нажатие не закажет переделку дважды, а
+    # одобренное больше не переделать.
     tb._call("editMessageReplyMarkup", {"chat_id": chat_id, "message_id": message_id,
                                         "reply_markup": json.dumps({"inline_keyboard": []})},
              timeout=20)
-    _say_to(row["chat"], row["thread"])(
-        f"🔄 #{task_id}: перемонтирую " + (f"с заголовком «{_plain(title)}»" if title else
-                                         "с другим заголовком и описанием")
-        + " — прежнее видео в запасах заменю.")
+    if code == "ok":
+        return "одобрено — запомнил как удачное"
+    jobs.montage_set(task_id, status="queued", pick=title, redo="" if title else redo, error="")
+    if title:
+        text = f"перемонтирую с заголовком «{_plain(title)}» — прежнее видео в запасах заменю."
+    else:
+        text = REDO_SAY["caption_slow" if redo == "caption" and not row["facts"] else redo]
+    _say_to(row["chat"], row["thread"])(f"🔄 #{task_id}: {text}")
     _QUEUE.put(task_id)
     start()
-    return "перемонтирую"
+    return "пишу новое описание" if redo == "caption" and not title else "перемонтирую"
+
+
+def _recaption(row, stock, tpl):
+    """«🔄 Описание»: новое описание — подписью к тому же видео в запасах, без
+    скачивания и перемонтажа. Первая строка поста (заголовок) — как была."""
+    import telegram_bot as tb
+
+    head, _ = _head_rest(row["title"], row["caption"])
+    texts = write_texts(tpl, "", user_title=row["title"], rejected=(row["title"], row["caption"]),
+                        redo="caption", facts=row["facts"], keep=head)
+    res = tb._call("editMessageCaption", {"chat_id": stock[0], "message_id": row["stock_msg"],
+                                          "caption": texts["caption"]}, timeout=30)
+    if not res.get("ok"):
+        raise MontageError(f"подпись у видео в «{stock[2]}» не поменял (Telegram: {tb._why(res)}) — "
+                           "может, его уже опубликовали или удалили")
+    jobs.montage_set(row["id"], status="done", done_at=time.time(), caption=texts["caption"],
+                     pick="", redo="")
+    return row["title"], stock[2], texts, "Описание у видео в запасах заменил — ролик тот же."
 
 
 def _make(row, work, say):
@@ -1277,6 +1416,11 @@ def _make(row, work, say):
                            "«Запасы» и положи в неё что-нибудь — или /here запасы в ней.")
     # Тот же выбор, что видно в окне: выбранный шаблон удалили — основной.
     tpl = load_template(tb.montage_templates()["montage_template"] or None)
+    # Переделка кнопкой: что именно. Новое описание при сохранённом разборе
+    # ролика — без скачивания и перемонтажа, подписью к тому же видео.
+    redo = (row["redo"] or "all") if row["stock_msg"] and not row["pick"] else ""
+    if redo == "caption" and row["facts"]:
+        return _recaption(row, stock, tpl)
     tools = linkfetch.ffmpeg_tools()
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work, exist_ok=True)
@@ -1298,16 +1442,22 @@ def _make(row, work, say):
                                + (f": {tb.DOWNLOAD['why']}" if tb.DOWNLOAD.get("why") else ""))
         source, author = row["note"], ""
     # Заголовок, выбранный кнопкой под «✅ готово», — как свой заголовок
-    # человека; «Другой текст» — модели показываем, что не зашло.
-    user_title = row["pick"] or user_title
-    rejected = (row["title"], row["caption"]) if row["stock_msg"] and not row["pick"] else None
+    # человека; переделка — модели показываем, что не зашло.
+    # «Заголовок» — свой заголовок человека тоже меняем, «Описание» — заголовок
+    # прежний; разбор ролика берём из прошлого раза, если он есть.
+    user_title = row["pick"] or {"title": "", "caption": row["title"]}.get(redo, user_title)
+    rejected = (row["title"], row["caption"]) if redo else None
+    head, rest = _head_rest(row["title"], row["caption"])
+    keep = {"title": rest, "caption": head}.get(redo, "")
+    facts = row["facts"] if redo in ("title", "caption") and row["facts"] else None
     why = scheduler.looks_like_video(path)
     if why:
         raise MontageError(f"скачалось не видео: {why}")
 
     meta = probe(path, tools[1], tools[0])
-    texts = write_texts(tpl, source, author, storyboard(path, tools[0], meta), user_title,
-                        rejected)
+    board = b"" if facts else storyboard(path, tools[0], meta)
+    texts = write_texts(tpl, source, author, board, user_title, rejected, redo=redo or "all",
+                        facts=facts, keep=keep)
     title, caption = texts["title"], texts["caption"]
 
     out = os.path.join(work, "montage.mp4")
@@ -1345,8 +1495,9 @@ def _make(row, work, say):
     jobs.montage_set(row["id"], status="done", stock_msg=sent.get("message_id") or 0,
                      done_at=time.time(), title=title, caption=caption, pick="",
                      variants=json.dumps(texts["variants"], ensure_ascii=False),
-                     tpl=tpl["id"], theme=texts.get("theme", ""),
-                     out_file=video.get("file_unique_id", ""))
+                     tpl=tpl["id"], theme=texts.get("theme") or row["theme"] or "",
+                     out_file=video.get("file_unique_id", ""), redo="",
+                     facts=texts.get("facts") or "")
     return title, stock[2], texts, note
 
 

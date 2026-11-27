@@ -1,7 +1,10 @@
 {
   "name": "Rusorama",
-  "about": "Снят 25.11.2026 с двух примеров: чёрный кадр 9:16, сверху заголовок капсом (Rubik Bold, первая строка жёлтая), в середине ролик во всю ширину, снизу глобус и подпись канала. Координаты — в кадре 1080x1920. 26.11 заголовок крупнее (кегль 40 → 64, до 3 строк) и короче (75 → 45 знаков): «чтобы текст был больше и более цепляющий». 27.11 заголовок — образ, а не констатация, описание — мысль вокруг ролика, а не пересказ: «хотелось бы что-то абстрактное, чтобы было интересно прочитать».",
-  "size": [1080, 1920],
+  "about": "Снят 25.11.2026 с двух примеров: чёрный кадр 9:16, сверху заголовок капсом (Rubik Bold, первая строка жёлтая), в середине ролик во всю ширину, снизу глобус и подпись канала. Координаты — в кадре 1080x1920. 26.11 заголовок крупнее (кегль 40 → 64, до 3 строк) и короче (75 → 45 знаков): «чтобы текст был больше и более цепляющий». 27.11 заголовок — образ, а не констатация, описание — мысль вокруг ролика, а не пересказ: «хотелось бы что-то абстрактное, чтобы было интересно прочитать». 27.11 по системному промпту человека: заголовок 2–3 слова (в посте — капсом и с эмодзи), в конце описания открытый вопрос, без хэштегов, правила чувствительной лексики; кегль заголовка 64 → 84 — короткому заголовку место есть.",
+  "size": [
+    1080,
+    1920
+  ],
   "fps": 30,
   "background": "#000000",
   "video": {
@@ -12,7 +15,7 @@
   },
   "title": {
     "font": "Rubik-Bold.ttf",
-    "size": 64,
+    "size": 84,
     "min_size": 52,
     "max_width": 960,
     "max_lines": 3,
@@ -22,8 +25,35 @@
     "color": "#FFFFFF",
     "accent": "first_line",
     "accent_color": "#EAC93C",
-    "glue": ["a", "al", "de", "del", "el", "la", "las", "los", "lo", "en", "y", "e", "o", "u",
-             "con", "por", "para", "un", "una", "que", "se", "su", "sus", "sin", "tras", "ante", "sobre"]
+    "glue": [
+      "a",
+      "al",
+      "de",
+      "del",
+      "el",
+      "la",
+      "las",
+      "los",
+      "lo",
+      "en",
+      "y",
+      "e",
+      "o",
+      "u",
+      "con",
+      "por",
+      "para",
+      "un",
+      "una",
+      "que",
+      "se",
+      "su",
+      "sus",
+      "sin",
+      "tras",
+      "ante",
+      "sobre"
+    ]
   },
   "badge": {
     "image": "globe.png",
@@ -34,28 +64,62 @@
     "size": 24,
     "color": "#FFFFFF",
     "x": 167,
-    "baselines": [1511, 1539],
-    "lines": ["Política, historia", "y actualidad internacional"]
+    "baselines": [
+      1511,
+      1539
+    ],
+    "lines": [
+      "Política, historia",
+      "y actualidad internacional"
+    ]
   },
   "texts": {
-    "about": "канал о политике, истории и международных новостях",
-    "language": "испанский (español)",
-    "title_chars": 45,
+    "about": "канал о политике, истории и международных новостях для жителей Латинской Америки",
+    "language": "испанский Латинской Америки (español latinoamericano), к читателю — на «tú»",
+    "title_chars": 28,
     "examples": [
-      "Amistad a las tres | de la madrugada",
-      "Diplomacia | con sabor a patata",
-      "Tres segundos de silencio | que lo dijeron todo",
-      "Le cortan el micrófono | en pleno discurso"
+      "Putin | entre novias",
+      "Tres segundos | de silencio",
+      "Amistad | de madrugada",
+      "Protocolo | en pausa"
     ],
-    "title_rule": "Раздели заголовок на две части знаком | там, где пауза по смыслу: первая часть — крючок (самое неожиданное, резкое или громкое в ролике), вторая — развязка.",
-    "caption_style": "НЕ пересказ ролика: зритель его и так видит. Это мысль вокруг ролика, ради которой хочется дочитать: неожиданное наблюдение, обобщение, ирония, второй смысл, вечный сюжет за сегодняшним событием. 2–3 коротких предложения, живым языком, как умный человек в соцсетях, а не как новостное агентство. Можно опереться на общеизвестный контекст, но без цифр, дат и подробностей, которых нет в разборе и подписи: лучше мысль, чем рискованный факт. Без оскорблений и агитации. Не описывай само видео («en el video», «aparecen», «imágenes», «montaje») и не пиши канцелярские выводы («es una señal», «refuerza», «demuestra»). Не пиши о самом канале и не повторяй заголовок.",
+    "title_rule": "Только 2–3 слова: яркие, интригующие, не шаблонные и не однотипные — чтобы захотелось посмотреть. Раздели их знаком | там, где пауза: первая часть — крючок (её подсветим цветом), вторая — развязка.",
+    "title_emoji": true,
+    "post_title_upper": true,
+    "hashtags": 0,
+    "caption_style": "2–3 коротких предложения и в конце вопрос, всё вместе 45–75 слов. Суть события — кто, что и почему это важно, — но не пересказ того, что зритель и так видит в ролике. Главный крючок — неожиданный поворот или малоизвестная деталь из подписи или разбора. Можно добавить общеизвестный исторический контекст, если уверен в нём; даты, цифры, имена и цитаты — только из подписи и разбора, не выдумывай. Догадки о жестах, эмоциях и намерениях людей не выдавай за факт. Последней строкой — один открытый, интригующий вопрос к читателю на «tú», который хочется обсудить в комментариях: не банальный («¿Qué opinas?») и каждый раз построенный по-новому — не всё время «¿Qué … más: A o B?», бывает «¿Te imaginas…?», «¿Y si…?», «¿Tú habrías…?», «¿Cuál fue…?»; без навязывания политической позиции; строку можно начать с эмодзи. Всего 1–2 уместных эмодзи, знаки препинания вплотную к ним не ставь. Живой испанский, как у профессионального редактора соцсетей, а не нейросети: без воды, канцелярита и штампов. Не описывай само видео («en el video», «aparecen», «el clip») и не пиши о канале; авторов ролика, их ники и водяные знаки не упоминай; не повторяй заголовок.",
     "caption_examples": [
-      "Pueden pasar horas sin moverse, aguantar la lluvia y a mil turistas con el móvil. Contra el sol de julio, en cambio, ninguna tradición trae armadura.",
-      "En diplomacia, cada gesto se mide al milímetro. Por eso, cuando alguien rompe el protocolo, el mensaje suele importar más que el saludo."
+      "En septiembre de 2016, durante las celebraciones del Día de Moscú, Vladimir Putin fue rodeado por un grupo de mujeres vestidas de novia en plena Plaza Roja. Las imágenes se volvieron virales, pero había un detalle curioso: ¡no eran novias de verdad! Eran modelos y bailarinas de un espectáculo festivo.\n📸 ¿Te imaginas encontrarte al presidente en medio de una sesión de fotos como esta?",
+      "En diplomacia, cada gesto se mide al milímetro. Por eso, cuando alguien rompe el protocolo, el mensaje suele importar más que el saludo.\n🤝 ¿Qué gesto de un líder te hizo pensar que algo había cambiado de verdad?"
     ],
-    "avoid": ["en el video", "en este video", "en el vídeo", "en este vídeo", "aparece", "aparecen",
-              "imágenes", "montaje", "es una señal", "refuerza", "demuestra",
-              "no es lo que parece", "nadie esperaba"],
-    "caption_chars": 450
+    "rules": "Чувствительная лексика (модерация Instagram, TikTok, YouTube, Facebook, Threads) — особенно в заголовке, первой строке и вопросе. Это редакционный стоп-лист, учитывай и производные формы:\n- оружие и война (armas, bala, bomba, misil, disparo, ataque, guerra, invasión…) → equipo militar, capacidades militares, operativo, conflicto, enfrentamiento, tensión internacional;\n- гибель и насилие (matar, muerte, asesinato, masacre, sangre, tortura…) → perdió la vida, víctimas, pérdidas humanas, hechos violentos, episodio trágico;\n- деньги и мошенничество (dinero fácil, millonario, criptomonedas, apuestas, estafa, soborno…) → recursos, fondos, costo, irregularidades financieras; реальные суммы и валюты оставляй, если они важны;\n- наркотики и алкоголь (drogas, cocaína, narcotráfico, sobredosis, borracho…) → sustancias ilícitas, tráfico ilegal, consumo problemático;\n- секс и интим (sexo, desnudo, prostitución, abuso sexual…) → vida privada, conducta inapropiada, denuncia de abuso;\n- экстремизм и беспорядки (terrorismo, atentado, nazi, secuestro, cartel, saqueo, disturbios…) → incidente de seguridad, grupo radical, organización delictiva, alteración del orden público;\n- болезни (cáncer, pandemia, trastorno mental…) — корректно, без шокирующих подробностей.\nСлово не нужно для понимания — замени естественной нейтральной формулировкой или перепиши фразу целиком. Но не искажай факты, цитаты и юридические термины ради смягчения, не преуменьшай тяжесть преступлений и не превращай текст в набор эвфемизмов. Никакой искусственной цензуры (звёздочки, цифры вместо букв, нарочные опечатки) и эмодзи оружия, крови, взрывов, наркотиков.\nБез мата, оскорблений внешности, возраста, национальностей и религий, без уничижительных прозвищ политиков и призывов к ненависти. Различай позиции сторон, не выдавай слухи за факты и не преувеличивай значимость события.",
+    "avoid": [
+      "en el video",
+      "en este video",
+      "en el vídeo",
+      "en este vídeo",
+      "aparece",
+      "aparecen",
+      "montaje",
+      "es una señal",
+      "refuerza",
+      "demuestra",
+      "no es lo que parece",
+      "nadie esperaba",
+      "qué opinas",
+      "qué piensas",
+      "protagonizó un momento",
+      "no pasó desapercibido",
+      "no pasó desapercibida",
+      "dos formas de reaccionar",
+      "el video",
+      "el vídeo",
+      "este video",
+      "este vídeo",
+      "la pieza",
+      "el clip",
+      "este clip"
+    ],
+    "caption_chars": 420
   }
 }

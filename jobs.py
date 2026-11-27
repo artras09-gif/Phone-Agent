@@ -139,7 +139,11 @@ MIGRATIONS = {
                 # Память шаблона (27.11): каким шаблоном, о чём ролик, и
                 # file_unique_id готового видео — по нему узнаём его в публикации.
                 ("tpl", "TEXT DEFAULT ''"), ("theme", "TEXT DEFAULT ''"),
-                ("out_file", "TEXT DEFAULT ''")],
+                ("out_file", "TEXT DEFAULT ''"),
+                # Кнопки «новый заголовок / новое описание / всё заново» (27.11):
+                # redo — что переделать; facts — разбор ролика и подпись автора,
+                # чтобы новое описание писать без повторного скачивания.
+                ("redo", "TEXT DEFAULT ''"), ("facts", "TEXT DEFAULT ''")],
 }
 
 # Чей это телефон. Пустая строка — «до разделения» и «телефон один»: такие
@@ -361,7 +365,7 @@ def stock_add(file, chat, thread, msg, sender="", at=None):
 
 
 MONTAGE_FIELDS = ("status", "title", "caption", "error", "stock_msg", "done_at",
-                  "variants", "pick", "tpl", "theme", "out_file")
+                  "variants", "pick", "tpl", "theme", "out_file", "redo", "facts")
 
 
 def montage_add(url="", file_id="", note="", chat="", thread="", msg=0):

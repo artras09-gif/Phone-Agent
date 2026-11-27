@@ -3075,7 +3075,7 @@ def _handle_callback(cq):
         _stats_button(cq, data, chat_id, message_id, group, thread)
         return
     if data.startswith("m:"):
-        # Под «✅ готово» монтажа: другой текст или другой заголовок.
+        # Под «✅ готово» монтажа: одобрить или переделать заголовок, описание, всё.
         import montage
 
         _call("answerCallbackQuery", {"callback_query_id": cq.get("id", ""),
